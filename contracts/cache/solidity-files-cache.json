@@ -1,0 +1,901 @@
+{
+  "_format": "hh-sol-cache-2",
+  "files": {
+    "C:\\Users\\Contr\\vapi-pebble-prototype\\contracts\\contracts\\BountyMarket.sol": {
+      "lastModificationDate": 1772162061323,
+      "contentHash": "80b9fda5ab1b6f3490f9d2d88e0a1eaf",
+      "sourceName": "contracts/BountyMarket.sol",
+      "solcConfig": {
+        "version": "0.8.20",
+        "settings": {
+          "viaIR": true,
+          "optimizer": {
+            "enabled": true,
+            "runs": 200
+          },
+          "evmVersion": "paris",
+          "outputSelection": {
+            "*": {
+              "*": [
+                "abi",
+                "evm.bytecode",
+                "evm.deployedBytecode",
+                "evm.methodIdentifiers",
+                "metadata"
+              ],
+              "": [
+                "ast"
+              ]
+            }
+          }
+        }
+      },
+      "imports": [
+        "@openzeppelin/contracts/access/Ownable.sol",
+        "@openzeppelin/contracts/utils/ReentrancyGuard.sol",
+        "./DeviceRegistry.sol",
+        "./PoACVerifier.sol"
+      ],
+      "versionPragmas": [
+        "^0.8.20"
+      ],
+      "artifacts": [
+        "BountyMarket",
+        "ITournamentGate"
+      ]
+    },
+    "C:\\Users\\Contr\\vapi-pebble-prototype\\contracts\\contracts\\PoACVerifier.sol": {
+      "lastModificationDate": 1771783215412,
+      "contentHash": "cff8b14918a4a84ba42788a56a705293",
+      "sourceName": "contracts/PoACVerifier.sol",
+      "solcConfig": {
+        "version": "0.8.20",
+        "settings": {
+          "viaIR": true,
+          "optimizer": {
+            "enabled": true,
+            "runs": 200
+          },
+          "evmVersion": "paris",
+          "outputSelection": {
+            "*": {
+              "*": [
+                "abi",
+                "evm.bytecode",
+                "evm.deployedBytecode",
+                "evm.methodIdentifiers",
+                "metadata"
+              ],
+              "": [
+                "ast"
+              ]
+            }
+          }
+        }
+      },
+      "imports": [
+        "@openzeppelin/contracts/access/Ownable.sol",
+        "@openzeppelin/contracts/utils/ReentrancyGuard.sol",
+        "./DeviceRegistry.sol"
+      ],
+      "versionPragmas": [
+        "^0.8.20"
+      ],
+      "artifacts": [
+        "PoACVerifier"
+      ]
+    },
+    "C:\\Users\\Contr\\vapi-pebble-prototype\\contracts\\contracts\\DeviceRegistry.sol": {
+      "lastModificationDate": 1771776722384,
+      "contentHash": "200bcd6ac7e6b628e0818755263c1413",
+      "sourceName": "contracts/DeviceRegistry.sol",
+      "solcConfig": {
+        "version": "0.8.20",
+        "settings": {
+          "viaIR": true,
+          "optimizer": {
+            "enabled": true,
+            "runs": 200
+          },
+          "evmVersion": "paris",
+          "outputSelection": {
+            "*": {
+              "*": [
+                "abi",
+                "evm.bytecode",
+                "evm.deployedBytecode",
+                "evm.methodIdentifiers",
+                "metadata"
+              ],
+              "": [
+                "ast"
+              ]
+            }
+          }
+        }
+      },
+      "imports": [
+        "@openzeppelin/contracts/access/Ownable.sol",
+        "@openzeppelin/contracts/utils/ReentrancyGuard.sol"
+      ],
+      "versionPragmas": [
+        "^0.8.20"
+      ],
+      "artifacts": [
+        "DeviceRegistry"
+      ]
+    },
+    "C:\\Users\\Contr\\vapi-pebble-prototype\\contracts\\node_modules\\@openzeppelin\\contracts\\utils\\ReentrancyGuard.sol": {
+      "lastModificationDate": 1771463090345,
+      "contentHash": "190613e556d509d9e9a0ea43dc5d891d",
+      "sourceName": "@openzeppelin/contracts/utils/ReentrancyGuard.sol",
+      "solcConfig": {
+        "version": "0.8.20",
+        "settings": {
+          "viaIR": true,
+          "optimizer": {
+            "enabled": true,
+            "runs": 200
+          },
+          "evmVersion": "paris",
+          "outputSelection": {
+            "*": {
+              "*": [
+                "abi",
+                "evm.bytecode",
+                "evm.deployedBytecode",
+                "evm.methodIdentifiers",
+                "metadata"
+              ],
+              "": [
+                "ast"
+              ]
+            }
+          }
+        }
+      },
+      "imports": [],
+      "versionPragmas": [
+        "^0.8.20"
+      ],
+      "artifacts": [
+        "ReentrancyGuard"
+      ]
+    },
+    "C:\\Users\\Contr\\vapi-pebble-prototype\\contracts\\node_modules\\@openzeppelin\\contracts\\access\\Ownable.sol": {
+      "lastModificationDate": 1771463090245,
+      "contentHash": "d3c790edc9ccf808a17c5a6cd13614fd",
+      "sourceName": "@openzeppelin/contracts/access/Ownable.sol",
+      "solcConfig": {
+        "version": "0.8.20",
+        "settings": {
+          "viaIR": true,
+          "optimizer": {
+            "enabled": true,
+            "runs": 200
+          },
+          "evmVersion": "paris",
+          "outputSelection": {
+            "*": {
+              "*": [
+                "abi",
+                "evm.bytecode",
+                "evm.deployedBytecode",
+                "evm.methodIdentifiers",
+                "metadata"
+              ],
+              "": [
+                "ast"
+              ]
+            }
+          }
+        }
+      },
+      "imports": [
+        "../utils/Context.sol"
+      ],
+      "versionPragmas": [
+        "^0.8.20"
+      ],
+      "artifacts": [
+        "Ownable"
+      ]
+    },
+    "C:\\Users\\Contr\\vapi-pebble-prototype\\contracts\\node_modules\\@openzeppelin\\contracts\\utils\\Context.sol": {
+      "lastModificationDate": 1771463087875,
+      "contentHash": "67bfbc07588eb8683b3fd8f6f909563e",
+      "sourceName": "@openzeppelin/contracts/utils/Context.sol",
+      "solcConfig": {
+        "version": "0.8.20",
+        "settings": {
+          "viaIR": true,
+          "optimizer": {
+            "enabled": true,
+            "runs": 200
+          },
+          "evmVersion": "paris",
+          "outputSelection": {
+            "*": {
+              "*": [
+                "abi",
+                "evm.bytecode",
+                "evm.deployedBytecode",
+                "evm.methodIdentifiers",
+                "metadata"
+              ],
+              "": [
+                "ast"
+              ]
+            }
+          }
+        }
+      },
+      "imports": [],
+      "versionPragmas": [
+        "^0.8.20"
+      ],
+      "artifacts": [
+        "Context"
+      ]
+    },
+    "C:\\Users\\Contr\\vapi-pebble-prototype\\contracts\\contracts\\test\\PoACVerifierTestable.sol": {
+      "lastModificationDate": 1771611281636,
+      "contentHash": "e9daf6fa55acc055ed0446ddcfa3750d",
+      "sourceName": "contracts/test/PoACVerifierTestable.sol",
+      "solcConfig": {
+        "version": "0.8.20",
+        "settings": {
+          "viaIR": true,
+          "optimizer": {
+            "enabled": true,
+            "runs": 200
+          },
+          "evmVersion": "paris",
+          "outputSelection": {
+            "*": {
+              "*": [
+                "abi",
+                "evm.bytecode",
+                "evm.deployedBytecode",
+                "evm.methodIdentifiers",
+                "metadata"
+              ],
+              "": [
+                "ast"
+              ]
+            }
+          }
+        }
+      },
+      "imports": [
+        "../PoACVerifier.sol"
+      ],
+      "versionPragmas": [
+        "^0.8.20"
+      ],
+      "artifacts": [
+        "PoACVerifierTestable"
+      ]
+    },
+    "C:\\Users\\Contr\\vapi-pebble-prototype\\contracts\\contracts\\TeamProofAggregator.sol": {
+      "lastModificationDate": 1771793079381,
+      "contentHash": "846ed9a67ee6af3b77c69d5351d9a563",
+      "sourceName": "contracts/TeamProofAggregator.sol",
+      "solcConfig": {
+        "version": "0.8.20",
+        "settings": {
+          "viaIR": true,
+          "optimizer": {
+            "enabled": true,
+            "runs": 200
+          },
+          "evmVersion": "paris",
+          "outputSelection": {
+            "*": {
+              "*": [
+                "abi",
+                "evm.bytecode",
+                "evm.deployedBytecode",
+                "evm.methodIdentifiers",
+                "metadata"
+              ],
+              "": [
+                "ast"
+              ]
+            }
+          }
+        }
+      },
+      "imports": [
+        "@openzeppelin/contracts/access/Ownable.sol",
+        "./PoACVerifier.sol"
+      ],
+      "versionPragmas": [
+        "^0.8.20"
+      ],
+      "artifacts": [
+        "TeamProofAggregator"
+      ]
+    },
+    "C:\\Users\\Contr\\vapi-pebble-prototype\\contracts\\contracts\\SkillOracle.sol": {
+      "lastModificationDate": 1771701717953,
+      "contentHash": "0ab098e366bf6436a36b3d3da320994f",
+      "sourceName": "contracts/SkillOracle.sol",
+      "solcConfig": {
+        "version": "0.8.20",
+        "settings": {
+          "viaIR": true,
+          "optimizer": {
+            "enabled": true,
+            "runs": 200
+          },
+          "evmVersion": "paris",
+          "outputSelection": {
+            "*": {
+              "*": [
+                "abi",
+                "evm.bytecode",
+                "evm.deployedBytecode",
+                "evm.methodIdentifiers",
+                "metadata"
+              ],
+              "": [
+                "ast"
+              ]
+            }
+          }
+        }
+      },
+      "imports": [
+        "@openzeppelin/contracts/access/Ownable.sol",
+        "./PoACVerifier.sol",
+        "./DeviceRegistry.sol"
+      ],
+      "versionPragmas": [
+        "^0.8.20"
+      ],
+      "artifacts": [
+        "SkillOracle"
+      ]
+    },
+    "C:\\Users\\Contr\\vapi-pebble-prototype\\contracts\\contracts\\ProgressAttestation.sol": {
+      "lastModificationDate": 1771792383417,
+      "contentHash": "4e26ad2b08d5947a5e86312ca8e93f50",
+      "sourceName": "contracts/ProgressAttestation.sol",
+      "solcConfig": {
+        "version": "0.8.20",
+        "settings": {
+          "viaIR": true,
+          "optimizer": {
+            "enabled": true,
+            "runs": 200
+          },
+          "evmVersion": "paris",
+          "outputSelection": {
+            "*": {
+              "*": [
+                "abi",
+                "evm.bytecode",
+                "evm.deployedBytecode",
+                "evm.methodIdentifiers",
+                "metadata"
+              ],
+              "": [
+                "ast"
+              ]
+            }
+          }
+        }
+      },
+      "imports": [
+        "@openzeppelin/contracts/access/Ownable.sol",
+        "./PoACVerifier.sol"
+      ],
+      "versionPragmas": [
+        "^0.8.20"
+      ],
+      "artifacts": [
+        "ProgressAttestation"
+      ]
+    },
+    "C:\\Users\\Contr\\vapi-pebble-prototype\\contracts\\contracts\\TieredDeviceRegistry.sol": {
+      "lastModificationDate": 1771776725794,
+      "contentHash": "6f2c89e4a6992c3c6f4bf47e52d88b2e",
+      "sourceName": "contracts/TieredDeviceRegistry.sol",
+      "solcConfig": {
+        "version": "0.8.20",
+        "settings": {
+          "viaIR": true,
+          "optimizer": {
+            "enabled": true,
+            "runs": 200
+          },
+          "evmVersion": "paris",
+          "outputSelection": {
+            "*": {
+              "*": [
+                "abi",
+                "evm.bytecode",
+                "evm.deployedBytecode",
+                "evm.methodIdentifiers",
+                "metadata"
+              ],
+              "": [
+                "ast"
+              ]
+            }
+          }
+        }
+      },
+      "imports": [
+        "./DeviceRegistry.sol"
+      ],
+      "versionPragmas": [
+        "^0.8.20"
+      ],
+      "artifacts": [
+        "TieredDeviceRegistry"
+      ]
+    },
+    "C:\\Users\\Contr\\vapi-pebble-prototype\\contracts\\contracts\\test\\TieredDeviceRegistryV2Testable.sol": {
+      "lastModificationDate": 1771746189560,
+      "contentHash": "d1bc3498d01a06b5ed828ce96c752946",
+      "sourceName": "contracts/test/TieredDeviceRegistryV2Testable.sol",
+      "solcConfig": {
+        "version": "0.8.20",
+        "settings": {
+          "viaIR": true,
+          "optimizer": {
+            "enabled": true,
+            "runs": 200
+          },
+          "evmVersion": "paris",
+          "outputSelection": {
+            "*": {
+              "*": [
+                "abi",
+                "evm.bytecode",
+                "evm.deployedBytecode",
+                "evm.methodIdentifiers",
+                "metadata"
+              ],
+              "": [
+                "ast"
+              ]
+            }
+          }
+        }
+      },
+      "imports": [
+        "../TieredDeviceRegistry.sol"
+      ],
+      "versionPragmas": [
+        "^0.8.20"
+      ],
+      "artifacts": [
+        "TieredDeviceRegistryV2Testable"
+      ]
+    },
+    "C:\\Users\\Contr\\vapi-pebble-prototype\\contracts\\contracts\\TeamProofAggregatorZK.sol": {
+      "lastModificationDate": 1771816951778,
+      "contentHash": "320274111caf592543c59300e77cfbc0",
+      "sourceName": "contracts/TeamProofAggregatorZK.sol",
+      "solcConfig": {
+        "version": "0.8.20",
+        "settings": {
+          "viaIR": true,
+          "optimizer": {
+            "enabled": true,
+            "runs": 200
+          },
+          "evmVersion": "paris",
+          "outputSelection": {
+            "*": {
+              "*": [
+                "abi",
+                "evm.bytecode",
+                "evm.deployedBytecode",
+                "evm.methodIdentifiers",
+                "metadata"
+              ],
+              "": [
+                "ast"
+              ]
+            }
+          }
+        }
+      },
+      "imports": [
+        "./TeamProofAggregator.sol",
+        "./ITeamProofVerifier.sol"
+      ],
+      "versionPragmas": [
+        "^0.8.20"
+      ],
+      "artifacts": [
+        "TeamProofAggregatorZK"
+      ]
+    },
+    "C:\\Users\\Contr\\vapi-pebble-prototype\\contracts\\contracts\\TeamProofAggregatorZKTestable.sol": {
+      "lastModificationDate": 1771816962133,
+      "contentHash": "a4a1c3153d6af8a99ab605f01078af5b",
+      "sourceName": "contracts/TeamProofAggregatorZKTestable.sol",
+      "solcConfig": {
+        "version": "0.8.20",
+        "settings": {
+          "viaIR": true,
+          "optimizer": {
+            "enabled": true,
+            "runs": 200
+          },
+          "evmVersion": "paris",
+          "outputSelection": {
+            "*": {
+              "*": [
+                "abi",
+                "evm.bytecode",
+                "evm.deployedBytecode",
+                "evm.methodIdentifiers",
+                "metadata"
+              ],
+              "": [
+                "ast"
+              ]
+            }
+          }
+        }
+      },
+      "imports": [
+        "./TeamProofAggregatorZK.sol"
+      ],
+      "versionPragmas": [
+        "^0.8.20"
+      ],
+      "artifacts": [
+        "TeamProofAggregatorZKTestable"
+      ]
+    },
+    "C:\\Users\\Contr\\vapi-pebble-prototype\\contracts\\contracts\\ITeamProofVerifier.sol": {
+      "lastModificationDate": 1771816896368,
+      "contentHash": "e70abdd46b6af92c8b6f6a87afe153d8",
+      "sourceName": "contracts/ITeamProofVerifier.sol",
+      "solcConfig": {
+        "version": "0.8.20",
+        "settings": {
+          "viaIR": true,
+          "optimizer": {
+            "enabled": true,
+            "runs": 200
+          },
+          "evmVersion": "paris",
+          "outputSelection": {
+            "*": {
+              "*": [
+                "abi",
+                "evm.bytecode",
+                "evm.deployedBytecode",
+                "evm.methodIdentifiers",
+                "metadata"
+              ],
+              "": [
+                "ast"
+              ]
+            }
+          }
+        }
+      },
+      "imports": [],
+      "versionPragmas": [
+        "^0.8.20"
+      ],
+      "artifacts": [
+        "ITeamProofVerifier"
+      ]
+    },
+    "C:\\Users\\Contr\\vapi-pebble-prototype\\contracts\\contracts\\test\\MockTeamProofVerifier.sol": {
+      "lastModificationDate": 1771818973506,
+      "contentHash": "3fffcfcff881b96ad67d1e2e49677187",
+      "sourceName": "contracts/test/MockTeamProofVerifier.sol",
+      "solcConfig": {
+        "version": "0.8.20",
+        "settings": {
+          "viaIR": true,
+          "optimizer": {
+            "enabled": true,
+            "runs": 200
+          },
+          "evmVersion": "paris",
+          "outputSelection": {
+            "*": {
+              "*": [
+                "abi",
+                "evm.bytecode",
+                "evm.deployedBytecode",
+                "evm.methodIdentifiers",
+                "metadata"
+              ],
+              "": [
+                "ast"
+              ]
+            }
+          }
+        }
+      },
+      "imports": [
+        "../ITeamProofVerifier.sol"
+      ],
+      "versionPragmas": [
+        "^0.8.20"
+      ],
+      "artifacts": [
+        "MockTeamProofVerifier"
+      ]
+    },
+    "C:\\Users\\Contr\\vapi-pebble-prototype\\contracts\\contracts\\PHGRegistry.sol": {
+      "lastModificationDate": 1772161661520,
+      "contentHash": "759dfc11151512035ce5787e3277cf7c",
+      "sourceName": "contracts/PHGRegistry.sol",
+      "solcConfig": {
+        "version": "0.8.20",
+        "settings": {
+          "viaIR": true,
+          "optimizer": {
+            "enabled": true,
+            "runs": 200
+          },
+          "evmVersion": "paris",
+          "outputSelection": {
+            "*": {
+              "*": [
+                "abi",
+                "evm.bytecode",
+                "evm.deployedBytecode",
+                "evm.methodIdentifiers",
+                "metadata"
+              ],
+              "": [
+                "ast"
+              ]
+            }
+          }
+        }
+      },
+      "imports": [],
+      "versionPragmas": [
+        "^0.8.19"
+      ],
+      "artifacts": [
+        "PHGRegistry"
+      ]
+    },
+    "C:\\Users\\Contr\\vapi-pebble-prototype\\contracts\\contracts\\TournamentGate.sol": {
+      "lastModificationDate": 1771984276198,
+      "contentHash": "db360096a40f2d8e2596bf96a05c618e",
+      "sourceName": "contracts/TournamentGate.sol",
+      "solcConfig": {
+        "version": "0.8.20",
+        "settings": {
+          "viaIR": true,
+          "optimizer": {
+            "enabled": true,
+            "runs": 200
+          },
+          "evmVersion": "paris",
+          "outputSelection": {
+            "*": {
+              "*": [
+                "abi",
+                "evm.bytecode",
+                "evm.deployedBytecode",
+                "evm.methodIdentifiers",
+                "metadata"
+              ],
+              "": [
+                "ast"
+              ]
+            }
+          }
+        }
+      },
+      "imports": [
+        "./PHGRegistry.sol"
+      ],
+      "versionPragmas": [
+        "^0.8.19"
+      ],
+      "artifacts": [
+        "TournamentGate"
+      ]
+    },
+    "C:\\Users\\Contr\\vapi-pebble-prototype\\contracts\\contracts\\IdentityContinuityRegistry.sol": {
+      "lastModificationDate": 1772107230696,
+      "contentHash": "e279f9b0bc34316d873a2c8c9505372c",
+      "sourceName": "contracts/IdentityContinuityRegistry.sol",
+      "solcConfig": {
+        "version": "0.8.20",
+        "settings": {
+          "viaIR": true,
+          "optimizer": {
+            "enabled": true,
+            "runs": 200
+          },
+          "evmVersion": "paris",
+          "outputSelection": {
+            "*": {
+              "*": [
+                "abi",
+                "evm.bytecode",
+                "evm.deployedBytecode",
+                "evm.methodIdentifiers",
+                "metadata"
+              ],
+              "": [
+                "ast"
+              ]
+            }
+          }
+        }
+      },
+      "imports": [
+        "./PHGRegistry.sol"
+      ],
+      "versionPragmas": [
+        "^0.8.19"
+      ],
+      "artifacts": [
+        "IdentityContinuityRegistry"
+      ]
+    },
+    "C:\\Users\\Contr\\vapi-pebble-prototype\\contracts\\contracts\\TournamentGateV2.sol": {
+      "lastModificationDate": 1772161948688,
+      "contentHash": "757b00cada01d12453220f6605c32db9",
+      "sourceName": "contracts/TournamentGateV2.sol",
+      "solcConfig": {
+        "version": "0.8.20",
+        "settings": {
+          "viaIR": true,
+          "optimizer": {
+            "enabled": true,
+            "runs": 200
+          },
+          "evmVersion": "paris",
+          "outputSelection": {
+            "*": {
+              "*": [
+                "abi",
+                "evm.bytecode",
+                "evm.deployedBytecode",
+                "evm.methodIdentifiers",
+                "metadata"
+              ],
+              "": [
+                "ast"
+              ]
+            }
+          }
+        }
+      },
+      "imports": [
+        "./PHGRegistry.sol"
+      ],
+      "versionPragmas": [
+        "^0.8.19"
+      ],
+      "artifacts": [
+        "TournamentGateV2"
+      ]
+    },
+    "C:\\Users\\Contr\\vapi-pebble-prototype\\contracts\\contracts\\PITLSessionRegistry.sol": {
+      "lastModificationDate": 1772198318639,
+      "contentHash": "b3c4d6fadb4ba8d6fab8027c6f018a29",
+      "sourceName": "contracts/PITLSessionRegistry.sol",
+      "solcConfig": {
+        "version": "0.8.20",
+        "settings": {
+          "viaIR": true,
+          "optimizer": {
+            "enabled": true,
+            "runs": 200
+          },
+          "evmVersion": "paris",
+          "outputSelection": {
+            "*": {
+              "*": [
+                "abi",
+                "evm.bytecode",
+                "evm.deployedBytecode",
+                "evm.methodIdentifiers",
+                "metadata"
+              ],
+              "": [
+                "ast"
+              ]
+            }
+          }
+        }
+      },
+      "imports": [],
+      "versionPragmas": [
+        "^0.8.20"
+      ],
+      "artifacts": [
+        "IPITLSessionVerifier",
+        "PITLSessionRegistry"
+      ]
+    },
+    "C:\\Users\\Contr\\vapi-pebble-prototype\\contracts\\contracts\\FederatedThreatRegistry.sol": {
+      "lastModificationDate": 1772229838137,
+      "contentHash": "630e400d9ed6864906eb8c3f95e9b502",
+      "sourceName": "contracts/FederatedThreatRegistry.sol",
+      "solcConfig": {
+        "version": "0.8.20",
+        "settings": {
+          "viaIR": true,
+          "optimizer": {
+            "enabled": true,
+            "runs": 200
+          },
+          "evmVersion": "paris",
+          "outputSelection": {
+            "*": {
+              "*": [
+                "abi",
+                "evm.bytecode",
+                "evm.deployedBytecode",
+                "evm.methodIdentifiers",
+                "metadata"
+              ],
+              "": [
+                "ast"
+              ]
+            }
+          }
+        }
+      },
+      "imports": [],
+      "versionPragmas": [
+        "^0.8.20"
+      ],
+      "artifacts": [
+        "FederatedThreatRegistry"
+      ]
+    },
+    "C:\\Users\\Contr\\vapi-pebble-prototype\\contracts\\contracts\\PHGCredential.sol": {
+      "lastModificationDate": 1772203299525,
+      "contentHash": "77f1c08ef1cb85881319dd8ae80b95cf",
+      "sourceName": "contracts/PHGCredential.sol",
+      "solcConfig": {
+        "version": "0.8.20",
+        "settings": {
+          "viaIR": true,
+          "optimizer": {
+            "enabled": true,
+            "runs": 200
+          },
+          "evmVersion": "paris",
+          "outputSelection": {
+            "*": {
+              "*": [
+                "abi",
+                "evm.bytecode",
+                "evm.deployedBytecode",
+                "evm.methodIdentifiers",
+                "metadata"
+              ],
+              "": [
+                "ast"
+              ]
+            }
+          }
+        }
+      },
+      "imports": [],
+      "versionPragmas": [
+        "^0.8.20"
+      ],
+      "artifacts": [
+        "PHGCredential"
+      ]
+    }
+  }
+}

@@ -1,0 +1,21 @@
+{
+  "name": "vapi-contracts",
+  "version": "0.1.0",
+  "description": "VAPI — Verified Autonomous Physical Intelligence: IoTeX Smart Contracts",
+  "license": "Apache-2.0",
+  "scripts": {
+    "compile": "hardhat compile",
+    "test": "hardhat test",
+    "deploy:testnet": "hardhat run scripts/deploy.js --network iotex_testnet",
+    "deploy:mainnet": "hardhat run scripts/deploy.js --network iotex_mainnet",
+    "deploy:local": "hardhat run scripts/deploy.js --network hardhat",
+    "node": "hardhat node",
+    "clean": "hardhat clean"
+  },
+  "devDependencies": {
+    "@nomicfoundation/hardhat-toolbox": "^4.0.0",
+    "@openzeppelin/contracts": "^5.0.0",
+    "dotenv": "^16.4.0",
+    "hardhat": "^2.22.0"
+  }
+}

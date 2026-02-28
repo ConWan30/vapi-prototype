@@ -1,0 +1,115 @@
+/*
+ * SPDX-License-Identifier: Apache-2.0
+ *
+ * Device Tree Overlay for IoTeX Pebble Tracker
+ *
+ * Maps the Pebble's on-board peripherals to Zephyr sensor drivers.
+ * Use with: west build -b nrf9160dk_nrf9160_ns -- -DDTC_OVERLAY_FILE=boards/nrf9160dk_nrf9160_ns.overlay
+ *
+ * Pebble Tracker hardware connections:
+ *   I2C1: BME680 (0x76), TSL2572 (0x39)
+ *   SPI3:  ICM-42605 (CS on P0.25)
+ *   GPIO:  LED (P0.02), Buzzer (P0.29)
+ *   ADC:   Battery voltage divider (AIN0)
+ *
+ * NOTE: Pin assignments are based on the Pebble Tracker schematic.
+ * Verify against your specific hardware revision.
+ */
+
+/*
+ * PoAC persistent storage partition.
+ * Located at the end of application flash, before the MCUboot scratch area.
+ * Must provide >= 2 x 4KB sectors for NVS.
+ */
+&flash0 {
+	partitions {
+		compatible = "fixed-partitions";
+		#address-cells = <1>;
+		#size-cells = <1>;
+
+		poac_storage: partition@fc000 {
+			label = "poac_storage";
+			reg = <0xfc000 0x4000>; /* 16 KB = 4 sectors */
+		};
+	};
+};
+
+/ {
+	aliases {
+		led0 = &status_led;
+		buzzer = &buzzer_out;
+	};
+
+	leds {
+		compatible = "gpio-leds";
+		status_led: led_0 {
+			gpios = <&gpio0 2 GPIO_ACTIVE_HIGH>;
+			label = "Status LED";
+		};
+	};
+
+	outputs {
+		compatible = "gpio-keys";
+		buzzer_out: buzzer_0 {
+			gpios = <&gpio0 29 GPIO_ACTIVE_HIGH>;
+			label = "Buzzer";
+		};
+	};
+
+	vbatt {
+		compatible = "voltage-divider";
+		io-channels = <&adc 0>;
+		output-ohms = <100000>;   /* Bottom resistor */
+		full-ohms   = <200000>;   /* Top + bottom resistors */
+	};
+};
+
+&i2c1 {
+	status = "okay";
+	clock-frequency = <I2C_BITRATE_FAST>;
+
+	/* Bosch BME680 — Environmental sensor */
+	bme680: bme680@76 {
+		compatible = "bosch,bme680";
+		reg = <0x76>;
+		label = "BME680";
+	};
+
+	/* AMS TSL2572 — Ambient light sensor */
+	tsl2572: tsl2572@39 {
+		compatible = "ams,tsl2561";  /* Use tsl2561 compatible driver */
+		reg = <0x39>;
+		label = "TSL2572";
+	};
+};
+
+&spi3 {
+	status = "okay";
+	cs-gpios = <&gpio0 25 GPIO_ACTIVE_LOW>;
+
+	/* TDK InvenSense ICM-42605 — 6-axis IMU */
+	icm42605: icm42605@0 {
+		compatible = "invensense,icm42605";
+		reg = <0>;
+		spi-max-frequency = <8000000>;
+		label = "ICM42605";
+		int-gpios = <&gpio0 26 GPIO_ACTIVE_HIGH>;
+		accel-hz  = <100>;
+		gyro-hz   = <100>;
+	};
+};
+
+&adc {
+	status = "okay";
+	#address-cells = <1>;
+	#size-cells = <0>;
+
+	channel@0 {
+		reg = <0>;
+		zephyr,gain = "ADC_GAIN_1_6";
+		zephyr,reference = "ADC_REF_INTERNAL";
+		zephyr,acquisition-time = <ADC_ACQ_TIME_DEFAULT>;
+		zephyr,input-positive = <NRF_SAADC_AIN0>;
+		zephyr,resolution = <12>;
+	};
+};

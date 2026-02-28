@@ -1,0 +1,2422 @@
+openapi: "3.0.3"
+
+info:
+  title: VAPI — Self-Verifying Integration SDK REST API
+  version: "1.0.0-phase37"
+  description: |
+    The VAPI REST API exposes Proof of Authentic Controller (PoAC) submission,
+    on-chain verification, device PHCI certification, SDK self-attestation,
+    PHG humanity scoring, soulbound credential minting, cross-controller
+    biometric normalization, and tournament operator gate endpoints for Unity,
+    Unreal Engine, web, and webhook integrations.
+
+    **Primary device:** Sony DualShock Edge (PHCI CERTIFIED)
+    **Protocol:** 228-byte PoAC record — base64-encoded in all REST payloads
+
+    ## Authentication
+    All write endpoints require a Bearer token (JWT signed with your VAPI API key).
+    Read endpoints (GET) are unauthenticated for public leaderboard/profile data.
+
+    ## Rate Limits
+    - POST /records: 10 req/s per device_id
+    - POST /session/self-verify: 1 req/s per session_id
+    - GET endpoints: 100 req/s per API key
+
+    ## PoAC Wire Format (228 bytes, base64-encoded)
+    ```
+    [ 0.. 31] prev_poac_hash       SHA-256 of previous record (genesis = 0x00*32)
+    [32.. 63] sensor_commitment    SHA-256 of kinematic/haptic sensor frame
+    [64.. 95] model_manifest_hash  SHA-256 of TinyML model binary
+    [96..127] world_model_hash     SHA-256 of EWC world model weights
+    [128]     inference_result     uint8 (see Inference Codes)
+    [129]     action_code          uint8
+    [130]     confidence           uint8 (0–255)
+    [131]     battery_pct          uint8 (0–100)
+    [132..135] monotonic_ctr       uint32 big-endian
+    [136..143] timestamp_ms        uint64 big-endian (Unix epoch ms)
+    [144..151] latitude            double big-endian
+    [152..159] longitude           double big-endian
+    [160..163] bounty_id           uint32 big-endian
+    [164..227] signature           ECDSA-P256 raw r‖s over SHA-256(body)
+    ```
+
+    ## Inference Codes
+    | Code | Name | Layer | Type |
+    |------|------|-------|------|
+    | 0x20 | NOMINAL | — | Clean |
+    | 0x28 | DRIVER_INJECT | L2 | **Cheat** |
+    | 0x29 | WALLHACK_PREAIM | L3 | **Cheat** |
+    | 0x2A | AIMBOT_BEHAVIORAL | L3 | **Cheat** |
+    | 0x2B | TEMPORAL_ANOMALY | L5 | Advisory |
+    | 0x30 | BIOMETRIC_ANOMALY | L4 | Advisory |
+
+servers:
+  - url: https://api.vapi.gg/v1
+    description: Production (IoTeX mainnet)
+  - url: https://testnet.api.vapi.gg/v1
+    description: Testnet (IoTeX testnet)
+  - url: http://localhost:8080/v1
+    description: Local bridge (development)
+
+tags:
+  - name: Records
+    description: Submit and query PoAC records
+  - name: Chain
+    description: On-chain verification and chain integrity
+  - name: Device
+    description: PHCI device profiles and certification
+  - name: Session
+    description: Session management and SDK self-verification
+  - name: Bounty
+    description: Bounty market integration
+  - name: Leaderboard
+    description: SkillOracle ratings and leaderboard
+  - name: Player
+    description: PHG player profiles, biometric proofs, and session history
+  - name: Credential
+    description: PHGCredential soulbound on-chain identity (Phase 28)
+  - name: OperatorGate
+    description: Tournament Operator Gate API — HMAC-signed eligibility for game servers (Phase 29)
+  - name: BridgeAgent
+    description: "Conversational AI agent for natural-language protocol queries — wraps bridge data as Claude tools. Phase 30 adds synchronous ask(); Phase 31 adds SSE streaming, SQLite session persistence, react(), and 3 new tools; Phase 36 adds get_detection_policy (17th tool); Phase 37 adds get_credential_status (18th tool): complete evidence chain from biometric anomaly to trajectory label to enforcement action."
+  - name: Federation
+    description: Cross-bridge cluster intelligence — privacy-preserving fingerprint sharing with peer VAPI bridge instances. Phase 34 adds FederationBus background task and get_federation_status agent tool (15 tools total).
+  - name: Synthesis
+    description: Longitudinal insight synthesis — rolling 24h/7d/30d digests and per-device risk trajectory labels (stable/warming/critical/cleared). Phase 35 adds InsightSynthesizer background task and query_digest agent tool (16 tools total).
+  - name: AdaptiveFeedback
+    description: "Adaptive adversarial feedback loop — InsightSynthesizer Mode 4 translates risk labels into per-device PITL threshold multipliers stored in detection_policies. Phase 36 adds: _synthesize_detection_policies() (Mode 4), get_detection_policy BridgeAgent tool (17 tools total), Prometheus /metrics endpoint, in-memory rate limiting, and production hardening (batcher drain, ProactiveMonitor eviction, FederationBus DB seeding, schema_versions registry)."
+  - name: CredentialEnforcement
+    description: "Provisional credential enforcement — InsightSynthesizer Mode 5 translates consecutive critical trajectory labels (≥2 windows) into PHGCredential suspensions on-chain. Suspensions are graduated (exponential duration: base×2^n, capped at 28d), reversible (cleared label auto-reinstates), and evidence-anchored (SHA-256 hash of insight_digest row). TournamentGateV3 adds isActive() check to V2's cumulative+velocity gates. AlertRouter dispatches enforcement events to operator webhooks. Phase 37."
+
+paths:
+
+  # ---------------------------------------------------------------------------
+  # Records
+  # ---------------------------------------------------------------------------
+
+  /records:
+    post:
+      tags: [Records]
+      summary: Submit a PoAC record
+      description: |
+        Submit a 228-byte PoAC record for on-chain verification.
+        The bridge will verify the ECDSA-P256 signature, check chain linkage,
+        run PITL classification, and submit to IoTeX PoACVerifier.
+      security:
+        - BearerAuth: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/RecordSubmitRequest"
+            example:
+              device_id: "0xabcdef1234..."
+              record_b64: "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA..."
+              session_id: "sess_abc123"
+      responses:
+        "202":
+          description: Accepted — record queued for on-chain submission
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/RecordSubmitResponse"
+        "400":
+          description: Bad request (invalid size, bad signature, chain broken)
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "429":
+          $ref: "#/components/responses/RateLimited"
+
+  /records/{record_hash}:
+    get:
+      tags: [Records]
+      summary: Get record details
+      description: Retrieve a parsed PoAC record by its SHA-256 body hash (hex).
+      parameters:
+        - $ref: "#/components/parameters/RecordHash"
+      responses:
+        "200":
+          description: Record found
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/RecordDetail"
+        "404":
+          $ref: "#/components/responses/NotFound"
+
+  /records/batch:
+    post:
+      tags: [Records]
+      summary: Submit multiple PoAC records
+      description: |
+        Submit an ordered batch of PoAC records in a single request.
+        Records must form an unbroken chain (each prev_poac_hash links correctly).
+        Maximum batch size: 64 records.
+      security:
+        - BearerAuth: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/BatchSubmitRequest"
+      responses:
+        "202":
+          description: Batch accepted
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/BatchSubmitResponse"
+        "400":
+          description: Chain broken or record count exceeded
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+
+  # ---------------------------------------------------------------------------
+  # Chain
+  # ---------------------------------------------------------------------------
+
+  /chain/verify:
+    post:
+      tags: [Chain]
+      summary: Verify a PoAC record on-chain
+      description: |
+        Synchronously verify a PoAC record against IoTeX PoACVerifier.
+        Returns the on-chain inference stored for this record.
+      security:
+        - BearerAuth: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/ChainVerifyRequest"
+      responses:
+        "200":
+          description: Verification result
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ChainVerifyResponse"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+
+  /chain/integrity:
+    post:
+      tags: [Chain]
+      summary: Verify chain integrity for a sequence of records
+      description: |
+        Check that an ordered list of record hashes forms an unbroken PoAC chain.
+        Client-side check — no IoTeX RPC call required. Fast and suitable for
+        real-time session validation.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/ChainIntegrityRequest"
+      responses:
+        "200":
+          description: Chain integrity result
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ChainIntegrityResponse"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+
+  # ---------------------------------------------------------------------------
+  # Device
+  # ---------------------------------------------------------------------------
+
+  /devices/{profile_id}:
+    get:
+      tags: [Device]
+      summary: Get device profile
+      description: Retrieve the DeviceProfile for a known controller model.
+      parameters:
+        - name: profile_id
+          in: path
+          required: true
+          schema:
+            type: string
+            enum:
+              - sony_dualshock_edge_v1
+              - sony_generic_dualsense_v1
+              - scuf_reflex_pro_v1
+              - battle_beaver_dualshock_edge_v1
+              - hori_fighting_commander_ps5_v1
+              - xbox_elite_s2_v1
+          example: sony_dualshock_edge_v1
+      responses:
+        "200":
+          description: Device profile
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/DeviceProfile"
+        "404":
+          $ref: "#/components/responses/NotFound"
+
+  /devices:
+    get:
+      tags: [Device]
+      summary: List all PHCI-registered device profiles
+      description: Returns all registered DeviceProfile entries with PHCI tier and certification status.
+      responses:
+        "200":
+          description: List of device profiles
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  profiles:
+                    type: array
+                    items:
+                      $ref: "#/components/schemas/DeviceProfile"
+                  count:
+                    type: integer
+
+  /devices/{profile_id}/certification:
+    get:
+      tags: [Device]
+      summary: Get PHCI certification for a device profile
+      description: |
+        Returns full PHCICertification: score, tier, passed/failed checks.
+        CERTIFIED tier requires adaptive triggers + gyro + accel + all PITL layers.
+      parameters:
+        - name: profile_id
+          in: path
+          required: true
+          schema:
+            type: string
+      responses:
+        "200":
+          description: PHCI certification result
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/PHCICertification"
+        "404":
+          $ref: "#/components/responses/NotFound"
+
+  # ---------------------------------------------------------------------------
+  # Session
+  # ---------------------------------------------------------------------------
+
+  /sessions:
+    post:
+      tags: [Session]
+      summary: Create a VAPI session
+      description: |
+        Create a new session tied to a device profile and player identity.
+        Returns a session_id used for all subsequent record submissions.
+      security:
+        - BearerAuth: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/SessionCreateRequest"
+      responses:
+        "201":
+          description: Session created
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/SessionCreateResponse"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+
+  /sessions/{session_id}:
+    get:
+      tags: [Session]
+      summary: Get session summary
+      description: Retrieve session statistics — record counts, chain integrity, detection summary.
+      security:
+        - BearerAuth: []
+      parameters:
+        - $ref: "#/components/parameters/SessionId"
+      responses:
+        "200":
+          description: Session summary
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/SessionSummary"
+        "404":
+          $ref: "#/components/responses/NotFound"
+
+  /sessions/{session_id}/self-verify:
+    post:
+      tags: [Session]
+      summary: SDK self-verification (novel)
+      description: |
+        Execute VAPI SDK self-verification. Probes all four PITL layers (L2–L5),
+        synthesizes a 25-frame constant-interval bot session to functionally verify
+        L5 TemporalRhythmOracle fires, and returns a cryptographically-bound
+        SDKAttestation.
+
+        The attestation_hash is a SHA-256 commitment over layer states, detection
+        scores, SDK version, and a nanosecond timestamp — suitable for on-chain
+        submission as proof of correct SDK wiring.
+
+        **This endpoint requires no hardware.** It works in CI, headless, Docker.
+      security:
+        - BearerAuth: []
+      parameters:
+        - $ref: "#/components/parameters/SessionId"
+      responses:
+        "200":
+          description: SDK attestation
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/SDKAttestation"
+              example:
+                sdk_version: "1.0.0-phase28"
+                layers_active:
+                  L2_hid_xinput: true
+                  L3_behavioral: true
+                  L4_biometric: true
+                  L5_temporal: true
+                pitl_scores:
+                  L2_hid_xinput: 1.0
+                  L3_behavioral: 1.0
+                  L4_biometric: 1.0
+                  L5_temporal: 1.0
+                all_layers_active: true
+                active_layer_count: 4
+                zk_proof_available: false
+                verified_at: 1708732800.123456789
+                attestation_hash_hex: "17f2932c18a0538b528d96b6..."
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "429":
+          $ref: "#/components/responses/RateLimited"
+
+  # ---------------------------------------------------------------------------
+  # Bounty
+  # ---------------------------------------------------------------------------
+
+  /bounties:
+    get:
+      tags: [Bounty]
+      summary: List active bounties
+      description: Returns open BountyMarket bounties filtered by device tier and zone.
+      parameters:
+        - name: tier
+          in: query
+          schema:
+            type: string
+            enum: [NONE, STANDARD, CERTIFIED]
+        - name: limit
+          in: query
+          schema:
+            type: integer
+            default: 20
+            maximum: 100
+      responses:
+        "200":
+          description: Active bounties
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  bounties:
+                    type: array
+                    items:
+                      $ref: "#/components/schemas/Bounty"
+
+  /bounties/{bounty_id}/evidence:
+    post:
+      tags: [Bounty]
+      summary: Submit evidence for a bounty
+      description: |
+        Submit a verified PoAC record hash as evidence for a bounty.
+        The record must already be verified on-chain (POST /chain/verify first).
+        Device must be STANDARD or CERTIFIED tier to claim.
+      security:
+        - BearerAuth: []
+      parameters:
+        - name: bounty_id
+          in: path
+          required: true
+          schema:
+            type: integer
+            format: uint32
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [device_id, record_hash]
+              properties:
+                device_id:
+                  type: string
+                  description: keccak256(pubkey) hex
+                record_hash:
+                  type: string
+                  description: SHA-256(PoAC body) hex
+      responses:
+        "200":
+          description: Evidence accepted
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  tx_hash:
+                    type: string
+                  reward_iotx:
+                    type: string
+        "403":
+          description: Device tier ineligible or record contains cheat inference
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+
+  # ---------------------------------------------------------------------------
+  # Leaderboard
+  # ---------------------------------------------------------------------------
+
+  /leaderboard/{device_id}:
+    get:
+      tags: [Leaderboard]
+      summary: Get SkillOracle rating for a device
+      description: Returns ELO rating [0–3000], tier, and recent rating history.
+      parameters:
+        - name: device_id
+          in: path
+          required: true
+          schema:
+            type: string
+          description: keccak256(pubkey) hex
+      responses:
+        "200":
+          description: Device rating
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/DeviceRating"
+        "404":
+          $ref: "#/components/responses/NotFound"
+
+  /leaderboard:
+    get:
+      tags: [Leaderboard]
+      summary: Global leaderboard
+      parameters:
+        - name: tier
+          in: query
+          schema:
+            type: string
+            enum: [Bronze, Silver, Gold, Platinum, Diamond]
+        - name: limit
+          in: query
+          schema:
+            type: integer
+            default: 50
+            maximum: 200
+        - name: offset
+          in: query
+          schema:
+            type: integer
+            default: 0
+      responses:
+        "200":
+          description: Leaderboard entries
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  entries:
+                    type: array
+                    items:
+                      $ref: "#/components/schemas/DeviceRating"
+                  total:
+                    type: integer
+
+  # ---------------------------------------------------------------------------
+  # Player (PHG Dashboard API — Phase 21–28, mounted at /dash)
+  # ---------------------------------------------------------------------------
+
+  /dash/api/v1/player/{device_id}/profile:
+    get:
+      tags: [Player]
+      summary: Get PHG player profile
+      description: |
+        Returns PHG trust score (raw + humanity-weighted), PITL averages, and
+        biometric fingerprint availability for a device. Phase 21.
+      parameters:
+        - $ref: "#/components/parameters/DeviceId"
+      responses:
+        "200":
+          description: Player profile
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/PlayerProfile"
+        "404":
+          $ref: "#/components/responses/NotFound"
+
+  /dash/api/v1/pitl/timeline:
+    get:
+      tags: [Player]
+      summary: PITL detection timeline
+      description: |
+        Returns non-NOMINAL inference events bucketed by minute for the given
+        lookback window. Excludes 0x20 NOMINAL records. Phase 21.
+      parameters:
+        - name: minutes
+          in: query
+          schema:
+            type: integer
+            default: 10
+            minimum: 1
+            maximum: 60
+      responses:
+        "200":
+          description: Detection timeline buckets
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: "#/components/schemas/PITLBucket"
+
+  /dash/api/v1/player/{device_id}/checkpoint-chain:
+    get:
+      tags: [Player]
+      summary: PHG checkpoint chain for a device
+      description: |
+        Returns the ordered list of PHG checkpoints committed on-chain,
+        including score deltas, biometric hashes, and confirmation status. Phase 22.
+      parameters:
+        - $ref: "#/components/parameters/DeviceId"
+      responses:
+        "200":
+          description: Checkpoint chain
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: "#/components/schemas/PHGCheckpoint"
+
+  /dash/api/v1/player/{device_id}/continuity-chain:
+    get:
+      tags: [Player]
+      summary: Biometric continuity chain for a device
+      description: |
+        Returns attestation claims showing biometric identity portability —
+        which devices this one continued from or is continued by. Phase 23.
+      parameters:
+        - $ref: "#/components/parameters/DeviceId"
+      responses:
+        "200":
+          description: Continuity claims
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: "#/components/schemas/ContinuityClaim"
+
+  /dash/api/v1/player/{device_id}/behavioral-report:
+    get:
+      tags: [Player]
+      summary: Behavioral archaeology report
+      description: |
+        Returns warmup-attack score, burst-farming score, drift trend slope,
+        and biometric stability for adversarial pattern detection. Phase 26.
+        Returns 503 when BehavioralArchaeologist module is not initialized.
+      parameters:
+        - $ref: "#/components/parameters/DeviceId"
+      responses:
+        "200":
+          description: Behavioral report
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/BehavioralReport"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "503":
+          description: Behavioral module not initialized
+
+  /dash/api/v1/player/{device_id}/pitl-proof:
+    get:
+      tags: [Player]
+      summary: Most recent PITL session proof
+      description: |
+        Returns the most recent PITL session proof for a device, containing
+        nullifier_hash, feature_commitment, and humanity_prob_int used for
+        PHGCredential minting. Phase 26.
+      parameters:
+        - $ref: "#/components/parameters/DeviceId"
+      responses:
+        "200":
+          description: PITL session proof
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/PITLProof"
+        "404":
+          $ref: "#/components/responses/NotFound"
+
+  /dash/api/v1/network/farm-detection:
+    get:
+      tags: [Player]
+      summary: Network farm detection clusters
+      description: |
+        Returns device clusters with correlated behavioral patterns indicating
+        coordinated farming attacks. Phase 26.
+        Returns 503 when NetworkCorrelationDetector is not initialized.
+      responses:
+        "200":
+          description: Farm detection results
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: "#/components/schemas/FarmCluster"
+        "503":
+          description: Network detector not initialized
+
+  # ---------------------------------------------------------------------------
+  # Credential (Phase 28 — PHGCredential soulbound on-chain identity)
+  # ---------------------------------------------------------------------------
+
+  /dash/api/v1/player/{device_id}/credential:
+    get:
+      tags: [Credential]
+      summary: Get PHGCredential for a device
+      description: |
+        Returns the minted PHGCredential for a device if it exists.
+        PHGCredentials are soulbound (ERC-5192, locked=true) and bound to
+        deviceId (keccak256 of pubkey). Phase 28.
+      parameters:
+        - $ref: "#/components/parameters/DeviceId"
+      responses:
+        "200":
+          description: PHGCredential record
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/PHGCredential"
+        "404":
+          description: No credential minted for this device
+
+  /dash/api/v1/leaderboard:
+    get:
+      tags: [Credential]
+      summary: PHG humanity leaderboard
+      description: |
+        Returns top devices ordered by confirmed cumulative PHG score.
+        Only devices with at least one confirmed (on-chain) checkpoint appear.
+        Scores derived from confirmed=1 phg_checkpoints only. Phase 28.
+      parameters:
+        - name: limit
+          in: query
+          schema:
+            type: integer
+            default: 20
+            minimum: 1
+            maximum: 100
+      responses:
+        "200":
+          description: Leaderboard entries
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: "#/components/schemas/PHGLeaderboardEntry"
+
+  /dash/api/v1/player/{device_id}/eligibility:
+    get:
+      tags: [Credential]
+      summary: PHG bounty eligibility for a device
+      description: |
+        Returns whether a device meets the TournamentGateV2 eligibility criteria
+        (minCumulative score AND minVelocity). Falls back to SQLite when chain
+        is not configured. Phase 28.
+      parameters:
+        - $ref: "#/components/parameters/DeviceId"
+      responses:
+        "200":
+          description: Eligibility status
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/PHGEligibility"
+
+  /proof/{device_id}:
+    get:
+      tags: [Credential]
+      summary: Shareable humanity proof page
+      description: |
+        Returns an HTML proof page displaying device humanity score, credential
+        ID, nullifier prefix, and a QR-ready proof URL. Designed for social
+        sharing — no authentication required. Phase 28.
+      parameters:
+        - $ref: "#/components/parameters/DeviceId"
+      responses:
+        "200":
+          description: HTML proof page
+          content:
+            text/html:
+              schema:
+                type: string
+
+  # ---------------------------------------------------------------------------
+  # Operator Gate (Phase 29 — HMAC-signed eligibility for tournament operators)
+  # ---------------------------------------------------------------------------
+
+  /operator/health:
+    get:
+      tags: [OperatorGate]
+      summary: Operator API health check
+      description: |
+        Returns API status and whether an operator key is configured.
+        Does NOT require api_key authentication.
+      responses:
+        "200":
+          description: Health status
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  status:
+                    type: string
+                    example: ok
+                  operator_key_configured:
+                    type: boolean
+
+  /operator/gate/{device_id}:
+    get:
+      tags: [OperatorGate]
+      summary: Single-device eligibility check (HMAC-signed)
+      description: |
+        Returns a signed eligibility response for one device. Tournament operators
+        verify the HMAC-SHA256 signature to confirm the response was generated by
+        the bridge and not tampered with.
+
+        **Signature algorithm:**
+        `sig = HMAC-SHA256(f"{device_id}:{int(eligible)}:{timestamp}", api_key).hexdigest()`
+
+        **Eligibility rule (v1):** `cumulative_score > 0` (device has at least one
+        confirmed PHG checkpoint). Phase 29.
+      parameters:
+        - $ref: "#/components/parameters/DeviceId"
+        - name: api_key
+          in: query
+          required: true
+          schema:
+            type: string
+          description: Shared operator API key (set via OPERATOR_API_KEY env var)
+      responses:
+        "200":
+          description: Signed eligibility response
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/OperatorGateResponse"
+        "403":
+          description: Invalid API key
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "503":
+          description: Operator API not configured (OPERATOR_API_KEY not set)
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+
+  /operator/gate/batch:
+    post:
+      tags: [OperatorGate]
+      summary: Batch eligibility check (up to 50 devices)
+      description: |
+        Returns signed eligibility responses for a list of device IDs (max 50).
+        Useful for pre-match eligibility screening. Phase 29.
+      parameters:
+        - name: api_key
+          in: query
+          required: true
+          schema:
+            type: string
+          description: Shared operator API key
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: array
+              items:
+                type: string
+                pattern: "^[0-9a-f]{64}$"
+              minItems: 1
+              maxItems: 50
+              description: List of device_id hex strings (64 chars each)
+            example: ["abcd1234..."]
+      responses:
+        "200":
+          description: List of signed eligibility responses
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: "#/components/schemas/OperatorGateResponse"
+        "403":
+          description: Invalid API key
+        "503":
+          description: Operator API not configured
+
+  /operator/agent:
+    post:
+      tags: [BridgeAgent]
+      summary: Conversational AI agent for natural-language protocol queries (Phase 30)
+      description: |
+        Ask the VAPI Bridge Agent natural-language questions about players, eligibility,
+        PITL distributions, leaderboard, continuity chains, and system health.
+
+        The agent uses Claude (claude-haiku-4-5-20251001) with tool_use to fetch real
+        bridge data before responding. Session history is preserved in-memory by
+        `session_id` enabling multi-turn dialogue.
+
+        Requires: `OPERATOR_API_KEY` env var (same key as /gate endpoints).
+        Returns HTTP 503 if the `anthropic` Python package is not installed.
+      parameters:
+        - name: api_key
+          in: query
+          required: true
+          schema:
+            type: string
+          description: Shared operator API key
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/BridgeAgentRequest"
+      responses:
+        "200":
+          description: Agent response with optional tool usage trace
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/BridgeAgentResponse"
+        "403":
+          description: Invalid API key
+        "503":
+          description: Operator API not configured or anthropic package not installed
+
+  /operator/agent/stream:
+    get:
+      tags: [BridgeAgent]
+      summary: Streaming BridgeAgent via Server-Sent Events (Phase 31)
+      description: |
+        Stream BridgeAgent responses token-by-token using Server-Sent Events.
+        The agent reasons over real bridge data via tool_use; each tool invocation
+        yields tool_start and tool_result events before the final text stream.
+
+        Session history is persisted in SQLite (Phase 31) — re-use session_id
+        across requests to maintain multi-turn context across bridge restarts.
+
+        **SSE Event stream format:** Each event is a JSON object on a `data:` line.
+        See `BridgeAgentStreamEvent` schema for the full event type enumeration.
+      parameters:
+        - name: session_id
+          in: query
+          required: true
+          schema:
+            type: string
+          description: Caller-managed session identifier for conversation continuity.
+        - name: message
+          in: query
+          required: true
+          schema:
+            type: string
+          description: Natural-language question or command for the agent.
+        - name: api_key
+          in: query
+          required: true
+          schema:
+            type: string
+          description: Shared operator API key
+      responses:
+        "200":
+          description: SSE stream of BridgeAgentStreamEvent objects
+          content:
+            text/event-stream:
+              schema:
+                $ref: "#/components/schemas/BridgeAgentStreamEvent"
+        "403":
+          description: Invalid API key
+        "422":
+          description: Missing required query parameter
+        "503":
+          description: Operator API not configured or anthropic package not installed
+
+  /operator/insights:
+    get:
+      tags: [BridgeAgent]
+      summary: Get recent proactive protocol insights (Phase 32)
+      description: |
+        Returns the most recent proactive protocol insights generated by the
+        `ProactiveMonitor` background task and `BridgeAgent.react()`.
+
+        Insight types:
+        - `bot_farm_cluster`: NetworkCorrelationDetector flagged a new coordinated cluster
+        - `high_risk_trajectory`: BehavioralArchaeologist detected a high-risk device pattern
+        - `near_eligibility`: A device crossed the PHG eligibility threshold (score > 0)
+        - `anomaly_reaction`: BridgeAgent autonomously interpreted a PITL anomaly via `react()`
+
+        Results are ordered DESC by `created_at` (most recent first).
+        Real-time alerts are also broadcast over the `/ws/records` WebSocket as
+        `ProactiveAlertEvent` objects.
+      parameters:
+        - name: limit
+          in: query
+          required: false
+          schema:
+            type: integer
+            default: 20
+            maximum: 100
+          description: Number of insights to return (max 100)
+        - name: api_key
+          in: query
+          required: true
+          schema:
+            type: string
+          description: Shared operator API key (OPERATOR_API_KEY)
+      responses:
+        "200":
+          description: Array of protocol insights DESC by created_at
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: "#/components/schemas/ProtocolInsight"
+        "403":
+          description: Invalid API key
+        "422":
+          description: Missing required query parameter
+
+  /operator/federation/clusters:
+    get:
+      tags: [Federation]
+      summary: Get locally-detected federation clusters (Phase 34)
+      description: |
+        Returns clusters detected locally by this bridge and shared with the federation
+        via FederationBus. Only `is_local=true` records are returned to prevent echo
+        amplification when peer bridges query this endpoint.
+
+        Cross-bridge confirmation (≥2 bridges reporting the same cluster hash) triggers
+        a `federated_cluster` protocol insight and optional on-chain anchor via
+        `FederatedThreatRegistry.sol`.
+
+        **Privacy model:** Only 16-char SHA-256 hex fingerprints of sorted device ID
+        sets are shared — raw device IDs never leave the originating bridge.
+      parameters:
+        - name: limit
+          in: query
+          schema:
+            type: integer
+            default: 50
+            maximum: 200
+          description: Maximum number of clusters to return (capped at 200)
+        - name: api_key
+          in: query
+          required: true
+          schema:
+            type: string
+          description: Shared operator API key
+      responses:
+        "200":
+          description: List of locally-detected federation clusters
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: "#/components/schemas/FederationCluster"
+        "403":
+          description: Invalid API key
+        "422":
+          description: Missing required query parameter
+
+  /operator/digest:
+    get:
+      tags: [Synthesis]
+      summary: Get longitudinal insight digests (Phase 35)
+      description: |
+        Returns rolling 24h/7d/30d insight digests synthesized by `InsightSynthesizer`
+        every 6 hours. Each digest compresses `protocol_insights` records into a
+        structured summary: bot-farm counts, high-risk trajectories, federated cluster
+        confirmations, anomalies, eligible device counts, dominant severity, and a
+        template-based narrative.
+
+        Optionally filter by `window` to retrieve a single digest for a specific
+        time window (`24h`, `7d`, or `30d`). The default `window=all` returns the
+        most recent digest for each window label.
+
+        **Device risk labels** are persisted separately via a `device_risk_labels` table.
+        The state machine transitions: `stable → warming → critical → cleared`.
+        - `critical`: ≥2 bot-farm or federated-cluster signals in 7d window
+        - `warming`: ≥1 critical signal OR ≥3 advisory signals
+        - `cleared`: prior `critical`/`warming` label with 0 new signals in 7d
+        - `stable`: no significant signals
+
+        **Privacy model:** No raw device IDs appear in narratives. `top_devices` lists
+        only anonymized identifiers from the `protocol_insights` table.
+      parameters:
+        - name: window
+          in: query
+          required: false
+          schema:
+            type: string
+            enum: [all, 24h, 7d, 30d]
+            default: all
+          description: "Time window to filter digests. 'all' returns latest digest per window."
+        - name: api_key
+          in: query
+          required: true
+          schema:
+            type: string
+          description: Shared operator API key
+      responses:
+        "200":
+          description: Synthesis report with digests and device risk summary
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/SynthesisReport"
+              example:
+                synthesis_available: true
+                digests:
+                  - id: 42
+                    window_label: "24h"
+                    synthesized_at: 1700000000.0
+                    bot_farm_count: 3
+                    high_risk_count: 1
+                    federated_count: 2
+                    anomaly_count: 5
+                    eligible_count: 12
+                    dominant_severity: "critical"
+                    top_devices: ["dev_aabb1234", "dev_ccdd5678"]
+                    narrative: "24h: 3 bot-farm, 1 high-risk trajectory, 2 federated-cluster, 5 anomaly signals across 5 devices."
+                critical_devices: []
+                warming_devices:
+                  - device_id: "dev_eeff9012"
+                    risk_label: "warming"
+                    label_evidence: {bot: 1, high_risk: 0, fed: 0, anomaly: 2}
+                    label_set_at: 1699999999.0
+                    prior_label: "stable"
+        "400":
+          description: "Invalid window value — must be '24h', '7d', '30d', or 'all'"
+        "403":
+          description: Invalid API key
+        "422":
+          description: Missing required query parameter
+
+  /operator/enforcement:
+    get:
+      tags: [CredentialEnforcement]
+      summary: Get PHGCredential enforcement state (Phase 37)
+      description: |
+        Returns credential enforcement state driven by `InsightSynthesizer` Mode 5.
+
+        - `device_id` provided: returns enforcement row for that specific device (suspended or not).
+        - `device_id` omitted: returns all currently suspended credentials.
+
+        **Suspension lifecycle:**
+        A PHGCredential is suspended when a device accumulates `≥ credential_enforcement_min_consecutive`
+        (default: 2) consecutive 7-day windows labeled `critical` by `InsightSynthesizer`. The
+        suspension is anchored to an immutable `insight_digest` row via `evidence_hash`. Duration
+        is exponential: `base_days × 2^(consecutive − min_consecutive)`, capped at `max_days`.
+
+        **Reinstatement:** Automatic when the device's next 7-day window is labeled `cleared`
+        by `InsightSynthesizer` — no manual action required.
+
+        **On-chain:** Each suspension/reinstatement also calls `PHGCredential.suspend()`/`reinstate()`
+        on-chain via the bridge, gating `TournamentGateV3.assertEligible()` for tournament access.
+      parameters:
+        - name: device_id
+          in: query
+          required: false
+          schema:
+            type: string
+          description: "Optional device ID. If provided, returns enforcement row for that device. If omitted, returns all suspended credentials."
+        - name: api_key
+          in: query
+          required: true
+          schema:
+            type: string
+          description: Shared operator API key
+      responses:
+        "200":
+          description: Credential enforcement state
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/CredentialEnforcementResponse"
+              example:
+                suspended_count: 1
+                suspended_devices:
+                  - device_id: "aabbccdd" * 32
+                    consecutive_critical: 3
+                    suspended: 1
+                    suspended_since: 1700000000.0
+                    suspended_until: 1700604800.0
+                    evidence_hash: "a1b2c3d4e5f60001"
+                    last_updated: 1700000000.0
+                enforcement_enabled: true
+                min_consecutive_windows: 2
+        "403":
+          description: Invalid API key
+        "422":
+          description: Missing required query parameter
+
+  /operator/metrics:
+    get:
+      tags: [AdaptiveFeedback]
+      summary: Prometheus-compatible metrics endpoint (Phase 36)
+      description: |
+        Returns bridge operational metrics in Prometheus text format.
+        No authentication required — safe for Prometheus scrape targets.
+
+        **10 metrics exposed:**
+        - `vapi_records_submitted_total` (counter) — total PoAC records submitted
+        - `vapi_records_failed_total` (counter) — total submissions failed after retries
+        - `vapi_records_per_minute` (gauge) — rolling 60s submission rate
+        - `vapi_active_devices` (gauge) — currently active device count
+        - `vapi_rpc_errors_total` (counter) — total RPC failures
+        - `vapi_uptime_seconds` (gauge) — bridge uptime
+        - `vapi_critical_devices` (gauge) — devices labeled critical by InsightSynthesizer
+        - `vapi_warming_devices` (gauge) — devices labeled warming by InsightSynthesizer
+        - `vapi_digests_synthesized` (gauge) — active longitudinal digests count
+        - `vapi_active_detection_policies` (gauge) — non-expired adaptive detection policies
+      responses:
+        "200":
+          description: Prometheus text format metrics
+          content:
+            text/plain:
+              schema:
+                type: string
+              example: |
+                # HELP vapi_records_submitted_total Total PoAC records submitted
+                # TYPE vapi_records_submitted_total counter
+                vapi_records_submitted_total 1024
+                # HELP vapi_critical_devices Devices labeled critical by InsightSynthesizer
+                # TYPE vapi_critical_devices gauge
+                vapi_critical_devices 3
+
+# =============================================================================
+# Components
+# =============================================================================
+
+components:
+
+  securitySchemes:
+    BearerAuth:
+      type: http
+      scheme: bearer
+      bearerFormat: JWT
+      description: JWT signed with your VAPI API key (obtain at api.vapi.gg/keys)
+
+  parameters:
+    RecordHash:
+      name: record_hash
+      in: path
+      required: true
+      schema:
+        type: string
+        pattern: "^[0-9a-f]{64}$"
+      description: SHA-256(PoAC body) — 64 hex chars
+    DeviceId:
+      name: device_id
+      in: path
+      required: true
+      schema:
+        type: string
+        pattern: "^[0-9a-f]{64}$"
+      description: keccak256(pubkey) — 64 hex chars (no 0x prefix)
+    SessionId:
+      name: session_id
+      in: path
+      required: true
+      schema:
+        type: string
+      description: Session ID returned by POST /sessions
+
+  responses:
+    Unauthorized:
+      description: Missing or invalid Bearer token
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/Error"
+    NotFound:
+      description: Resource not found
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/Error"
+    BadRequest:
+      description: Invalid request body or parameters
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/Error"
+    RateLimited:
+      description: Rate limit exceeded
+      headers:
+        Retry-After:
+          schema:
+            type: integer
+          description: Seconds until rate limit resets
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/Error"
+
+  schemas:
+
+    # ---- Record ----
+
+    RecordSubmitRequest:
+      type: object
+      required: [device_id, record_b64]
+      properties:
+        device_id:
+          type: string
+          description: keccak256(pubkey) hex — 66 chars including 0x prefix
+        record_b64:
+          type: string
+          format: byte
+          description: Base64-encoded 228-byte PoAC record
+        session_id:
+          type: string
+          description: Optional session context
+        schema_version:
+          type: integer
+          description: "0=legacy, 1=Pebble env, 2=DualShock kinematic"
+          default: 2
+          enum: [0, 1, 2]
+
+    RecordSubmitResponse:
+      type: object
+      properties:
+        record_hash:
+          type: string
+          description: SHA-256(body) hex — use this to query on-chain status
+        chain_hash:
+          type: string
+          description: SHA-256(full 228B) hex — used as prev_poac_hash for next record
+        inference_name:
+          type: string
+          example: NOMINAL
+        is_clean:
+          type: boolean
+        queued_at:
+          type: string
+          format: date-time
+        estimated_on_chain_ms:
+          type: integer
+          description: Estimated milliseconds until on-chain confirmation
+
+    BatchSubmitRequest:
+      type: object
+      required: [device_id, records_b64]
+      properties:
+        device_id:
+          type: string
+        records_b64:
+          type: array
+          items:
+            type: string
+            format: byte
+          minItems: 1
+          maxItems: 64
+          description: Ordered array of base64-encoded 228-byte records
+        session_id:
+          type: string
+        schema_version:
+          type: integer
+          default: 2
+
+    BatchSubmitResponse:
+      type: object
+      properties:
+        accepted:
+          type: integer
+        rejected:
+          type: integer
+        record_hashes:
+          type: array
+          items:
+            type: string
+        chain_intact:
+          type: boolean
+
+    RecordDetail:
+      type: object
+      properties:
+        record_hash:
+          type: string
+        chain_hash:
+          type: string
+        inference_result:
+          type: integer
+          format: uint8
+        inference_name:
+          type: string
+        action_code:
+          type: integer
+        confidence:
+          type: integer
+          minimum: 0
+          maximum: 255
+        battery_pct:
+          type: integer
+          minimum: 0
+          maximum: 100
+        monotonic_ctr:
+          type: integer
+          format: uint32
+        timestamp_ms:
+          type: integer
+          format: int64
+        latitude:
+          type: number
+          format: double
+        longitude:
+          type: number
+          format: double
+        bounty_id:
+          type: integer
+          format: uint32
+        is_clean:
+          type: boolean
+        is_advisory:
+          type: boolean
+        on_chain:
+          type: boolean
+        tx_hash:
+          type: string
+          nullable: true
+
+    # ---- Chain ----
+
+    ChainVerifyRequest:
+      type: object
+      required: [device_id, record_b64]
+      properties:
+        device_id:
+          type: string
+        record_b64:
+          type: string
+          format: byte
+        schema_version:
+          type: integer
+          default: 2
+
+    ChainVerifyResponse:
+      type: object
+      properties:
+        verified:
+          type: boolean
+        tx_hash:
+          type: string
+          nullable: true
+        on_chain_inference:
+          type: integer
+          nullable: true
+          description: Inference byte stored on-chain (null if not yet confirmed)
+        record_hash:
+          type: string
+
+    ChainIntegrityRequest:
+      type: object
+      required: [records_b64]
+      properties:
+        records_b64:
+          type: array
+          items:
+            type: string
+            format: byte
+          description: Ordered 228-byte records to chain-check
+
+    ChainIntegrityResponse:
+      type: object
+      properties:
+        intact:
+          type: boolean
+        broken_at_index:
+          type: integer
+          nullable: true
+          description: Index of first broken link (null if intact)
+        record_count:
+          type: integer
+
+    # ---- Device ----
+
+    DeviceProfile:
+      type: object
+      properties:
+        profile_id:
+          type: string
+          example: sony_dualshock_edge_v1
+        display_name:
+          type: string
+          example: Sony DualShock Edge (CFI-ZCP1)
+        manufacturer:
+          type: string
+        hid_vendor_id:
+          type: integer
+          format: uint16
+          example: 0x054C
+        hid_product_ids:
+          type: array
+          items:
+            type: integer
+            format: uint16
+        phci_tier:
+          type: string
+          enum: [NONE, STANDARD, CERTIFIED]
+        schema_version:
+          type: integer
+          enum: [1, 2]
+        sensor_commitment_size_bytes:
+          type: integer
+          enum: [48, 56]
+        has_adaptive_triggers:
+          type: boolean
+        has_gyroscope:
+          type: boolean
+        has_accelerometer:
+          type: boolean
+        pitl_layers:
+          type: array
+          items:
+            type: integer
+            enum: [2, 3, 4, 5]
+
+    PHCICertification:
+      type: object
+      properties:
+        profile_id:
+          type: string
+        phci_tier:
+          type: string
+          enum: [NONE, STANDARD, CERTIFIED]
+        is_certified:
+          type: boolean
+        score:
+          type: integer
+          minimum: 0
+          maximum: 100
+        passed_checks:
+          type: array
+          items:
+            type: string
+        failed_checks:
+          type: array
+          items:
+            type: string
+
+    # ---- Session ----
+
+    SessionCreateRequest:
+      type: object
+      required: [device_id]
+      properties:
+        device_id:
+          type: string
+        profile_id:
+          type: string
+          description: Explicit PHCI profile (optional; auto-detected from device_id if omitted)
+        metadata:
+          type: object
+          additionalProperties: true
+          description: Arbitrary game/platform context (game_id, match_id, etc.)
+
+    SessionCreateResponse:
+      type: object
+      properties:
+        session_id:
+          type: string
+        device_id:
+          type: string
+        profile_id:
+          type: string
+        phci_tier:
+          type: string
+        created_at:
+          type: string
+          format: date-time
+
+    SessionSummary:
+      type: object
+      properties:
+        session_id:
+          type: string
+        total_records:
+          type: integer
+        clean_records:
+          type: integer
+        cheat_detections:
+          type: integer
+        advisory_records:
+          type: integer
+        chain_integrity:
+          type: boolean
+        started_at:
+          type: string
+          format: date-time
+        duration_s:
+          type: number
+
+    SDKAttestation:
+      type: object
+      description: |
+        Cryptographically-bound proof that each PITL layer (L2–L5) is active and
+        correctly wired. attestation_hash = SHA-256(layers||scores||version||ts_ns).
+        Submit on-chain as proof of correct SDK integration.
+      properties:
+        sdk_version:
+          type: string
+          example: "1.0.0-phase20"
+        layers_active:
+          type: object
+          description: Boolean presence of each PITL layer
+          properties:
+            L2_hid_xinput:
+              type: boolean
+            L3_behavioral:
+              type: boolean
+            L4_biometric:
+              type: boolean
+            L5_temporal:
+              type: boolean
+        pitl_scores:
+          type: object
+          description: Per-layer detection confidence (0.0–1.0)
+          properties:
+            L2_hid_xinput:
+              type: number
+              minimum: 0.0
+              maximum: 1.0
+            L3_behavioral:
+              type: number
+              minimum: 0.0
+              maximum: 1.0
+            L4_biometric:
+              type: number
+              minimum: 0.0
+              maximum: 1.0
+            L5_temporal:
+              type: number
+              minimum: 0.0
+              maximum: 1.0
+        all_layers_active:
+          type: boolean
+        active_layer_count:
+          type: integer
+          minimum: 0
+          maximum: 4
+        zk_proof_available:
+          type: boolean
+        verified_at:
+          type: number
+          format: double
+          description: Unix epoch (float seconds with nanosecond precision)
+        attestation_hash_hex:
+          type: string
+          description: SHA-256 commitment — 64 hex chars
+
+    # ---- Bounty ----
+
+    Bounty:
+      type: object
+      properties:
+        bounty_id:
+          type: integer
+          format: uint32
+        title:
+          type: string
+        reward_iotx:
+          type: string
+          description: Reward amount in IOTX (string to avoid float precision loss)
+        min_phci_tier:
+          type: string
+          enum: [NONE, STANDARD, CERTIFIED]
+        expires_at:
+          type: string
+          format: date-time
+        claimants:
+          type: integer
+
+    # ---- Leaderboard ----
+
+    DeviceRating:
+      type: object
+      properties:
+        device_id:
+          type: string
+        rating:
+          type: integer
+          minimum: 0
+          maximum: 3000
+        tier:
+          type: string
+          enum: [Bronze, Silver, Gold, Platinum, Diamond]
+        profile_id:
+          type: string
+        last_updated:
+          type: string
+          format: date-time
+
+    # ---- Player (Phase 21–26) ----
+
+    PlayerProfile:
+      type: object
+      description: PHG player profile with humanity-weighted score and PITL averages.
+      properties:
+        device_id:
+          type: string
+        phg_score:
+          type: integer
+          description: "Raw PHG score: Σ CAST(confidence/255×10 AS INTEGER) for NOMINAL records"
+        phg_score_weighted:
+          type: integer
+          description: "Humanity-weighted PHG score: phg_score × (1 + humanity_prob × 0.5)"
+        humanity_prob_avg:
+          type: number
+          format: float
+          minimum: 0.0
+          maximum: 1.0
+          description: Average fused humanity probability (0.4×L4 + 0.4×L5 + 0.2×E4)
+        l5_rhythm_humanity_avg:
+          type: number
+          format: float
+          description: Average L5 TemporalRhythmOracle humanity score
+        total_records:
+          type: integer
+        nominal_records:
+          type: integer
+        confidence_mean:
+          type: number
+          format: float
+        records_verified:
+          type: integer
+        first_seen:
+          type: number
+          format: double
+        last_seen:
+          type: number
+          format: double
+
+    PITLBucket:
+      type: object
+      description: Minute-bucket of non-NOMINAL inference detections.
+      properties:
+        bucket:
+          type: integer
+          description: Unix timestamp rounded to nearest minute
+        inference:
+          type: integer
+          format: uint8
+          description: Inference code (0x28, 0x29, 0x2A, 0x2B, 0x30)
+        cnt:
+          type: integer
+          description: Count of detections in this bucket
+
+    PHGCheckpoint:
+      type: object
+      description: PHG checkpoint committed on-chain.
+      properties:
+        id:
+          type: integer
+        device_id:
+          type: string
+        phg_score:
+          type: integer
+          description: Score delta committed in this checkpoint
+        record_count:
+          type: integer
+        bio_hash:
+          type: string
+          description: SHA-256 of averaged L4 biometric features (hex)
+        tx_hash:
+          type: string
+          nullable: true
+        committed_at:
+          type: number
+          format: double
+        last_committed_score:
+          type: integer
+          description: Cumulative score at time of this checkpoint
+        confirmed:
+          type: boolean
+          description: True if on-chain receipt confirmed (status=1)
+
+    ContinuityClaim:
+      type: object
+      description: Biometric identity continuity attestation claim.
+      properties:
+        device_id:
+          type: string
+        claimed_by:
+          type: string
+          nullable: true
+        claimed_at:
+          type: number
+          format: double
+        direction:
+          type: string
+          enum: [source, dest]
+          description: Whether this device is the old (source) or new (dest) identity
+
+    BehavioralReport:
+      type: object
+      description: Behavioral archaeology analysis for adversarial pattern detection.
+      properties:
+        device_id:
+          type: string
+        warmup_attack_score:
+          type: number
+          format: float
+          description: Score 0–1 indicating warmup-then-attack behavioral pattern
+        burst_farming_score:
+          type: number
+          format: float
+          description: Score 0–1 indicating coordinated burst farming pattern
+        drift_trend_slope:
+          type: number
+          format: float
+          description: Linear slope of biometric drift over sessions
+        biometric_stability:
+          type: number
+          format: float
+          description: Stability coefficient of biometric fingerprint
+
+    PITLProof:
+      type: object
+      description: PITL session proof for PHGCredential minting.
+      properties:
+        id:
+          type: integer
+        device_id:
+          type: string
+        nullifier_hash:
+          type: string
+          description: Unique nullifier preventing proof replay (hex)
+        feature_commitment:
+          type: string
+          description: SHA-256 commitment of normalized biometric features (hex)
+        humanity_prob_int:
+          type: integer
+          minimum: 0
+          maximum: 1000
+          description: humanity_probability × 1000 (integer, 1000 = 100% human)
+        tx_hash:
+          type: string
+          nullable: true
+        created_at:
+          type: number
+          format: double
+
+    FarmCluster:
+      type: object
+      description: Cluster of devices showing correlated farming behavior.
+      properties:
+        cluster_id:
+          type: integer
+        member_count:
+          type: integer
+        correlation_score:
+          type: number
+          format: float
+          minimum: 0.0
+          maximum: 1.0
+        devices:
+          type: array
+          items:
+            type: string
+
+    # ---- Credential (Phase 28) ----
+
+    PHGCredential:
+      type: object
+      description: |
+        Soulbound PHGCredential record. Credentials are ERC-5192-inspired:
+        locked=true, bound to deviceId (not wallet address), non-transferable.
+        humanityProbInt ∈ [0, 1000] = humanity_probability × 1000.
+      properties:
+        device_id:
+          type: string
+          description: keccak256(pubkey) hex — credential is bound to this identity
+        credential_id:
+          type: integer
+          description: On-chain credential ID (1-indexed; 0 = not minted sentinel)
+        tx_hash:
+          type: string
+          description: Mint transaction hash
+        minted_at:
+          type: number
+          format: double
+          description: Unix epoch when credential was minted
+
+    PHGLeaderboardEntry:
+      type: object
+      description: PHG humanity leaderboard entry (confirmed checkpoints only).
+      properties:
+        device_id:
+          type: string
+        cumulative_score:
+          type: integer
+          description: Maximum confirmed cumulative PHG score
+        record_count:
+          type: integer
+          description: Total NOMINAL records contributing to score
+
+    PHGEligibility:
+      type: object
+      description: TournamentGateV2 eligibility result for bounty claiming.
+      properties:
+        eligible:
+          type: boolean
+          description: True if device meets minCumulative AND minVelocity thresholds
+        cumulative_score:
+          type: integer
+        details:
+          type: string
+          description: Human-readable explanation of eligibility status
+
+    # ---- Operator Gate (Phase 29) ----
+
+    OperatorGateResponse:
+      type: object
+      description: |
+        HMAC-signed eligibility response for tournament operator gate checks.
+        Operators verify `sig` to confirm the bridge generated this response.
+        **Signature:** HMAC-SHA256(f"{device_id}:{int(eligible)}:{timestamp}", api_key)
+      required: [device_id, eligible, cumulative_score, timestamp, sig]
+      properties:
+        device_id:
+          type: string
+          description: keccak256(pubkey) hex — 64 chars
+        eligible:
+          type: boolean
+          description: True if device has confirmed PHG score > 0
+        cumulative_score:
+          type: integer
+          description: Last confirmed cumulative PHG score (0 if no checkpoints)
+        credential_id:
+          type: integer
+          nullable: true
+          description: On-chain credential ID if credential minted, else null
+        timestamp:
+          type: integer
+          description: Unix epoch seconds when this response was generated
+        sig:
+          type: string
+          description: HMAC-SHA256 signature hex — verify this to trust the response
+
+    # ---- Bridge Agent (Phase 30) ----
+
+    BridgeAgentRequest:
+      type: object
+      required: [session_id, message]
+      properties:
+        session_id:
+          type: string
+          description: |
+            Caller-managed session identifier. Re-use the same ID across requests
+            to maintain multi-turn conversation context.
+          example: "operator-session-abc123"
+        message:
+          type: string
+          description: Natural-language question or command for the agent.
+          example: "Is player aa...aa eligible for the tournament? Why?"
+
+    BridgeAgentResponse:
+      type: object
+      required: [session_id, response, tools_used]
+      properties:
+        session_id:
+          type: string
+          description: Echo of the caller-provided session_id.
+        response:
+          type: string
+          description: The agent's natural-language answer.
+        tools_used:
+          type: array
+          items:
+            type: string
+          description: |
+            List of bridge tool names the agent invoked to produce the response
+            (e.g. ["get_player_profile", "run_pitl_calibration"]).
+
+    # ---- Bridge Agent Streaming (Phase 31) ----
+
+    BridgeAgentStreamEvent:
+      type: object
+      required: [type]
+      properties:
+        type:
+          type: string
+          enum: [text_delta, tool_start, tool_result, done, error]
+          description: |
+            Event type in the SSE stream:
+            - text_delta: incremental response text token
+            - tool_start: agent is invoking a bridge tool
+            - tool_result: tool execution result preview
+            - done: stream is complete; final tools_used list attached
+            - error: non-fatal error (anthropic not installed, etc.)
+        text:
+          type: string
+          description: "Present when type=text_delta — the incremental text fragment."
+        tool:
+          type: string
+          description: "Present when type=tool_start or tool_result — the tool name."
+        preview:
+          type: string
+          description: "Present when type=tool_result — first 120 chars of the result."
+        tools_used:
+          type: array
+          items:
+            type: string
+          description: "Present when type=done — list of all tools invoked in this turn."
+        message:
+          type: string
+          description: "Present when type=error — error description."
+
+    # ---- Phase 32: Proactive Intelligence ----
+
+    ProtocolInsight:
+      type: object
+      description: A proactive protocol insight generated by ProactiveMonitor or BridgeAgent.react()
+      required: [id, insight_type, content, severity, created_at]
+      properties:
+        id:
+          type: integer
+          description: Auto-increment row ID
+        insight_type:
+          type: string
+          enum: [bot_farm_cluster, high_risk_trajectory, near_eligibility, anomaly_reaction]
+          description: Category of this insight
+        device_id:
+          type: string
+          description: Device ID associated with this insight (empty for cluster-level insights)
+        content:
+          type: string
+          description: Human-readable description of the insight
+        severity:
+          type: string
+          enum: [low, medium, critical]
+          description: Alert severity level
+        created_at:
+          type: number
+          format: float
+          description: Unix timestamp (seconds) when the insight was created
+
+    ProactiveAlertEvent:
+      type: object
+      description: WebSocket event broadcast by ProactiveMonitor when a proactive alert fires
+      required: [type, insight_type, content, severity, timestamp]
+      properties:
+        type:
+          type: string
+          enum: [proactive_alert]
+          description: Always "proactive_alert" for this event type
+        insight_type:
+          type: string
+          description: Category of this alert (matches ProtocolInsight.insight_type)
+        device_id:
+          type: string
+          description: Device ID (empty for cluster-level alerts)
+        content:
+          type: string
+          description: Human-readable alert message
+        severity:
+          type: string
+          enum: [low, medium, critical]
+        timestamp:
+          type: number
+          format: float
+          description: Unix timestamp when the alert was dispatched
+        cluster_id:
+          type: string
+          description: "Present for bot_farm_cluster alerts — the cluster identifier"
+        device_count:
+          type: integer
+          description: "Present for bot_farm_cluster alerts — number of devices in cluster"
+        cumulative_score:
+          type: integer
+          description: "Present for near_eligibility alerts — the device's PHG cumulative score"
+        warmup_attack_score:
+          type: number
+          description: "Present for high_risk_trajectory alerts"
+        burst_farming_score:
+          type: number
+          description: "Present for high_risk_trajectory alerts"
+
+    # ---- Phase 34: Federation ----
+
+    FederationCluster:
+      type: object
+      description: A cluster record in the federation_registry table (Phase 34)
+      required: [id, cluster_hash, device_count, suspicion_bucket, bridge_id, detected_at, is_local]
+      properties:
+        id:
+          type: integer
+          description: Auto-increment row ID
+        cluster_hash:
+          type: string
+          description: "16-char SHA-256 hex fingerprint of the device cluster (non-reversible: raw device IDs never shared)"
+        peer_url:
+          type: string
+          description: Source peer URL (empty for locally-detected clusters)
+        device_count:
+          type: integer
+          description: Number of devices in this cluster
+        suspicion_bucket:
+          type: string
+          enum: [medium, critical]
+          description: Suspicion severity bucket
+        bridge_id:
+          type: string
+          description: Anonymous 16-char bridge identity derived from SHA-256(api_key)
+        detected_at:
+          type: number
+          format: float
+          description: Unix timestamp when this cluster was detected or received
+        is_local:
+          type: boolean
+          description: True if detected by this bridge; False if received from a peer
+
+    # ---- Phase 35: Synthesis ----
+
+    InsightDigest:
+      type: object
+      description: A synthesized rolling-window digest of protocol_insights (Phase 35)
+      required: [id, window_label, synthesized_at, bot_farm_count, high_risk_count, federated_count, anomaly_count, eligible_count, dominant_severity, top_devices, narrative]
+      properties:
+        id:
+          type: integer
+          description: Auto-increment row ID
+        window_label:
+          type: string
+          enum: [24h, 7d, 30d]
+          description: Time window this digest covers
+        synthesized_at:
+          type: number
+          format: double
+          description: Unix epoch seconds when this digest was synthesized
+        bot_farm_count:
+          type: integer
+          description: Number of bot_farm_cluster insights in this window
+        high_risk_count:
+          type: integer
+          description: Number of high_risk_trajectory insights in this window
+        federated_count:
+          type: integer
+          description: Number of federated_cluster insights in this window
+        anomaly_count:
+          type: integer
+          description: Number of anomaly_reaction insights in this window
+        eligible_count:
+          type: integer
+          description: Number of near_eligibility insights in this window
+        dominant_severity:
+          type: string
+          enum: [low, medium, high, critical]
+          description: Highest severity level observed in this window
+        top_devices:
+          type: array
+          items:
+            type: string
+          maxItems: 5
+          description: Up to 5 device IDs with the most alerts in this window
+        narrative:
+          type: string
+          description: Template-based natural-language summary of this window's threat activity
+
+    DeviceRiskLabel:
+      type: object
+      description: Persistent per-device risk trajectory label updated by InsightSynthesizer (Phase 35)
+      required: [device_id, risk_label, label_evidence, label_set_at, prior_label]
+      properties:
+        device_id:
+          type: string
+          description: Device identifier (keccak256 pubkey hex)
+        risk_label:
+          type: string
+          enum: [stable, warming, critical, cleared]
+          description: "Current risk trajectory label. stable=no signals; warming=advisory pattern; critical=confirmed threat; cleared=prior risk, now clean"
+        label_evidence:
+          type: object
+          description: Count of each signal type that contributed to this label in the 7d window
+          properties:
+            bot:
+              type: integer
+            high_risk:
+              type: integer
+            fed:
+              type: integer
+            anomaly:
+              type: integer
+        label_set_at:
+          type: number
+          format: double
+          description: Unix epoch seconds when this label was last set
+        prior_label:
+          type: string
+          enum: [stable, warming, critical, cleared, ""]
+          description: Previous risk label before the most recent transition
+
+    SynthesisReport:
+      type: object
+      description: Response envelope for GET /operator/digest (Phase 35)
+      required: [synthesis_available, digests, critical_devices, warming_devices]
+      properties:
+        synthesis_available:
+          type: boolean
+          description: True if at least one insight digest has been synthesized
+        digests:
+          type: array
+          items:
+            $ref: "#/components/schemas/InsightDigest"
+          description: List of insight digests (one per window_label when window=all)
+        critical_devices:
+          type: array
+          items:
+            $ref: "#/components/schemas/DeviceRiskLabel"
+          description: All devices currently labeled 'critical'
+        warming_devices:
+          type: array
+          items:
+            $ref: "#/components/schemas/DeviceRiskLabel"
+          description: All devices currently labeled 'warming'
+
+    # ---- Phase 36: Adaptive Feedback ----
+
+    DetectionPolicy:
+      type: object
+      description: Per-device adaptive PITL threshold multiplier set by InsightSynthesizer Mode 4 (Phase 36)
+      required: [device_id, multiplier, basis_label, set_at, expires_at]
+      properties:
+        device_id:
+          type: string
+          description: Device identifier (keccak256 pubkey hex)
+        multiplier:
+          type: number
+          format: double
+          description: "L4 Mahalanobis threshold multiplier. critical=0.70 (30% tighter); warming=0.85; cleared/stable=1.00 (baseline)"
+          minimum: 0.5
+          maximum: 1.0
+        basis_label:
+          type: string
+          enum: [critical, warming, cleared, stable]
+          description: Risk label that caused this policy to be set
+        set_at:
+          type: number
+          format: double
+          description: Unix epoch seconds when this policy was last written
+        expires_at:
+          type: number
+          format: double
+          description: "Unix epoch seconds when this policy auto-expires (set_at + poll_interval + 3600s)"
+
+    AdaptiveFeedbackReport:
+      type: object
+      description: Summary of active adaptive detection policies (Phase 36)
+      required: [policies, total_count, adaptive_enabled, critical_policy_multiplier, warming_policy_multiplier]
+      properties:
+        policies:
+          type: array
+          items:
+            $ref: "#/components/schemas/DetectionPolicy"
+          description: List of active (non-expired) detection policies
+        total_count:
+          type: integer
+          description: Number of active policies returned
+        adaptive_enabled:
+          type: boolean
+          description: Whether ADAPTIVE_THRESHOLDS_ENABLED is true for this bridge
+        critical_policy_multiplier:
+          type: number
+          format: double
+          description: "Fixed multiplier applied to critical devices (0.70)"
+          example: 0.70
+        warming_policy_multiplier:
+          type: number
+          format: double
+          description: "Fixed multiplier applied to warming devices (0.85)"
+          example: 0.85
+
+    # ---- Phase 37: Credential Enforcement ----
+
+    CredentialEnforcementState:
+      type: object
+      description: Credential enforcement state for a single device (Phase 37)
+      required: [device_id, consecutive_critical, suspended, last_updated]
+      properties:
+        device_id:
+          type: string
+          description: Device identifier (keccak256 pubkey hex)
+        consecutive_critical:
+          type: integer
+          description: Number of consecutive 7-day windows labeled critical (reset on cleared/stable)
+        suspended:
+          type: integer
+          enum: [0, 1]
+          description: "1 = credential currently suspended; 0 = not suspended"
+        suspended_since:
+          type: number
+          format: double
+          nullable: true
+          description: Unix epoch seconds when suspension began (null if not suspended)
+        suspended_until:
+          type: number
+          format: double
+          nullable: true
+          description: Unix epoch seconds when suspension expires (null if not suspended)
+        evidence_hash:
+          type: string
+          nullable: true
+          description: "SHA-256(device_id:insight_digest_id) — immutable reference to triggering evidence"
+        last_updated:
+          type: number
+          format: double
+          description: Unix epoch seconds of last state change
+
+    CredentialEnforcementResponse:
+      type: object
+      description: Response envelope for GET /operator/enforcement (Phase 37)
+      required: [suspended_count, suspended_devices, enforcement_enabled, min_consecutive_windows]
+      properties:
+        suspended_count:
+          type: integer
+          description: Number of currently suspended credentials
+        suspended_devices:
+          type: array
+          items:
+            $ref: "#/components/schemas/CredentialEnforcementState"
+          description: List of currently suspended credential enforcement rows
+        enforcement_enabled:
+          type: boolean
+          description: Whether PHG_CREDENTIAL_ENFORCEMENT_ENABLED is true for this bridge
+        min_consecutive_windows:
+          type: integer
+          description: "Minimum consecutive critical windows before suspension triggers (default: 2)"
+
+    CredentialSuspensionEvent:
+      type: object
+      description: Protocol insight generated when a PHGCredential is suspended or reinstated (Phase 37)
+      required: [insight_type, device_id, content, severity, created_at]
+      properties:
+        insight_type:
+          type: string
+          enum: [credential_suspended, credential_reinstated]
+          description: Type of enforcement event
+        device_id:
+          type: string
+          description: Device whose credential was affected
+        content:
+          type: string
+          description: Human-readable description including consecutive window count, duration, and evidence hash prefix
+        severity:
+          type: string
+          enum: [critical, low]
+          description: "critical for suspension; low for reinstatement"
+        created_at:
+          type: number
+          format: double
+          description: Unix epoch seconds of event creation
+
+    # ---- Common ----
+
+    Error:
+      type: object
+      required: [code, message]
+      properties:
+        code:
+          type: string
+          example: CHAIN_BROKEN
+        message:
+          type: string
+          example: "Record at index 2 has invalid prev_poac_hash"
+        detail:
+          type: object
+          additionalProperties: true
+          nullable: true
+
+webhooks:
+  CheatDetected:
+    post:
+      summary: Fired when a cheat inference is detected in a submitted record
+      description: |
+        Register a webhook URL via your VAPI dashboard to receive real-time
+        cheat detection events. The payload is signed with HMAC-SHA256 using
+        your webhook secret (X-VAPI-Signature header).
+      requestBody:
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                event:
+                  type: string
+                  example: cheat_detected
+                session_id:
+                  type: string
+                device_id:
+                  type: string
+                record_hash:
+                  type: string
+                inference_result:
+                  type: integer
+                inference_name:
+                  type: string
+                  example: DRIVER_INJECT
+                confidence:
+                  type: integer
+                timestamp_ms:
+                  type: integer
+                  format: int64
+      responses:
+        "200":
+          description: Webhook acknowledged

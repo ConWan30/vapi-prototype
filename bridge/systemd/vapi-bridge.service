@@ -1,0 +1,28 @@
+[Unit]
+Description=VAPI Bridge — PoAC Record Relay Service
+Documentation=https://github.com/vapi-project/vapi-pebble-prototype
+After=network-online.target mosquitto.service
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=vapi
+Group=vapi
+WorkingDirectory=/opt/vapi-bridge
+EnvironmentFile=/opt/vapi-bridge/.env
+ExecStart=/opt/vapi-bridge/venv/bin/python -m vapi_bridge.main
+Restart=on-failure
+RestartSec=5
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=vapi-bridge
+
+# Security hardening
+NoNewPrivileges=yes
+ProtectSystem=strict
+ProtectHome=yes
+ReadWritePaths=/opt/vapi-bridge/data
+PrivateTmp=yes
+
+[Install]
+WantedBy=multi-user.target

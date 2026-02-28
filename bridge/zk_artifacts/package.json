@@ -1,0 +1,12 @@
+{
+  "name": "vapi-zk-artifacts",
+  "version": "1.0.0",
+  "description": "Poseidon input computation helper for VAPI ZK proof generation",
+  "private": true,
+  "dependencies": {
+    "circomlibjs": "^0.1.7"
+  },
+  "engines": {
+    "node": ">=18.0.0"
+  }
+}

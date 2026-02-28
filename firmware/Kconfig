@@ -1,0 +1,52 @@
+# SPDX-License-Identifier: Apache-2.0
+#
+# VAPI Agent — Custom Kconfig symbols
+
+menu "VAPI Agent Configuration"
+
+config VAPI_LOG_LEVEL
+	int "Default VAPI module log level"
+	default 4
+	range 0 4
+	help
+	  Log level for VAPI modules (0=off, 1=err, 2=wrn, 3=inf, 4=dbg).
+
+config VAPI_AGENT_LOG_LEVEL
+	int "Agent module log level"
+	default 3
+	range 0 4
+	help
+	  Log level for the agent module (reflexive/deliberative/strategic threads).
+
+config POAC_LOG_LEVEL
+	int "PoAC module log level"
+	default 3
+	range 0 4
+	help
+	  Log level for the PoAC module (signing, chaining, NVS).
+
+config VAPI_EDGE_IMPULSE
+	bool "Enable Edge Impulse TinyML model"
+	default n
+	help
+	  When enabled, the TinyML inference pipeline uses a trained Edge Impulse
+	  model exported as a C++ library. The model files must be placed in
+	  models/edge_impulse/ before building.
+
+	  When disabled (default), a heuristic fallback classifier provides
+	  statistical motion classification from raw IMU thresholds.
+
+if VAPI_EDGE_IMPULSE
+config CPLUSPLUS
+	default y
+
+config LIB_CPLUSPLUS
+	default y
+
+config NEWLIB_LIBC
+	default y
+endif # VAPI_EDGE_IMPULSE
+
+endmenu
+
+source "Kconfig.zephyr"

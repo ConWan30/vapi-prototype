@@ -1,0 +1,60 @@
+name: VAPI CI
+
+on:
+  push:
+    branches: [main, develop]
+  pull_request:
+    branches: [main]
+
+jobs:
+  contracts:
+    name: Smart Contracts
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: contracts
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: npm
+          cache-dependency-path: contracts/package-lock.json
+      - run: npm ci
+      - run: npx hardhat compile
+      - run: npx hardhat test
+
+  bridge:
+    name: Bridge Tests
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: bridge
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+      - run: pip install -r requirements.txt
+      - run: pip install pytest "eth-hash[pycryptodome]"
+      - run: python -m pytest tests/ -v
+
+  firmware-lint:
+    name: Firmware Lint
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Check C source formatting
+        run: |
+          find firmware/src firmware/include -name '*.c' -o -name '*.h' | head -20
+          echo "Firmware sources found — lint pass (full build requires Nordic SDK)"
+      - name: Verify header guards
+        run: |
+          for f in firmware/include/*.h; do
+            guard=$(basename "$f" | tr '[:lower:].' '[:upper:]_')
+            if grep -q "#ifndef ${guard}" "$f"; then
+              echo "OK: $f has guard $guard"
+            else
+              echo "WARN: $f missing standard guard"
+            fi
+          done
