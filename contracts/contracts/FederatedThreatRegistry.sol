@@ -66,6 +66,35 @@ contract FederatedThreatRegistry {
      * the total reporter count reaches 2 (or more on subsequent reports).
      *
      * @param clusterHash 32-byte cluster fingerprint (16 significant bytes, zero-padded).
+     *
+     * @dev FINGERPRINT ENTROPY AND BRUTE-FORCE LIMITATION:
+     *   The cluster fingerprint stored in `clusterHash` is derived off-chain as:
+     *     SHA-256("|".join(sorted(device_ids)))[:16]
+     *   That is, the first 16 hex characters (8 bytes = 64 bits) of the SHA-256 digest,
+     *   zero-padded to fill the 32-byte `bytes32` field. Only 64 bits of entropy are
+     *   meaningful; the remaining 128 bits are always zero.
+     *
+     *   PRIVACY RISK — BRUTE-FORCE REVERSAL IS FEASIBLE AT SMALL SCALE:
+     *   If the total population of device IDs is small (e.g., fewer than 100,000 active
+     *   devices), an adversary with access to the device ID list can enumerate all pairs
+     *   and triples, compute SHA-256 for each, and compare against reported hashes.
+     *   Example: 100,000 devices x 100,000 = 10 billion pairs. At ~500M SHA-256/second
+     *   on consumer hardware, this takes roughly 20 seconds per cluster size. Larger
+     *   cluster sizes (3, 4, 5 devices) grow combinatorially but remain tractable for
+     *   small populations. An operator or malicious insider with access to the full device
+     *   ID list could de-anonymize clusters -- identifying which specific devices were
+     *   flagged as a coordinated bot farm.
+     *
+     *   MITIGATIONS (not yet implemented):
+     *   1. Use the full 32-byte SHA-256 fingerprint (256 bits) instead of truncating to
+     *      16 hex characters. This makes brute-force infeasible regardless of population
+     *      size without changing the contract interface.
+     *   2. Add a per-bridge salt: SHA-256(salt || "|".join(sorted(device_ids))). Salt is
+     *      known only to the bridge operator, preventing cross-bridge correlation attacks
+     *      without a salt-sharing protocol.
+     *   3. Use a keyed hash (HMAC-SHA256) where the key is a bridge-private secret.
+     *   Until these mitigations are adopted, operators should treat reported cluster hashes
+     *   as pseudonymous, not anonymous, when device populations are below ~1M devices.
      */
     function reportCluster(bytes32 clusterHash) external onlyBridge {
         if (_hasReported[clusterHash][msg.sender]) {

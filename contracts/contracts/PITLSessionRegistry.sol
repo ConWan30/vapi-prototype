@@ -2,19 +2,40 @@
 pragma solidity ^0.8.20;
 
 /**
- * @title PITLSessionRegistry — Phase 26
+ * @title PITLSessionRegistry -- Phase 26
  * @notice On-chain registry for ZK-proven PITL biometric session credentials.
  *
  * The bridge submits a 256-byte Groth16 proof after each PITL session.
  * In mock mode (pitlVerifier == address(0)) proofs are accepted without
- * cryptographic verification — useful for testnet and integration tests.
+ * cryptographic verification -- useful for testnet and integration tests.
  *
  * Public circuit input order (must match PitlSessionProof.circom declaration):
- *   [0] featureCommitment  — Poseidon(scaledFeatures[0..6])
- *   [1] humanityProbInt    — l5_humanity × 1000 ∈ [0, 1000]
- *   [2] inferenceResult    — 8-bit inference code
- *   [3] nullifierHash      — Poseidon(deviceIdHash, epoch)
+ *   [0] featureCommitment  -- Poseidon(scaledFeatures[0..6])
+ *   [1] humanityProbInt    -- l5_humanity x 1000 in [0, 1000]
+ *   [2] inferenceResult    -- 8-bit inference code
+ *   [3] nullifierHash      -- Poseidon(deviceIdHash, epoch)
  *   [4] epoch
+ *
+ * @dev MOCK MODE -- SECURITY NOTICE:
+ *   When `pitlVerifier == address(0)`, this contract operates in mock mode.
+ *   In mock mode, ALL ZK proof cryptographic invariants are bypassed:
+ *     - The 256-byte proof bytes are NOT verified against any circuit.
+ *     - The featureCommitment is NOT checked to be a valid Poseidon hash.
+ *     - The humanityProbInt is NOT proven to be derived from real biometric features.
+ *     - The inferenceResult is NOT constrained by the circuit.
+ *     - The nullifier linkage (Poseidon(deviceIdHash, epoch)) is NOT verified.
+ *   The ONLY invariant that remains enforced in mock mode is nullifier anti-replay:
+ *   each nullifierHash may only be used once (usedNullifiers mapping).
+ *
+ *   Mock mode is intended solely for testnet deployments and integration testing.
+ *   It MUST NOT be used in production. Operators can verify whether this contract
+ *   is operating in mock mode by reading the `pitlVerifier` public variable on-chain:
+ *   if `pitlVerifier == address(0)`, the deployment is in mock/open mode.
+ *
+ *   Mock-mode proof submissions are made observable on-chain and off-chain via the
+ *   `MockModeProofBypassed` event, emitted on every submitPITLProof call when
+ *   `pitlVerifier == address(0)`. Indexers and monitoring tools should treat
+ *   sessions associated with this event as unverified.
  */
 
 interface IPITLSessionVerifier {
@@ -27,15 +48,15 @@ interface IPITLSessionVerifier {
 }
 
 contract PITLSessionRegistry {
-    // ── State ────────────────────────────────────────────────────────────────
+    // -- State ----------------------------------------------------------------
 
-    /// @notice Immutable bridge address — only address that can submit proofs.
+    /// @notice Immutable bridge address -- only address that can submit proofs.
     address public immutable bridge;
 
     /// @notice Optional Groth16 verifier. address(0) = mock/open mode.
     address public pitlVerifier;
 
-    /// @notice Anti-replay: nullifierHash → used.
+    /// @notice Anti-replay: nullifierHash => used.
     mapping(bytes32 => bool) public usedNullifiers;
 
     /// @notice Most recent proven humanityProbInt per device [0, 1000].
@@ -44,7 +65,7 @@ contract PITLSessionRegistry {
     /// @notice Count of proven sessions per device.
     mapping(bytes32 => uint256) public sessionCount;
 
-    // ── Events ────────────────────────────────────────────────────────────────
+    // -- Events ---------------------------------------------------------------
 
     event PITLSessionProofSubmitted(
         bytes32 indexed deviceId,
@@ -55,28 +76,37 @@ contract PITLSessionRegistry {
 
     event PITLVerifierSet(address indexed verifier);
 
-    // ── Errors ────────────────────────────────────────────────────────────────
+    /**
+     * @dev Emitted when a proof submission is accepted in mock mode
+     * (pitlVerifier == address(0)). This means the proof bytes were NOT
+     * cryptographically verified -- only nullifier anti-replay was enforced.
+     * Indexers and dashboards should flag sessions associated with this event
+     * as unverified / testnet-only.
+     */
+    event MockModeProofBypassed(bytes32 indexed deviceId, bytes32 indexed nullifierHash);
+
+    // -- Errors ---------------------------------------------------------------
 
     error OnlyBridge();
     error NullifierUsed(bytes32 nullifier);
     error ProofVerificationFailed();
     error HumanityProbOutOfRange(uint256 value);
 
-    // ── Modifiers ────────────────────────────────────────────────────────────
+    // -- Modifiers ------------------------------------------------------------
 
     modifier onlyBridge() {
         if (msg.sender != bridge) revert OnlyBridge();
         _;
     }
 
-    // ── Constructor ───────────────────────────────────────────────────────────
+    // -- Constructor ----------------------------------------------------------
 
     /// @param _bridge Address of the VAPI bridge (the only authorised submitter).
     constructor(address _bridge) {
         bridge = _bridge;
     }
 
-    // ── Administration ────────────────────────────────────────────────────────
+    // -- Administration -------------------------------------------------------
 
     /**
      * @notice Set the Groth16 verifier contract (one-time, only by bridge).
@@ -88,16 +118,16 @@ contract PITLSessionRegistry {
         emit PITLVerifierSet(_verifier);
     }
 
-    // ── Core ──────────────────────────────────────────────────────────────────
+    // -- Core -----------------------------------------------------------------
 
     /**
      * @notice Submit a PITL ZK session proof.
      *
-     * @param deviceId          keccak256(pubkey) — 32-byte device identifier.
+     * @param deviceId          keccak256(pubkey) -- 32-byte device identifier.
      * @param proof             256-byte ABI-packed Groth16 proof.
      * @param featureCommitment Poseidon(scaledFeatures[0..6]).
-     * @param humanityProbInt   l5_humanity × 1000 ∈ [0, 1000].
-     * @param nullifierHash     Poseidon(deviceIdHash, epoch) — anti-replay.
+     * @param humanityProbInt   l5_humanity x 1000 in [0, 1000].
+     * @param nullifierHash     Poseidon(deviceIdHash, epoch) -- anti-replay.
      * @param epoch             block.number / EPOCH_BLOCKS at proof time.
      */
     function submitPITLProof(
@@ -132,12 +162,16 @@ contract PITLSessionRegistry {
             uint256[5] memory pub;
             pub[0] = featureCommitment;
             pub[1] = humanityProbInt;
-            pub[2] = 0;             // inferenceResult not checked here — stored off-chain
+            pub[2] = 0;             // inferenceResult not checked here -- stored off-chain
             pub[3] = nullifierHash;
             pub[4] = epoch;
 
             if (!IPITLSessionVerifier(pitlVerifier).verifyProof(a, b, c, pub))
                 revert ProofVerificationFailed();
+        } else {
+            // Mock mode: ZK proof invariants bypassed. Emit observable event so
+            // indexers and monitoring tools can identify unverified sessions.
+            emit MockModeProofBypassed(deviceId, nullKey);
         }
 
         // Update state

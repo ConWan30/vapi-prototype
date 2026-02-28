@@ -81,3 +81,27 @@ REPORT_GAS=true npx hardhat test
 
 Requires `hardhat-gas-reporter` in `devDependencies` (already present) and
 `REPORT_GAS=true` environment variable to activate the reporter.
+
+
+---
+
+## Gas Cost Estimates -- Phase 37 Additions
+
+The following estimates cover the Phase 37 contracts and methods added in PHGCredential and TournamentGateV3. Figures are based on opcode-level analysis; see "Known Limitations" below.
+
+| Contract | Method | Estimated Gas | Notes |
+|---|---|---:|---|
+| PHGCredential | `suspend()` | ~45,000 | 3 SSTORE writes (isSuspended, suspendedUntil, suspensionEvidence) + CredentialSuspended event |
+| PHGCredential | `reinstate()` | ~30,000 | 3 SSTORE writes (clear suspension state) + CredentialReinstated event |
+| PHGCredential | `isActive()` | ~2,500 | 2 SLOAD reads (isSuspended + suspendedUntil) -- view function, no state change |
+| TournamentGateV3 | `assertEligible()` | ~80,000 | V2 gate checks + external `isActive()` call to PHGCredential (~2,500 gas) + overhead |
+| AlertRouter webhook dispatch | N/A | N/A | Off-chain only -- dispatches via HTTP from bridge process; zero on-chain gas cost |
+
+---
+
+## Known Limitations
+
+- All gas figures are estimates based on opcode analysis. Actual costs depend on the IoTeX gas schedule for the P256 precompile at address `0x0100`. IoTeX's gas schedule for precompiles may differ from Ethereum mainnet; verify against the current IoTeX documentation before using these figures in production cost estimates.
+- The P256 precompile `staticcall` must stay under 100,000 gas per individual verification. Calls that exceed this limit will revert or exceed block gas constraints on networks with tighter per-call caps.
+- Batch verification (10 records per `verifyPoACBatch` call) should stay under 1,000,000 gas for a single transaction to remain safely within IoTeX's 60M gas block limit and leave room for other transactions in the same block.
+- Gas figures in this report have NOT been measured against a running Hardhat node with the Phase 37 contracts deployed. Do not use these figures in production cost estimates without first benchmarking against a live node: `REPORT_GAS=true npx hardhat test`.
