@@ -229,7 +229,7 @@ def run(duration_s: int, output_path: str, notes: str) -> int:
     with open(output_path, "w", encoding="utf-8") as f:
         json.dump({"metadata": metadata, "reports": captured}, f, indent=2)
 
-    print(f"\nSaved {len(captured)} reports → {output_path}")
+    print(f"\nSaved {len(captured)} reports -> {output_path}")
     print(f"Effective polling rate: {rate_actual:.1f} Hz over {t_actual:.1f}s")
     print(f"Next step: python scripts/threshold_calibrator.py {output_path}")
     return 0

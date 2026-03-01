@@ -128,4 +128,94 @@ pytest tests/hardware/ -v -m hardware
 
 ---
 
-*Document status: Pre-hardware-validation. All figures synthetic. Updated post-calibration required.*
+*Document status: Partial hardware validation. Sections 2a–2c use synthetic adversarial data. Section 7 contains real hardware measurements from 4 captured sessions (DualShock Edge CFI-ZCP1). N=50+ sessions required for production thresholds.*
+
+
+---
+
+## 2a. L5 Temporal Rhythm Detection — Real Pipeline Results
+
+> Data source: synthetic adversarial sessions from `scripts/generate_adversarial_sessions.py`. Replace with real hardware captures for production validation.
+
+| Attack Type | N | L5 Det% | Mean CV | Mean Entropy | Mean Quant |
+|------------|---|---------|---------|--------------|------------|
+| injection | 10 | **0%** | 0.3593 | 3.0464 | 0.6107 |
+| macro | 10 | **100%** | 0.0 | 0.0 | 1.0 |
+| tick_quantized | 10 | **100%** | 0.2186 | 0.9994 | 0.8522 |
+
+## 2b. L4 Injection Detection — Real Pipeline Results
+
+> Data source: synthetic adversarial sessions from `scripts/generate_adversarial_sessions.py`. Replace with real hardware captures for production validation.
+
+| Attack Type | N | L4 Det% | Mean GyroStd (LSB) |
+|------------|---|---------|-------------------|
+| injection | 10 | **100%** | 0.0 |
+| macro | 10 | **100%** | 0.0 |
+| tick_quantized | 10 | **100%** | 0.0 |
+
+## 2c. Human Baseline False Positive Rates — Real Pipeline Results
+
+> Data source: synthetic adversarial sessions from `scripts/generate_adversarial_sessions.py`. Replace with real hardware captures for production validation.
+
+| Session Type | N | L5 FP% | L4 FP% | Mean CV | Mean Entropy |
+|-------------|---|--------|--------|---------|--------------|
+| human_baseline | 10 | **0%** | **0%** | 0.3453 | 2.9383 |
+
+---
+
+## 7. Real Hardware Measurements — DualShock Edge CFI-ZCP1
+
+> **Data source**: 4 sessions captured from a physical DualShock Edge (Sony CFI-ZCP1)
+> using `scripts/capture_session.py` at 999.82–1000.04 Hz.
+> **Sample count**: 150,006 HID reports (60s + 3 × 30s).
+> **Confidence**: very_low (N=4; need N≥50 for production).
+
+### 7.1 Measured Polling Rate
+
+| Session | Duration | Reports | Rate (Hz) |
+|---------|----------|---------|-----------|
+| session_hw_001 | 60.0s | 60,002 | 999.82 |
+| session_hw_002 | 30.0s | 30,001 | 1000.03 |
+| session_hw_003 | 30.0s | 30,002 | 1000.04 |
+| session_hw_004 | 30.0s | 30,001 | 1000.02 |
+| **Combined** | **150.0s** | **150,006** | **~1000 Hz** |
+
+### 7.2 Threshold Calibration — Magic Numbers vs. Hardware Reality
+
+| Threshold | Current Magic Number | Hardware-Derived (N=4) | Delta | Implication |
+|-----------|---------------------|----------------------|-------|-------------|
+| L4 Mahalanobis anomaly | 3.0 | **18.064** | **+502%** | Magic number would produce false positives on every real session |
+| L4 Mahalanobis continuity | 2.0 | **12.043** | **+502%** | Same as above |
+| L5 CV threshold | 0.08 | **0.124** (P10 human) | +55% | Human P10 is above current bot threshold — may need adjustment |
+| L5 entropy threshold | 1.5 bits | **0.122** (P10)* | -92% | *Computed from inter-report intervals (wrong denominator — see note) |
+| Stick noise floor (LSB std) | 5.0 | **31.96** | **+539%** | Real sticks at rest are 6.4× noisier than synthetic assumption |
+| IMU gyro noise floor (LSB std) | 50.0 | **407.91** (P95) | **+716%** | Real IMU at 1000 Hz is 8.2× noisier than synthetic assumption |
+
+> **Note on L5 entropy calibration**: The threshold_calibrator.py computes L5 metrics from
+> inter-report intervals (1ms at 1000 Hz). The L5 oracle uses inter-*press* intervals (100–1000ms).
+> These are different quantities. The L5 threshold must be calibrated from sessions with
+> ≥20 intentional button-press events per session.
+
+### 7.3 IMU Noise Profile (Real Hardware)
+
+| Axis | Mean (LSB) | Std (LSB) | vs. Injection Threshold (20 LSB) |
+|------|-----------|----------|--------------------------------|
+| gyro_x | -1.1 | **292.3** | 14.6× above threshold |
+| gyro_y | -3.7 | **113.1** | 5.7× above threshold |
+| gyro_z | -1.7 | **144.7** | 7.2× above threshold |
+
+> These measurements were taken with the controller resting on a desk (minimal movement).
+> During active gaming, gyro std increases further. The injection detection threshold
+> (max_gyro_std < 20 LSB) remains valid — real hardware exceeds it by 5–15×.
+
+### 7.4 Critical Pre-Production Actions Required
+
+1. **Recalibrate L4 Mahalanobis thresholds** with N≥50 active gaming sessions.
+   Current magic numbers (3.0/2.0) will produce near-100% false positives on real sessions.
+2. **Validate L5 CV/entropy thresholds** with sessions containing N≥20 intentional presses.
+   Use `capture_session.py` during competitive gameplay (not resting).
+3. **Update stick noise model** from 5.0 → ~32 LSB in BiometricFusionClassifier.
+   Current covariance matrix assumption (5 LSB) is off by 6.4×.
+4. **Validate injection threshold** (currently 20 LSB gyro std): hardware confirms
+   14.6× margin on gyro_x during resting — appears conservative and sound.
+
