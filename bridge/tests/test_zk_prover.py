@@ -49,14 +49,16 @@ from zk_prover import (
 # ---------------------------------------------------------------------------
 
 class TestZKArtifactsFlag(unittest.TestCase):
-    """ZK_ARTIFACTS_AVAILABLE must be False in the test environment (no setup.sh run)."""
+    """ZK_ARTIFACTS_AVAILABLE must be True after the ceremony has been run."""
 
     def test_artifacts_not_available_in_test_env(self):
-        """setup.sh has not been run → ZK_ARTIFACTS_AVAILABLE == False."""
-        self.assertFalse(
+        """After run-ceremony.js: ZK_ARTIFACTS_AVAILABLE == True (bridge/zk_artifacts/ populated)."""
+        self.assertTrue(
             ZK_ARTIFACTS_AVAILABLE,
-            "Expected ZK_ARTIFACTS_AVAILABLE=False (no circom artifacts installed). "
-            "If you ran setup.sh and set VAPI_ZK_WASM_PATH etc., unset them for tests.",
+            "Expected ZK_ARTIFACTS_AVAILABLE=True — ceremony has been run. "
+            "Run: cd contracts && npx hardhat run scripts/run-ceremony.js "
+            "then copy TeamProof.wasm / TeamProof_final.zkey / verification_key.json "
+            "to bridge/zk_artifacts/",
         )
 
 
@@ -71,8 +73,11 @@ class TestZKProverMockPath(unittest.TestCase):
         self.prover = ZKProver()
 
     def test_instantiates_without_error(self):
-        """ZKProver() must not raise even when artifacts are absent."""
-        prover = ZKProver()
+        """ZKProver() must not raise even when artifacts are absent (mock mode via explicit bad paths)."""
+        prover = ZKProver(
+            wasm_path="/nonexistent/TeamProof.wasm",
+            zkey_path="/nonexistent/TeamProof_final.zkey",
+        )
         self.assertIsNotNone(prover)
         self.assertFalse(prover._available)
 

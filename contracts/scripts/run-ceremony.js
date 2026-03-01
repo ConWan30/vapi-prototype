@@ -33,9 +33,11 @@ const path = require("path");
 const fs = require("fs");
 
 const CIRCUITS_DIR = path.join(__dirname, "..", "circuits");
-const PTAU_FILE = path.join(CIRCUITS_DIR, "pot12_final.ptau");
+// TeamProof has ~8651 wires; requires 2^power >= 8651*2 = 17302 → minimum power=15 (2^15=32768)
+const PTAU_FILE = path.join(CIRCUITS_DIR, "pot15_final.ptau");
+// Primary: Google Cloud Storage mirror (Hermez S3 bucket is now access-restricted)
 const PTAU_URL =
-  "https://hermez.s3-eu-west-1.amazonaws.com/powersOfTau28_hez_final_12.ptau";
+  "https://storage.googleapis.com/zkevm/ptau/powersOfTau28_hez_final_15.ptau";
 
 function run(cmd, opts = {}) {
   console.log(`  $ ${cmd}`);
@@ -50,7 +52,7 @@ function fileExists(p) {
 // Step 1: Download Powers of Tau (if not already present)
 // ---------------------------------------------------------------------------
 if (!fileExists(PTAU_FILE)) {
-  console.log("\n[1/3] Downloading Powers of Tau (2^12)...");
+  console.log("\n[1/3] Downloading Powers of Tau (2^15 — required for TeamProof ~8651 wires)...");
   console.log(`  Source: ${PTAU_URL}`);
   run(`curl -L "${PTAU_URL}" -o "${PTAU_FILE}"`);
   console.log("  Downloaded.");

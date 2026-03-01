@@ -388,8 +388,11 @@ def _run_node(
 
 def _run_snarkjs(args: list, check: bool = True):
     """Run snarkjs via npx (uses local node_modules if available)."""
+    import sys as _sys
     cmd = ["npx", "--yes", "snarkjs"] + args
-    r = subprocess.run(cmd, capture_output=True, check=False)
+    # On Windows, npx is a batch script and requires shell=True to locate/execute
+    _shell = _sys.platform == "win32"
+    r = subprocess.run(cmd, capture_output=True, check=False, shell=_shell)
     if check and r.returncode != 0:
         stderr = r.stderr.decode(errors="replace") if r.stderr else ""
         raise RuntimeError(f"snarkjs failed: {stderr[:600]}")
