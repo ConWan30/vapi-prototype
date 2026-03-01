@@ -184,3 +184,122 @@ for _attr in ("AsyncWeb3", "AsyncHTTPProvider"):
     if not hasattr(_web3_mod, _attr):
         setattr(_web3_mod, _attr, MagicMock())
 ```
+
+---
+
+## 11. Windows Terminal Unicode Encoding in Test Print Statements
+
+**Lesson (hardware tests):** Windows terminals default to cp1252 encoding. Any `print()` call in
+a pytest test containing Unicode characters (`✓ \u2713`, `≈ \u2248`, `→ \u2192`, `µ \u00b5`,
+`— \u2014`) causes `UnicodeEncodeError: 'charmap' codec can't encode character` at the print
+call itself — *after* assertions have already passed. This causes tests to report as ERRORS even
+though they actually passed.
+
+**Pattern:** All print statements in hardware tests (and any test run on Windows) must use ASCII
+equivalents:
+- `✓` → `PASS:`
+- `→` → `->`
+- `≈` → `~`
+- `µ` → `u`
+- `—` → `--`
+
+**Detection:** Error message is `UnicodeEncodeError: 'charmap'`, not an assertion error.
+The key tell is that the error appears on a print line *after* the `assert` line.
+
+---
+
+## 12. DualShock Edge Trigger Effect Bytes Are ADC Readback, Not Output Commands
+
+**Lesson (test_dualshock_adaptive_triggers.py):** The DualSense Edge INPUT report bytes at
+offsets 43/44 read back the current physical actuator ADC state. They are NOT the trigger
+effect mode table ([0x00–0x07] modes: Off, Feedback, Weapon, Vibration, etc.) documented in
+the output command spec. Live values of 0x09 and 0xD1 were observed on a CFI-ZCP1.
+
+**Root cause of confusion:** The [0x00–0x07] mode table documents OUTPUT report commands sent
+*to* the controller to set trigger resistance. The INPUT report bytes at 43/44 report the
+*current physical ADC state* of the actuator, which is a different physical quantity.
+
+**Fix:** Never `assert readback_byte <= 0x07`. Instead, validate only that the byte is
+readable (non-None) and document the observed value for calibration. Asserting output command
+range against input report bytes will always fail on hardware.
+
+---
+
+## 13. ZK Circuit Ceremony — circom2 Is Required, Not npm circom
+
+**Lesson:** `pragma circom 2.0.0;` circuits require the Rust-based `circom2` binary. The npm
+package `circom` (v1) will fail to compile them. On Windows without Rust/cargo installed:
+
+1. Download the pre-built Windows binary from GitHub releases:
+   `https://github.com/iden3/circom/releases/download/v2.2.3/circom-windows-amd64.exe`
+2. Save to a local path (e.g., `contracts/circom.exe`)
+3. Add to PATH when running the ceremony:
+   `PATH="/path/to/contracts:$PATH" npx hardhat run scripts/run-ceremony.js`
+
+snarkjs (npm) is sufficient for the zkey generation steps. Only circuit compilation needs
+the circom binary. The `.r1cs` files are idempotent outputs — if they already exist, the
+ceremony script skips recompilation.
+
+**Key ceremony outputs (written to `contracts/circuits/`):**
+- `pot12_final.ptau` — Powers of Tau for 2^12 constraints (~5 MB download)
+- `TeamProof_final.zkey` + `TeamProof_verification_key.json`
+- `PitlSessionProof_final.zkey` + `PitlSessionProof_verification_key.json`
+
+---
+
+## 14. hidapi Device Selection on Windows
+
+**Lesson:** On Windows, `hid.enumerate(0x054C, 0x0DF2)` for a DualSense Edge returns
+multiple interfaces. The correct HID interface for input reports is:
+- `usage_page == 1` (Generic Desktop Controls)
+- `usage == 5` (Game Pad)
+- This is typically interface index 3
+
+**Install:** `pip install hidapi` (NOT `pip install hid` — that's a different library with
+the same import name `hid` but different API).
+
+**Conftest pattern for hardware tests:**
+```python
+@pytest.fixture(scope="module")
+def hid_device():
+    devs = hid.enumerate(VID, PID)
+    target = next((d for d in devs if d["usage_page"] == 1 and d["usage"] == 5), None)
+    if target is None:
+        pytest.skip("DualShock Edge not detected")
+    h = hid.device()
+    h.open_path(target["path"])
+    h.set_nonblocking(False)
+    yield h
+    h.close()
+```
+
+**LED indicator:** White PS button = USB mode (correct); Blue = Bluetooth (wrong — tests
+will find the device but Report ID 0x31 format differs from USB 0x01).
+
+---
+
+## 15. Whitepaper Structural Maintenance Rules
+
+**Lessons from external review pass (docs/vapi-whitepaper-v2.md):**
+
+1. **BridgeAgent belongs in an appendix.** Implementation-detail sections (tool catalogues,
+   streaming event schemas, session compression logic) dilute the main narrative. Keep a
+   single short paragraph in §7 pointing to the appendix. This applies to any component
+   where the *concept* fits in one sentence but the *spec* takes 50 lines.
+
+2. **Fill [X][Y] placeholders before sharing.** Placeholder citations signal incompleteness
+   to reviewers more strongly than any other single issue. Use real papers from adjacent
+   domains (game bot detection: Kang et al. 2016 [19]; timing anomaly: Blackburn et al. 2014 [20]).
+
+3. **Abstract word count target: ≤250 words.** Drop specific sensor LSB values; keep the
+   order-of-magnitude summary ("10,000× margin"). Keep all 5 numbered contributions but
+   compress each to one clause.
+
+4. **Soften "first" claims to "to our knowledge, the first."** Unprovable priority claims
+   trigger reviewer skepticism disproportionate to their signal value. The hedge is standard
+   academic practice and costs nothing.
+
+5. **Appendix A must contain actual content.** A circular reference to "§5–6 of the original
+   version" is an appendix that exists only on paper. Write 1–2 substantive paragraphs with
+   the actual algorithm and empirical figures; a reviewer who reaches the appendix should
+   find content, not a pointer.
