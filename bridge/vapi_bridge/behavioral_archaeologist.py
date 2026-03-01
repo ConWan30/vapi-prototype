@@ -125,6 +125,21 @@ class BehavioralArchaeologist:
         # Warmup attack score — both drift AND humanity trending up = suspicious
         # Scale: slope=0.01 for each → warmup_raw=2.0 → sigmoid(1.0)≈0.73 (>0.7 threshold)
         if humanity_slope > 0.002 and drift_slope > 0.002:
+            # 20000: scaling factor for the warmup sigmoid formula.
+            # Each slope is typically a tiny value in the range [0.001, 0.01] per session.
+            # The product of two such slopes is therefore in the range [1e-6, 1e-4].
+            # Multiplying by 20000 scales this into a range where sigmoid(raw - 1.0)
+            # produces meaningful [0, 1] separation between suspicious and benign devices:
+            #   - Slopes (0.01, 0.01): raw = 0.01 * 0.01 * 20000 = 2.0
+            #                          sigmoid(2.0 - 1.0) = sigma(1.0) ~= 0.73 (above 0.7 threshold)
+            #   - Slopes (0.001, 0.001): raw = 0.001 * 0.001 * 20000 = 0.002
+            #                            sigmoid(0.002 - 1.0) = sigma(-0.998) ~= 0.27 (below threshold)
+            # This value is derived from synthetic test patterns and has NOT been empirically
+            # calibrated against real controller session data.
+            # TODO: Calibrate 20000 against real-hardware session data (target: F1 > 0.85 at
+            # warmup attack detection on 500+ labeled sessions). Consider replacing the product
+            # formula with a geometric mean or log-domain computation for better numerical
+            # stability across a wider range of slope magnitudes.
             warmup_raw = drift_slope * humanity_slope * 20000
         else:
             warmup_raw = 0.0
@@ -175,6 +190,21 @@ class BehavioralArchaeologist:
         if mean_gap < 1e-6:
             return 0.0
         cv = std_gap / mean_gap
+        # cv / 2.0: maps the coefficient of variation (CV) of inter-checkpoint time gaps
+        # to a burst farming suspicion score in [0, 1].
+        #
+        # CV = std(gaps) / mean(gaps) measures relative variability of checkpoint timing:
+        #   - Pure macro/script: gaps are highly regular → CV ~= 0 → score ~= 0.0
+        #   - Burst farming: gaps cluster (many rapid checkpoints, then long pauses)
+        #                    → high variance relative to mean → CV ~= 1-2 → score = 0.5-1.0
+        # Dividing by 2.0 maps CV=1.0 (meaningfully bursty) to score=0.5 and CV=2.0 to
+        # the capped maximum of 1.0. The divisor 2.0 is empirically arbitrary — it was
+        # chosen to give a mid-range score for moderately bursty patterns without
+        # immediately saturating at 1.0.
+        # TODO: Calibrate the divisor (currently 2.0) against real-hardware checkpoint
+        # data from human players vs. known burst-farming bots. The CV distribution for
+        # human players on real hardware is unknown. A lower divisor (e.g., 1.5) would
+        # make the detector more sensitive; a higher divisor (e.g., 3.0) more conservative.
         return min(1.0, cv / 2.0)
 
     def get_population_report(self) -> list[BehavioralReport]:

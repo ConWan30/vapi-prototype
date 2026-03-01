@@ -61,6 +61,12 @@ class MonitoringState:
     last_rpc_ok: bool = True
     # Sliding window for records-per-minute (timestamp of each submit, max 1000)
     _submit_times: list = field(default_factory=list)
+    # Total records dropped due to a full batcher queue (incremented by Batcher.enqueue)
+    records_dropped: int = 0
+
+    def record_dropped(self) -> None:
+        """Call when a record is dropped because the batcher queue is full."""
+        self.records_dropped += 1
 
     def record_submitted(self, tx_hash: str = "") -> None:
         """Call after each successful PoAC record submission to the chain."""
@@ -235,6 +241,9 @@ def create_monitoring_app(
         _counter("vapi_records_failed_total",
                  "Total PoAC records that failed after all retries",
                  _state.records_failed)
+        _counter("vapi_records_dropped_total",
+                 "Total PoAC records dropped due to full batcher queue",
+                 _state.records_dropped)
         _gauge("vapi_records_per_minute",
                "Rolling 60-second PoAC record submission rate",
                round(_state.records_per_minute, 2))

@@ -40,10 +40,39 @@ class Batcher:
         self._chain = chain
         self._queue: asyncio.Queue[tuple[PoACRecord, bytes]] = asyncio.Queue(maxsize=1000)
         self._running = False
+        # Counter for records dropped when queue is full (exposed via status/metrics)
+        self._dropped_records: int = 0
 
     async def enqueue(self, record: PoACRecord, raw_data: bytes):
-        """Add a validated record to the batch queue."""
-        await self._queue.put((record, raw_data))
+        """Add a validated record to the batch queue.
+
+        Uses put_nowait to avoid indefinite blocking on a full queue.
+        If the queue is full (QueueFull), the record is counted as dropped
+        and a warning is emitted. This prevents unbounded back-pressure on
+        callers (e.g. the HTTP ingest handler) while keeping the counter
+        observable for alerting.
+        """
+        try:
+            self._queue.put_nowait((record, raw_data))
+        except asyncio.QueueFull:
+            self._dropped_records += 1
+            log.warning(
+                "Batcher queue full (maxsize=1000) — record dropped "
+                "(total_dropped=%d, device=%s)",
+                self._dropped_records,
+                getattr(record, "device_id_hex", "unknown")[:16],
+            )
+            # Mirror drop count into the shared monitoring state for Prometheus /metrics
+            try:
+                from .monitoring import state as _mon_state
+                _mon_state.record_dropped()
+            except Exception:
+                pass  # monitoring integration is always non-fatal
+
+    @property
+    def dropped_records(self) -> int:
+        """Total number of records dropped since startup due to a full queue."""
+        return self._dropped_records
 
     async def run(self):
         """Main batcher loop — runs until cancelled."""

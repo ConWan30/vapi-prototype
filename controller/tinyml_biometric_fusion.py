@@ -369,6 +369,40 @@ class BiometricFusionClassifier:
         ref_var  = self._stable_var  if self._stable_initialized else self._var
         diff = v - ref_mean
         var_safe = np.maximum(ref_var, self.VAR_FLOOR)
+        # NOTE: DIAGONAL COVARIANCE ASSUMPTION
+        # The current implementation uses a diagonal covariance matrix — each feature's
+        # variance is computed independently, treating all 7 biometric signals as mutually
+        # uncorrelated. The Mahalanobis distance is therefore:
+        #
+        #   d = sqrt( sum_i( (x_i - mu_i)^2 / sigma_i^2 ) )
+        #
+        # which is equivalent to a full Mahalanobis with Sigma = diag(sigma_1^2, ..., sigma_7^2).
+        # Each feature contributes 1/variance_i independently — there is no cross-feature
+        # interaction term in the distance computation.
+        #
+        # WHY THIS UNDERESTIMATES DISTANCE FOR CERTAIN ATTACK VECTORS:
+        # In practice, trigger_onset_velocity_l2 and grip_asymmetry are likely correlated
+        # for a given human player (faster onset correlates with a characteristic grip ratio).
+        # When an adversarial input deviates in BOTH of these correlated features simultaneously
+        # (e.g., an aimbot adjusting both trigger pull speed and grip simulation to mimic a
+        # human), the diagonal formula treats each deviation independently and underestimates
+        # the true statistical distance from the learned fingerprint. A full covariance matrix
+        # would capture the joint deviation and produce a larger, more sensitive distance.
+        #
+        # EXAMPLE: If trigger_onset_velocity and grip_asymmetry have empirical correlation
+        # rho=0.7, the off-diagonal covariance term
+        #   sigma_{onset,grip} = rho * sigma_onset * sigma_grip
+        # is currently ignored. Ignoring a positive correlation when both features deviate
+        # in the same direction causes Mahalanobis distance to be underestimated by a factor
+        # that grows with rho and the magnitude of simultaneous deviation.
+        #
+        # TODO: Add full covariance matrix support via numpy for production calibration.
+        # Replace diagonal var-only EMA with a full 7x7 covariance EMA:
+        #   C <- (1-alpha)*C + alpha * np.outer(delta, delta)
+        # Then: distance = sqrt(diff.T @ np.linalg.solve(C, diff))
+        # Gate behind a BiometricFusionClassifier.USE_FULL_COVARIANCE class flag (default False)
+        # until empirical calibration data from real hardware sessions is available.
+        # Requires minimum ~500 NOMINAL sessions per device for a stable covariance estimate.
         distance = float(np.sqrt(np.sum(diff ** 2 / var_safe)))
         self.last_distance = distance
 

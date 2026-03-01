@@ -790,7 +790,29 @@ class DualShockTransport:
                     )
                 except Exception:
                     pass
-                # Phase 25: two-track EMA — update stable fingerprint only on clean NOMINAL sessions
+                # Phase 25: two-track EMA — update stable fingerprint only on clean NOMINAL sessions.
+                #
+                # STABLE TRACK QUARANTINE INVARIANT:
+                # The stable track (_stable_mean/_stable_var in BiometricFusionClassifier)
+                # ONLY updates when the current session inference is INFER_NOMINAL (0x20)
+                # with no L4 or L5 anomaly override. Specifically:
+                #   - Sessions emitting 0x30 (BIOMETRIC_ANOMALY, from L4 Mahalanobis or
+                #     adaptive policy override in Phase 36) must NOT update the stable track.
+                #   - Sessions emitting 0x2B (TEMPORAL_BOT, from L5 TemporalRhythmOracle)
+                #     must NOT update the stable track.
+                #   - Sessions emitting hard cheat codes 0x28/0x29/0x2A are already
+                #     excluded by the `inference not in CHEAT_CODES` guard above this block.
+                #
+                # Rationale: the stable track is the poison-proof biometric baseline used
+                # by classify() as its reference when _stable_initialized=True. If an
+                # adversary feeds repeated anomalous sessions, the candidate track (_mean/_var)
+                # will drift toward their fake biometric profile — but the stable track remains
+                # anchored to verified NOMINAL history. The drift between the two tracks is
+                # measured by fingerprint_drift_velocity and surfaced to the PITL store.
+                # Allowing anomaly sessions to update the stable track would enable a
+                # gradual poisoning attack: the adversary could incrementally shift the
+                # baseline by interleaving anomalous sessions with clean ones, eventually
+                # making the stable track accept anomalous features as "normal."
                 if (inference == INFER_NOMINAL
                         and hasattr(self._biometric_classifier, "update_stable_fingerprint")):
                     self._biometric_classifier.update_stable_fingerprint(bio_features)

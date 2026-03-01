@@ -156,6 +156,13 @@ contract PoACVerifier is Ownable, ReentrancyGuard {
     error EmptyBatch();
     error ArrayLengthMismatch();
     error InvalidSchemaVersion(uint8 provided);
+    /// @dev Raised when the P256 precompile staticcall itself fails (not enough gas, or
+    ///      the precompile is not available on this chain).
+    error P256PrecompileCallFailed();
+    /// @dev Raised when the P256 precompile returns empty data (zero-length returndata),
+    ///      which is distinct from returning 0x00 (invalid signature) and indicates the
+    ///      precompile is not deployed at address 0x0100 on this network.
+    error P256PrecompileEmptyReturn();
 
     // -------------------------------------------------------------------------
     //  Constructor
@@ -463,6 +470,19 @@ contract PoACVerifier is Ownable, ReentrancyGuard {
      * @dev Verify ECDSA-P256 signature using IoTeX precompile at 0x0100.
      *      Input:  digest(32) || r(32) || s(32) || x(32) || y(32) = 160 bytes
      *      Output: 0x00..01 (32 bytes) if valid, 0x00..00 if invalid.
+     *
+     *      Edge cases handled explicitly:
+     *        1. staticcall returns false — precompile call failed (OOG or not deployed).
+     *           Reverts with P256PrecompileCallFailed rather than silently returning false.
+     *        2. returndata.length == 0 — precompile is not deployed at 0x0100 on this chain.
+     *           Reverts with P256PrecompileEmptyReturn to give a clear diagnosis.
+     *        3. returndata.length < 32 but > 0 — malformed output; treated as call failure.
+     *        4. returndata value == 0 — precompile ran but declared signature invalid.
+     *           Returns false (caller raises InvalidSignature).
+     *
+     *      Gas safety: The 160-byte staticcall requires ~3,500 gas on IoTeX (precompile).
+     *      Hardhat/EVM simulation costs ~2,000 gas. We gate on gasleft() > 5,000 to avoid
+     *      OOG inside the call silently swallowing the error in the child frame.
      */
     function _verifyP256Signature(
         bytes32 _digest,
@@ -491,13 +511,30 @@ contract PoACVerifier is Ownable, ReentrancyGuard {
             y := mload(add(_pubkey, 65))
         }
 
+        // Gas guard: ensure we have enough gas to call the precompile without OOG
+        // swallowing the error. 5,000 gas floor is conservative — the P256 precompile
+        // consumes ~3,500 gas on IoTeX; Hardhat simulation ~2,000.
+        require(gasleft() > 5000, "PoACVerifier: insufficient gas for P256 precompile");
+
         bytes memory input = abi.encodePacked(_digest, r, s, x, y);
         (bool success, bytes memory result) = P256_PRECOMPILE.staticcall(input);
 
-        if (!success || result.length < 32) {
-            return false;
+        // Case 1: staticcall returned false — precompile failed or OOG inside call
+        if (!success) {
+            revert P256PrecompileCallFailed();
         }
 
+        // Case 2: empty returndata — precompile not deployed at 0x0100 on this chain
+        if (result.length == 0) {
+            revert P256PrecompileEmptyReturn();
+        }
+
+        // Case 3: returndata present but shorter than 32 bytes — malformed precompile output
+        if (result.length < 32) {
+            revert P256PrecompileCallFailed();
+        }
+
+        // Case 4: precompile ran; result == 1 means valid, result == 0 means invalid
         uint256 valid;
         assembly {
             valid := mload(add(result, 32))
