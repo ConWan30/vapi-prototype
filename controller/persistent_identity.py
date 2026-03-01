@@ -185,7 +185,7 @@ class PersistentIdentity:
             data = {}
         data["registered_tx"]      = tx_hash
         data["registry_address"]   = registry_address
-        data["registered_at_iso"]  = datetime.datetime.utcnow().isoformat()
+        data["registered_at_iso"]  = datetime.datetime.now(datetime.timezone.utc).isoformat()
         data["registration_tier"]  = tier
         # Atomic write: tmp file + rename
         tmp = self._key_file.with_suffix(".tmp")
@@ -255,7 +255,7 @@ class PersistentIdentity:
         self._key_file.write_text(json.dumps({
             "private_der_hex": self._private_der.hex(),
             "public_key_hex":  self._public_bytes.hex(),
-            "created_at_iso":  __import__("datetime").datetime.utcnow().isoformat(),
+            "created_at_iso":  __import__("datetime").datetime.now(__import__("datetime").timezone.utc).isoformat(),
         }))
         log.info("Generated persistent keypair -> %s", self._key_file)
 

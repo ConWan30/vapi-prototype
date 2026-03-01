@@ -139,10 +139,13 @@ class TestL4TwoTrackEMA(unittest.TestCase):
         except ImportError:
             self.skipTest("tinyml_biometric_fusion not importable")
         defaults = {
-            "avg_press_l2": 0.5, "avg_press_r2": 0.5,
-            "std_press_l2": 0.1, "std_press_r2": 0.1,
-            "press_correlation": 0.8,
-            "trigger_switch_rate": 0.3, "hold_duration_avg": 0.2,
+            "trigger_resistance_change_rate": 0.3,
+            "trigger_onset_velocity_l2": 0.5,
+            "trigger_onset_velocity_r2": 0.5,
+            "micro_tremor_accel_variance": 0.02,
+            "grip_asymmetry": 1.1,
+            "stick_autocorr_lag1": 0.6,
+            "stick_autocorr_lag5": 0.4,
         }
         defaults.update(overrides)
         return BiometricFeatureFrame(**defaults)
@@ -164,8 +167,9 @@ class TestL4TwoTrackEMA(unittest.TestCase):
         """When only update_fingerprint (candidate) is called, stable mean is unchanged."""
         clf = self._make_classifier()
         try:
-            from tinyml_biometric_fusion import N_WARMUP_SESSIONS
-        except ImportError:
+            from tinyml_biometric_fusion import BiometricFusionClassifier as _BFC
+            N_WARMUP_SESSIONS = _BFC.N_WARMUP_SESSIONS
+        except (ImportError, AttributeError):
             self.skipTest("N_WARMUP_SESSIONS not importable")
         f_neutral = self._make_features()
         # Warm up both tracks with neutral features
@@ -174,7 +178,7 @@ class TestL4TwoTrackEMA(unittest.TestCase):
             clf.update_stable_fingerprint(f_neutral)
         stable_mean_before = np.copy(clf._stable_mean)
         # Now push candidate far from stable with extreme values
-        f_extreme = self._make_features(avg_press_l2=0.99, avg_press_r2=0.01)
+        f_extreme = self._make_features(trigger_onset_velocity_l2=0.99, trigger_onset_velocity_r2=0.01)
         for _ in range(10):
             clf.update_fingerprint(f_extreme)
         # Stable mean should be unchanged
@@ -184,14 +188,15 @@ class TestL4TwoTrackEMA(unittest.TestCase):
         """When candidate track diverges from stable, drift_velocity > 0."""
         clf = self._make_classifier()
         try:
-            from tinyml_biometric_fusion import N_WARMUP_SESSIONS
-        except ImportError:
+            from tinyml_biometric_fusion import BiometricFusionClassifier as _BFC
+            N_WARMUP_SESSIONS = _BFC.N_WARMUP_SESSIONS
+        except (ImportError, AttributeError):
             self.skipTest("N_WARMUP_SESSIONS not importable")
         f_neutral = self._make_features()
         for _ in range(N_WARMUP_SESSIONS + 2):
             clf.update_fingerprint(f_neutral)
             clf.update_stable_fingerprint(f_neutral)
-        f_extreme = self._make_features(avg_press_l2=0.99, avg_press_r2=0.01)
+        f_extreme = self._make_features(trigger_onset_velocity_l2=0.99, trigger_onset_velocity_r2=0.01)
         for _ in range(10):
             clf.update_fingerprint(f_extreme)
         drift = clf.fingerprint_drift_velocity

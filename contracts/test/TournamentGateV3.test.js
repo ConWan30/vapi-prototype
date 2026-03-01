@@ -60,7 +60,7 @@ describe("TournamentGateV3 (Phase 37)", function () {
   const MIN_CUMUL = 100n;
   const MIN_VEL   = 50n;
   const VEL_WIN   = 3n;
-  const SCORE_PER_CHECKPOINT = 120n; // delta per scoreDevice call
+  const SCORE_PER_CHECKPOINT = 120n; // delta per commitCheckpoint call
 
   beforeEach(async function () {
     [bridge, player] = await ethers.getSigners();
@@ -75,9 +75,11 @@ describe("TournamentGateV3 (Phase 37)", function () {
 
   // Helper: give DEVICE_A enough PHG score + credential to pass all gates
   async function setupEligible() {
-    // Score enough to exceed minCumulative and minVelocity
+    // Score enough to exceed minCumulative and minVelocity using commitCheckpoint
     for (let i = 0; i < 3; i++) {
-      await registry.connect(bridge).scoreDevice(DEVICE_A, BIO_HASH, SCORE_PER_CHECKPOINT);
+      await registry.connect(bridge).commitCheckpoint(
+        DEVICE_A, SCORE_PER_CHECKPOINT, 10, BIO_HASH
+      );
     }
     // Mint credential
     await cred.connect(bridge).mintCredential(
@@ -129,7 +131,7 @@ describe("TournamentGateV3 (Phase 37)", function () {
     );
     // Score once (cumulative=120 >= 10, but velocity depends on implementation)
     // Since getRecentVelocity sums score deltas in window, 1 checkpoint = 120 < 200
-    await registry.connect(bridge).scoreDevice(DEVICE_A, BIO_HASH, 120n);
+    await registry.connect(bridge).commitCheckpoint(DEVICE_A, 120n, 10, BIO_HASH);
     await cred.connect(bridge).mintCredential(
       DEVICE_A, makeNullifier(3), makeCommitment(3), 800n
     );

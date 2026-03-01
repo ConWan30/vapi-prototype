@@ -1,0 +1,98 @@
+# Python
+__pycache__/
+*.py[cod]
+*.pyo
+*.pyd
+.Python
+*.egg
+*.egg-info/
+dist/
+build/
+eggs/
+parts/
+var/
+sdist/
+wheels/
+pip-wheel-metadata/
+share/python-wheels/
+.installed.cfg
+*.egg-info
+MANIFEST
+.env
+.venv
+env/
+venv/
+ENV/
+env.bak/
+venv.bak/
+
+# pytest / coverage
+.pytest_cache/
+.coverage
+.coverage.*
+htmlcov/
+coverage.xml
+*.cover
+*.log
+
+# mypy / type checkers
+.mypy_cache/
+.dmypy.json
+dmypy.json
+.pytype/
+
+# Jupyter
+.ipynb_checkpoints
+*.ipynb
+
+# Node / Hardhat
+node_modules/
+contracts/node_modules/
+contracts/artifacts/
+contracts/cache/
+contracts/typechain-types/
+contracts/coverage/
+contracts/coverage.json
+contracts/gas-report.txt
+
+# ZK ceremony artifacts (large binary — generate locally with run-ceremony.js)
+*.zkey
+*.wtns
+*.r1cs
+*.sym
+circuits/build/
+circuits/witness/
+
+# Sessions / captures (runtime data, not source)
+sessions/
+*.session.json
+*.poac.bin
+
+# SQLite databases (runtime)
+*.db
+*.sqlite
+*.sqlite3
+
+# Keys / secrets (NEVER commit)
+*.pem
+*.der
+*.key
+device_key.json
+identity.json
+.env.local
+.env.*.local
+
+# OS
+.DS_Store
+Thumbs.db
+desktop.ini
+
+# Editor
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+
+# Solidity
+contracts/.env

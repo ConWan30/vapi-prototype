@@ -185,7 +185,7 @@ class SoftwareIdentityBackend(SigningBackend):
         data = {
             "private_der_hex": priv_der.hex(),
             "public_key_hex":  pub_bytes.hex(),
-            "created_at_iso":  datetime.datetime.utcnow().isoformat(),
+            "created_at_iso":  datetime.datetime.now(datetime.timezone.utc).isoformat(),
         }
         data.update(preserved)
 
