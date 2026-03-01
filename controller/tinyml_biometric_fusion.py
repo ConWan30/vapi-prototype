@@ -39,6 +39,7 @@ from __future__ import annotations
 
 import hashlib
 import math
+import os as _os
 import struct
 from collections import deque
 from dataclasses import dataclass, field
@@ -305,7 +306,11 @@ class BiometricFusionClassifier:
 
     N_WARMUP_SESSIONS: int = 5         # Sessions before anomaly detection activates
     EMA_ALPHA: float = 0.1             # Fingerprint update rate
-    ANOMALY_THRESHOLD: float = 3.0     # Mahalanobis distance threshold
+    # Thresholds configurable via environment variables (set before module import,
+    # or override on individual instances after __init__ for per-device calibration).
+    # Production values come from scripts/threshold_calibrator.py run on N>=50 sessions.
+    ANOMALY_THRESHOLD: float = float(_os.getenv("L4_ANOMALY_THRESHOLD", "3.0"))
+    CONTINUITY_THRESHOLD: float = float(_os.getenv("L4_CONTINUITY_THRESHOLD", "2.0"))
     CONFIDENCE_MIN: int = 180          # Minimum confidence to report anomaly [0-255]
     CONFIDENCE_SCALE: float = 30.0     # Maps distance above threshold to confidence
     VAR_FLOOR: float = 1e-6            # Prevent division by zero in Mahalanobis

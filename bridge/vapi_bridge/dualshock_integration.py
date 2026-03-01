@@ -632,6 +632,12 @@ class DualShockTransport:
             from world_model_continual import EWCWorldModel
             from knapsack_personalized import PreferenceModel
             self._biometric_classifier = BiometricFusionClassifier()
+            # Apply calibrated L4 thresholds from config (override class defaults).
+            # Derived by scripts/threshold_calibrator.py on N>=50 real hardware sessions.
+            if self._cfg.l4_anomaly_threshold != 3.0:
+                self._biometric_classifier.ANOMALY_THRESHOLD = self._cfg.l4_anomaly_threshold
+            if self._cfg.l4_continuity_threshold != 2.0:
+                self._biometric_classifier.CONTINUITY_THRESHOLD = self._cfg.l4_continuity_threshold
             self._bio_extractor_cls    = BiometricFeatureExtractor   # B3: store class ref
             self._ewc_model            = EWCWorldModel()
             self._preference_model     = PreferenceModel()

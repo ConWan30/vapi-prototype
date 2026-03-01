@@ -284,6 +284,16 @@ class Config:
         default_factory=lambda: int(_env("RATE_LIMIT_PER_MINUTE", "60"))
     )
 
+    # --- L4 Calibration: Hardware-derived Mahalanobis thresholds ---
+    # Default: design-time magic numbers. Set from calibration_profile.json after N>=50 sessions.
+    # Use scripts/threshold_calibrator.py to derive production values.
+    l4_anomaly_threshold: float = field(
+        default_factory=lambda: float(_env("L4_ANOMALY_THRESHOLD", "3.0"))
+    )
+    l4_continuity_threshold: float = field(
+        default_factory=lambda: float(_env("L4_CONTINUITY_THRESHOLD", "2.0"))
+    )
+
     # --- Phase 37: Credential Enforcement + AlertRouter + Context Compression ---
     phg_credential_enforcement_enabled: bool = field(
         default_factory=lambda: _env("PHG_CREDENTIAL_ENFORCEMENT_ENABLED", "true").lower() == "true"
