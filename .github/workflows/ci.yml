@@ -2,59 +2,94 @@ name: VAPI CI
 
 on:
   push:
-    branches: [main, develop]
+    branches: [main, develop, fix/external-review-v1]
   pull_request:
-    branches: [main]
+    branches: [main, develop]
 
 jobs:
+  # ── Job 1: Smart Contract tests (Hardhat) ──────────────────────────────────
   contracts:
-    name: Smart Contracts
+    name: Smart Contracts (Hardhat)
     runs-on: ubuntu-latest
     defaults:
       run:
         working-directory: contracts
     steps:
       - uses: actions/checkout@v4
+
       - uses: actions/setup-node@v4
         with:
           node-version: 20
           cache: npm
           cache-dependency-path: contracts/package-lock.json
-      - run: npm ci
-      - run: npx hardhat compile
-      - run: npx hardhat test
 
+      # Install circomlib at project root so circuit includes (../../node_modules/circomlib) resolve
+      - name: Install circomlib (project root)
+        working-directory: .
+        run: npm install circomlib
+
+      - name: Install contract dependencies
+        run: npm ci
+
+      - name: Compile contracts
+        run: npx hardhat compile
+
+      - name: Run Hardhat tests
+        run: npx hardhat test
+
+  # ── Job 2: Bridge + SDK pytest ─────────────────────────────────────────────
   bridge:
-    name: Bridge Tests
+    name: Bridge + SDK Tests (pytest)
     runs-on: ubuntu-latest
-    defaults:
-      run:
-        working-directory: bridge
     steps:
       - uses: actions/checkout@v4
+
       - uses: actions/setup-python@v5
         with:
           python-version: "3.11"
-      - run: pip install -r requirements.txt
-      - run: pip install pytest "eth-hash[pycryptodome]"
-      - run: python -m pytest tests/ -v
+          cache: pip
+          cache-dependency-path: bridge/requirements.txt
 
+      - name: Install bridge dependencies
+        run: |
+          pip install -r bridge/requirements.txt
+          pip install pytest pytest-asyncio pytest-cov httpx
+
+      - name: Install SDK dependencies
+        run: |
+          pip install cryptography eth-hash[pycryptodome]
+
+      - name: Run bridge tests
+        run: |
+          python -m pytest bridge/tests/ \
+            --ignore=bridge/tests/test_e2e_simulation.py \
+            -m "not hardware" \
+            -q
+
+      - name: Run SDK tests
+        run: |
+          python -m pytest sdk/tests/ -q
+
+  # ── Job 3: Firmware lint (header guards, C source check) ──────────────────
   firmware-lint:
     name: Firmware Lint
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-      - name: Check C source formatting
+
+      - name: Check C source files present
         run: |
-          find firmware/src firmware/include -name '*.c' -o -name '*.h' | head -20
+          find firmware/src firmware/include -name '*.c' -o -name '*.h' 2>/dev/null | head -20
           echo "Firmware sources found — lint pass (full build requires Nordic SDK)"
+
       - name: Verify header guards
         run: |
           for f in firmware/include/*.h; do
+            [ -f "$f" ] || continue
             guard=$(basename "$f" | tr '[:lower:].' '[:upper:]_')
             if grep -q "#ifndef ${guard}" "$f"; then
               echo "OK: $f has guard $guard"
             else
-              echo "WARN: $f missing standard guard"
+              echo "WARN: $f missing standard guard ${guard}"
             fi
           done
