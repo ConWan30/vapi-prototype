@@ -24,6 +24,8 @@ Usage:
     python scripts/threshold_calibrator.py sessions/*.json --output calibration_profile.json
 """
 
+from __future__ import annotations
+
 import argparse
 import glob
 import json
@@ -102,6 +104,145 @@ def _entropy_bits(vals: list, bins: int = 10) -> float:
             p = c / total
             entropy -= p * math.log2(p)
     return entropy
+
+
+# ---------------------------------------------------------------------------
+# Biometric proxy feature extraction (mirrors BiometricFeatureExtractor)
+# ---------------------------------------------------------------------------
+
+def _trigger_onset_velocity(trigger_vals: list) -> float:
+    """
+    Normalized trigger onset velocity: frames from first crossing 5 to peak / peak_value.
+    Mirrors controller/tinyml_biometric_fusion.py::_compute_trigger_onset_velocity.
+    Returns mean across all detected onsets; 0.0 if no onsets detected.
+    """
+    onsets = []
+    in_onset = False
+    onset_start = 0
+    for i, v in enumerate(trigger_vals):
+        if not in_onset and v > 5:
+            in_onset = True
+            onset_start = i
+        elif in_onset and (v >= 250 or (i > onset_start and trigger_vals[i - 1] > v)):
+            peak = trigger_vals[i - 1] if i > onset_start else v
+            duration = max(i - onset_start, 1)
+            onsets.append(duration / (peak + 1e-6))
+            in_onset = False
+    return sum(onsets) / len(onsets) if onsets else 0.0
+
+
+def _autocorr_py(series: list, lag: int) -> float:
+    """Pearson autocorrelation at given lag (pure Python). Returns 0 if insufficient data."""
+    n = len(series)
+    if n <= lag + 2:
+        return 0.0
+    x = series[:-lag]
+    y = series[lag:]
+    m_x = sum(x) / len(x)
+    m_y = sum(y) / len(y)
+    num = sum((xi - m_x) * (yi - m_y) for xi, yi in zip(x, y))
+    s_x = math.sqrt(sum((xi - m_x) ** 2 for xi in x))
+    s_y = math.sqrt(sum((yi - m_y) ** 2 for yi in y))
+    if s_x < 1e-10 or s_y < 1e-10:
+        return 0.0
+    return num / (s_x * s_y)
+
+
+def _session_biometric_fingerprint(session: dict) -> list | None:
+    """
+    Extract 6-proxy biometric feature vector from a captured session.
+
+    Maps to BiometricFusionClassifier's 7-feature space (6 of 7 available from
+    capture data; F1 trigger_resistance_change_rate requires OUTPUT report bytes
+    not present in capture JSON):
+
+    [0] onset_l2      — trigger onset velocity L2 (F2)
+    [1] onset_r2      — trigger onset velocity R2 (F3)
+    [2] tremor_var    — accel_mag variance during low-gyro frames (F4)
+    [3] grip_asym     — L2/R2 ratio during dual-press (F5)
+    [4] autocorr_lag1 — lx-velocity Pearson autocorr at lag 1 (F6)
+    [5] autocorr_lag5 — lx-velocity Pearson autocorr at lag 5 (F7)
+
+    Returns None if the session has too few reports for reliable extraction.
+
+    NOTE on gyro threshold for tremor_var: BiometricFeatureExtractor uses
+    gyro_mag < 0.01 rad/s (~9 LSB). At 1000 Hz, real hardware noise floor is
+    ~200-400 LSB std, so individual frames rarely fall below 9 LSB. We use
+    gyro_mag < 500 LSB as the capture-data proxy for "low motion"; for sessions
+    where no frames qualify, tremor_var = 0.0 (non-informative but harmless).
+    """
+    reports = session.get("reports", [])
+    if len(reports) < 20:
+        return None
+
+    l2_vals, r2_vals = [], []
+    gyro_x_vals, gyro_y_vals, gyro_z_vals = [], [], []
+    accel_x_vals, accel_y_vals, accel_z_vals = [], [], []
+    lx_vals, ly_vals = [], []
+
+    for r in reports:
+        feat = r.get("features", {})
+
+        def _fv(k):
+            v = feat.get(k)
+            return float(v) if v is not None else None
+
+        l2 = _fv("l2_trigger");  r2 = _fv("r2_trigger")
+        gx = _fv("gyro_x");      gy = _fv("gyro_y");      gz = _fv("gyro_z")
+        ax = _fv("accel_x");     ay = _fv("accel_y");      az = _fv("accel_z")
+        lx = _fv("left_stick_x"); ly_ = _fv("left_stick_y")
+
+        if l2 is not None: l2_vals.append(l2)
+        if r2 is not None: r2_vals.append(r2)
+        if gx is not None: gyro_x_vals.append(gx)
+        if gy is not None: gyro_y_vals.append(gy)
+        if gz is not None: gyro_z_vals.append(gz)
+        if ax is not None: accel_x_vals.append(ax)
+        if ay is not None: accel_y_vals.append(ay)
+        if az is not None: accel_z_vals.append(az)
+        if lx is not None: lx_vals.append(lx)
+        if ly_ is not None: ly_vals.append(ly_)
+
+    # F2: trigger onset velocity L2
+    onset_l2 = _trigger_onset_velocity([int(v) for v in l2_vals]) if l2_vals else 0.0
+
+    # F3: trigger onset velocity R2
+    onset_r2 = _trigger_onset_velocity([int(v) for v in r2_vals]) if r2_vals else 0.0
+
+    # F4: micro-tremor accel variance during low-motion frames
+    # gyro_mag < 500 LSB is the capture-data proxy for "physically still" at 1000Hz.
+    _GYRO_STILL_THRESH = 500.0
+    still_accel_mags = []
+    for gx, gy, gz, ax, ay, az in zip(
+        gyro_x_vals, gyro_y_vals, gyro_z_vals,
+        accel_x_vals, accel_y_vals, accel_z_vals,
+    ):
+        if math.sqrt(gx*gx + gy*gy + gz*gz) < _GYRO_STILL_THRESH:
+            still_accel_mags.append(math.sqrt(ax*ax + ay*ay + az*az))
+    tremor_var = 0.0
+    if len(still_accel_mags) >= 5:
+        m = sum(still_accel_mags) / len(still_accel_mags)
+        tremor_var = sum((v - m) ** 2 for v in still_accel_mags) / len(still_accel_mags)
+
+    # F5: grip asymmetry — L2/R2 ratio during dual-press (both > 10/255)
+    grip_ratios = []
+    for l2v, r2v in zip(l2_vals, r2_vals):
+        if l2v > 10.0 and r2v > 10.0:
+            grip_ratios.append(l2v / (r2v + 1e-6))
+    grip_asym = sum(grip_ratios) / len(grip_ratios) if grip_ratios else 1.0
+
+    # F6/F7: stick velocity magnitude autocorrelation at lag 1 and lag 5.
+    # Velocity = Euclidean distance between consecutive (lx, ly) positions.
+    stick_vels: list[float] = []
+    for i in range(1, min(len(lx_vals), len(ly_vals))):
+        dx = lx_vals[i] - lx_vals[i - 1]
+        dy = ly_vals[i] - ly_vals[i - 1]
+        stick_vels.append(math.sqrt(dx * dx + dy * dy))
+
+    autocorr1 = _autocorr_py(stick_vels, lag=1)
+    autocorr5 = _autocorr_py(stick_vels, lag=5)
+
+    return [onset_l2, onset_r2, tremor_var, grip_asym, autocorr1, autocorr5]
 
 
 # ---------------------------------------------------------------------------
@@ -226,44 +367,64 @@ def compute_thresholds(sessions: list) -> dict:
                 all_gyro_stds.append(_std(f[axis]))
     imu_noise_floor = _percentile(all_gyro_stds, 95) if all_gyro_stds else 50.0
 
-    # --- L4 Mahalanobis: inter-session fingerprint distances ---
-    # Build per-session fingerprint vectors (stick axis means)
+    # --- L4 Mahalanobis: 6-proxy biometric feature fingerprints ---
+    # Extract 6-proxy biometric feature vectors per session.
+    # Feature space mirrors BiometricFusionClassifier (6 of 7 features available
+    # from capture data; F1 trigger_resistance_change_rate omitted — requires
+    # OUTPUT report mode bytes not present in capture JSON).
     fingerprints = []
-    for f in all_features:
-        if all(len(f[k]) >= 5 for k in ("lx", "ly", "rx", "ry")):
-            fingerprints.append({
-                "lx": _mean(f["lx"]), "ly": _mean(f["ly"]),
-                "rx": _mean(f["rx"]), "ry": _mean(f["ry"]),
-            })
+    for s in sessions:
+        fp = _session_biometric_fingerprint(s)
+        if fp is not None:
+            fingerprints.append(fp)
 
-    intra_distances = []
+    mahal_distances: list[float] = []
     if len(fingerprints) >= 2:
-        # Compute pairwise L2 distances between session fingerprints
-        for i in range(len(fingerprints)):
-            for j in range(i + 1, len(fingerprints)):
-                a, b = fingerprints[i], fingerprints[j]
-                dist = math.sqrt(sum(
-                    (a[k] - b[k]) ** 2 for k in ("lx", "ly", "rx", "ry")
-                ))
-                intra_distances.append(dist)
+        n_fp = len(fingerprints)
+        n_feat = len(fingerprints[0])
+        # Population mean vector
+        feat_means = [
+            sum(fp[j] for fp in fingerprints) / n_fp
+            for j in range(n_feat)
+        ]
+        # Population variance vector (with floor to prevent division by zero)
+        _VAR_FLOOR = 1e-10
+        feat_vars = [
+            max(_VAR_FLOOR, sum((fp[j] - feat_means[j]) ** 2 for fp in fingerprints) / n_fp)
+            for j in range(n_feat)
+        ]
+        # Mahalanobis distance of each session from population centroid (diagonal cov)
+        for fp in fingerprints:
+            dist = math.sqrt(sum(
+                (fp[j] - feat_means[j]) ** 2 / feat_vars[j]
+                for j in range(n_feat)
+            ))
+            mahal_distances.append(dist)
 
-    # Continuity threshold: 95th percentile of same-device inter-session distances
-    # Sessions above this threshold are flagged as a different biometric profile
-    continuity_threshold = _percentile(intra_distances, 95) if intra_distances else 2.0
-    # Anomaly threshold: continuity_threshold × 1.5 (sessions much further away = anomaly)
-    anomaly_threshold = continuity_threshold * 1.5 if continuity_threshold > 0 else 3.0
+    # Principled threshold formula: mean + kσ
+    # anomaly_threshold    = mean + 3σ  (~99.7th percentile, Gaussian assumption)
+    # continuity_threshold = mean + 2σ  (~95th percentile, Gaussian assumption)
+    dist_mean = _mean(mahal_distances)
+    dist_std  = _std(mahal_distances)
+    if dist_std > 0:
+        anomaly_threshold    = dist_mean + 3.0 * dist_std
+        continuity_threshold = dist_mean + 2.0 * dist_std
+    else:
+        # Single session or perfectly consistent sessions: fall back to defaults
+        anomaly_threshold    = max(dist_mean * 1.5, 3.0)
+        continuity_threshold = max(dist_mean * 1.0, 2.0)
 
     # --- Confidence level assessment ---
-    if n_sessions < 5:
+    if n_sessions < 10:
         confidence = "very_low"
         confidence_note = (
             f"N={n_sessions} sessions is insufficient for reliable thresholds. "
             "Minimum N=10 required; N=50 recommended for production."
         )
-    elif n_sessions < 10:
+    elif n_sessions < 25:
         confidence = "low"
         confidence_note = f"N={n_sessions} sessions — thresholds are indicative only. Target N≥50."
-    elif n_sessions < 30:
+    elif n_sessions < 50:
         confidence = "medium"
         confidence_note = f"N={n_sessions} sessions — suitable for initial testing. Target N≥50 for production."
     else:
@@ -288,16 +449,26 @@ def compute_thresholds(sessions: list) -> dict:
             "l4_mahalanobis_anomaly": {
                 "recommended": round(anomaly_threshold, 3),
                 "current_magic_number": 3.0,
-                "derivation": "inter-session fingerprint L2 × 1.5 (P95 baseline × safety factor)",
+                "derivation": (
+                    "mean + 3σ of per-session Mahalanobis distance from population centroid "
+                    "(6-proxy biometric feature space; ~99.7th percentile assuming Gaussian). "
+                    "Feature space: onset_l2, onset_r2, tremor_var, grip_asym, autocorr_lag1, autocorr_lag5."
+                ),
                 "unit": "Mahalanobis distance (dimensionless)",
-                "ci95": [round(v, 3) for v in _ci95(intra_distances)] if intra_distances else None,
+                "dist_mean": round(dist_mean, 3) if mahal_distances else None,
+                "dist_std":  round(dist_std, 3)  if mahal_distances else None,
+                "n_fingerprints": len(fingerprints),
+                "ci95": [round(v, 3) for v in _ci95(mahal_distances)] if mahal_distances else None,
             },
             "l4_mahalanobis_continuity": {
                 "recommended": round(continuity_threshold, 3),
                 "current_magic_number": 2.0,
-                "derivation": "95th percentile of same-device inter-session fingerprint L2 distances",
+                "derivation": (
+                    "mean + 2σ of per-session Mahalanobis distance from population centroid "
+                    "(6-proxy biometric feature space; ~95th percentile assuming Gaussian)."
+                ),
                 "unit": "Mahalanobis distance (dimensionless)",
-                "ci95": [round(v, 3) for v in _ci95(intra_distances)] if intra_distances else None,
+                "ci95": [round(v, 3) for v in _ci95(mahal_distances)] if mahal_distances else None,
             },
             "l5_cv_threshold": {
                 "recommended": round(cv_threshold, 4),
@@ -333,6 +504,9 @@ def compute_thresholds(sessions: list) -> dict:
             ),
             "session_cv_mean": round(_mean(session_cvs), 4) if session_cvs else None,
             "session_entropy_mean": round(_mean(session_entropies), 3) if session_entropies else None,
+            "l4_mahal_dist_mean": round(dist_mean, 3) if mahal_distances else None,
+            "l4_mahal_dist_std":  round(dist_std, 3)  if mahal_distances else None,
+            "l4_fingerprints_extracted": len(fingerprints),
         },
     }
 

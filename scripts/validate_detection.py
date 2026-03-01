@@ -46,33 +46,62 @@ _L5_SIGNALS_REQ  = 2
 
 _R2_PRESS_THRESH   = 64    # Analog trigger: "pressed" when crossing this from below
 _R2_RELEASE_THRESH = 30    # "released" when dropping below this (hysteresis)
+_R2_DIGITAL_BIT    = 3     # Bit 3 of buttons_1 = R2 digital (DualSense USB layout)
 
 
 def _l5_extract_intervals(reports: list) -> list[float]:
     """
-    Extract inter-press intervals from R2 trigger threshold-crossing events.
+    Extract inter-press intervals from R2 trigger events.
 
-    Uses hysteresis to handle the DualSense Edge analog trigger ramp
-    (0→255 over ~20ms, not an instantaneous transition). A press event fires
-    when R2 first crosses _R2_PRESS_THRESH (64) from below; a release fires
-    when it drops below _R2_RELEASE_THRESH (30). This correctly handles both:
-      - Real hardware: gradual ramp through intermediate values
-      - Synthetic sessions: instant 0→255 transitions
+    Detection strategy (preferred order):
+    1. Digital: if buttons_1 is present in features, use bit 3 (R2 digital).
+       This is exact — the bit flips at the hardware's own actuation threshold.
+    2. Analog fallback: hysteresis on r2_trigger analog value.
+       Handles the DualSense Edge ramp (0 -> 255 over ~20ms) and synthetic
+       sessions (instant 0 -> 255 transitions). Press at >= 64, release < 30.
+
+    Sessions captured before capture_session.py A1 patch lack buttons_1 and
+    fall through to the analog path automatically.
     """
     intervals: list[float] = []
     prev_ts: float | None = None
     above_thresh = False
+
+    # Decide detection mode from the first report that has meaningful data
+    use_digital = any(
+        r.get("features", {}).get("buttons_1") is not None
+        for r in reports[:10]
+    )
+
     for r in reports:
-        r2 = r.get("features", {}).get("r2_trigger", 0) or 0
-        if not above_thresh and r2 >= _R2_PRESS_THRESH:   # rising edge
-            above_thresh = True
-            if prev_ts is not None:
-                dt = r["timestamp_ms"] - prev_ts
-                if dt > 0:
-                    intervals.append(float(dt))
-            prev_ts = float(r["timestamp_ms"])
-        elif above_thresh and r2 < _R2_RELEASE_THRESH:    # falling edge (reset)
-            above_thresh = False
+        feat = r.get("features", {})
+
+        if use_digital:
+            b1 = feat.get("buttons_1")
+            if b1 is None:
+                continue
+            pressed = bool((b1 >> _R2_DIGITAL_BIT) & 1)
+            if not above_thresh and pressed:        # rising edge
+                above_thresh = True
+                if prev_ts is not None:
+                    dt = r["timestamp_ms"] - prev_ts
+                    if dt > 0:
+                        intervals.append(float(dt))
+                prev_ts = float(r["timestamp_ms"])
+            elif above_thresh and not pressed:      # falling edge
+                above_thresh = False
+        else:
+            r2 = feat.get("r2_trigger", 0) or 0
+            if not above_thresh and r2 >= _R2_PRESS_THRESH:   # rising edge
+                above_thresh = True
+                if prev_ts is not None:
+                    dt = r["timestamp_ms"] - prev_ts
+                    if dt > 0:
+                        intervals.append(float(dt))
+                prev_ts = float(r["timestamp_ms"])
+            elif above_thresh and r2 < _R2_RELEASE_THRESH:    # falling edge
+                above_thresh = False
+
     return intervals
 
 

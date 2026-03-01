@@ -84,6 +84,13 @@ def _extract_features(raw: bytes) -> dict:
         "right_stick_y":  _u8(4),
         "l2_trigger":     _u8(5),
         "r2_trigger":     _u8(6),
+        # Bytes 8–9: digital button state (community-documented DualSense USB layout).
+        # buttons_0 byte 8: [7]Triangle [6]Circle [5]Cross [4]Square [3:0]D-pad
+        # buttons_1 byte 9: [7]R3 [6]L3 [5]Options [4]Create [3]R2d [2]L2d [1]R1 [0]L1
+        # R2 digital = buttons_1 bit 3; L2 digital = buttons_1 bit 2.
+        # NOTE: Offsets are community-reverse-engineered; validate against firmware.
+        "buttons_0":      _u8(8),
+        "buttons_1":      _u8(9),
         "gyro_x":         _i16(16),
         "gyro_y":         _i16(18),
         "gyro_z":         _i16(20),
