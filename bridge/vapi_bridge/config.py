@@ -288,10 +288,10 @@ class Config:
     # Default: design-time magic numbers. Set from calibration_profile.json after N>=50 sessions.
     # Use scripts/threshold_calibrator.py to derive production values.
     l4_anomaly_threshold: float = field(
-        default_factory=lambda: float(_env("L4_ANOMALY_THRESHOLD", "3.0"))
+        default_factory=lambda: float(_env("L4_ANOMALY_THRESHOLD", "6.34"))
     )
     l4_continuity_threshold: float = field(
-        default_factory=lambda: float(_env("L4_CONTINUITY_THRESHOLD", "2.0"))
+        default_factory=lambda: float(_env("L4_CONTINUITY_THRESHOLD", "4.906"))
     )
 
     # --- Phase 37: Credential Enforcement + AlertRouter + Context Compression ---

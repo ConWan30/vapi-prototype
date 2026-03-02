@@ -1,0 +1,73 @@
+{
+  "calibration_version": "1.0",
+  "n_sessions": 10,
+  "confidence_level": "low",
+  "confidence_note": "N=10 sessions \u2014 thresholds are indicative only. Target N>=50.",
+  "hardware_note": "All thresholds derived from real DualShock Edge hardware data. Replace bridge magic numbers with these values after validating false-positive rate at each skill tier.",
+  "thresholds": {
+    "l4_mahalanobis_anomaly": {
+      "recommended": 6.34,
+      "current_magic_number": 3.0,
+      "derivation": "mean + 3\u03c3 of per-session Mahalanobis distance from population centroid (6-proxy biometric feature space; ~99.7th percentile assuming Gaussian). Feature space: onset_l2, onset_r2, tremor_var, grip_asym, autocorr_lag1, autocorr_lag5.",
+      "unit": "Mahalanobis distance (dimensionless)",
+      "dist_mean": 2.037,
+      "dist_std": 1.435,
+      "n_fingerprints": 10,
+      "ci95": [
+        1.129,
+        2.944
+      ]
+    },
+    "l4_mahalanobis_continuity": {
+      "recommended": 4.906,
+      "current_magic_number": 2.0,
+      "derivation": "mean + 2\u03c3 of per-session Mahalanobis distance from population centroid (6-proxy biometric feature space; ~95th percentile assuming Gaussian).",
+      "unit": "Mahalanobis distance (dimensionless)",
+      "ci95": [
+        1.129,
+        2.944
+      ]
+    },
+    "l5_cv_threshold": {
+      "recommended": 0.7741,
+      "current_magic_number": 0.08,
+      "derivation": "10th percentile of per-session inter-press interval CVs (rising-edge R2 detection, same logic as validate_detection.py). Sessions used: 9 / 10 (excluded 1 with <20 presses).",
+      "unit": "coefficient of variation (dimensionless)",
+      "ci95": [
+        0.9336,
+        1.6385
+      ]
+    },
+    "l5_entropy_threshold": {
+      "recommended": 1.119,
+      "current_magic_number": 1.5,
+      "derivation": "10th percentile of per-session inter-press interval entropy (10-bin histogram). Sessions used: 9 / 10.",
+      "unit": "bits",
+      "ci95": [
+        1.44,
+        2.527
+      ]
+    },
+    "stick_noise_floor_lsb": {
+      "recommended": 21.29,
+      "current_magic_number": 5.0,
+      "derivation": "mean of per-axis std across all sessions",
+      "unit": "LSB (raw ADC counts, range 0\u2013255)"
+    },
+    "imu_gyro_noise_floor_lsb": {
+      "recommended": 378.56,
+      "current_magic_number": 50.0,
+      "derivation": "95th percentile of per-axis gyro std across sessions",
+      "unit": "LSB (raw ADC counts)"
+    }
+  },
+  "session_stats": {
+    "mean_polling_rate_hz": 1000.0,
+    "mean_reports_per_session": 149674.0,
+    "session_cv_mean": 1.286,
+    "session_entropy_mean": 1.983,
+    "l4_mahal_dist_mean": 2.037,
+    "l4_mahal_dist_std": 1.435,
+    "l4_fingerprints_extracted": 10
+  }
+}
