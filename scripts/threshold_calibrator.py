@@ -6,7 +6,7 @@ computes recommended threshold values for the PITL detection stack.
 
 WARNING: Minimum N=10 sessions is required for reliable thresholds.
 Fewer than 10 sessions will produce a warning and wide confidence intervals.
-Production thresholds require N≥50 sessions across multiple sessions and days.
+Production thresholds require N>=50 sessions across multiple sessions and days.
 
 Computed thresholds
 -------------------
@@ -246,6 +246,65 @@ def _session_biometric_fingerprint(session: dict) -> list | None:
 
 
 # ---------------------------------------------------------------------------
+# L5 press interval extraction (mirrors validate_detection.py)
+# ---------------------------------------------------------------------------
+
+_R2_PRESS_THRESH   = 64   # Analog: "pressed" when crossing from below
+_R2_RELEASE_THRESH = 30   # Analog: "released" when dropping below
+_R2_DIGITAL_BIT    = 3    # buttons_1 bit 3 = R2 digital (DualSense USB)
+_L5_MIN_PRESSES    = 20   # Minimum presses for reliable L5 calibration
+
+
+def _extract_press_intervals(session: dict) -> list:
+    """
+    Extract inter-press intervals (ms) from R2 trigger events.
+    Mirrors validate_detection.py::_l5_extract_intervals exactly:
+      1. Digital: buttons_1 bit 3 when available (exact, firmware-driven).
+      2. Analog fallback: hysteresis on r2_trigger (press>=64, release<30).
+    Returns list of inter-press intervals in ms.
+    """
+    reports = session.get("reports", [])
+    intervals: list = []
+    prev_ts = None
+    above_thresh = False
+
+    use_digital = any(
+        r.get("features", {}).get("buttons_1") is not None
+        for r in reports[:10]
+    )
+
+    for r in reports:
+        feat = r.get("features", {})
+        if use_digital:
+            b1 = feat.get("buttons_1")
+            if b1 is None:
+                continue
+            pressed = bool((b1 >> _R2_DIGITAL_BIT) & 1)
+            if not above_thresh and pressed:
+                above_thresh = True
+                if prev_ts is not None:
+                    dt = r["timestamp_ms"] - prev_ts
+                    if dt > 0:
+                        intervals.append(float(dt))
+                prev_ts = float(r["timestamp_ms"])
+            elif above_thresh and not pressed:
+                above_thresh = False
+        else:
+            r2 = feat.get("r2_trigger", 0) or 0
+            if not above_thresh and r2 >= _R2_PRESS_THRESH:
+                above_thresh = True
+                if prev_ts is not None:
+                    dt = r["timestamp_ms"] - prev_ts
+                    if dt > 0:
+                        intervals.append(float(dt))
+                prev_ts = float(r["timestamp_ms"])
+            elif above_thresh and r2 < _R2_RELEASE_THRESH:
+                above_thresh = False
+
+    return intervals
+
+
+# ---------------------------------------------------------------------------
 # Session loading
 # ---------------------------------------------------------------------------
 
@@ -331,23 +390,29 @@ def compute_thresholds(sessions: list) -> dict:
     all_features = [_session_features(s) for s in sessions]
     n_sessions = len(all_features)
 
-    # --- L5: timing coefficient of variation per session ---
-    session_cvs = [
-        _cv(f["inter_event_ms"])
-        for f in all_features
-        if len(f["inter_event_ms"]) >= 10
-    ]
-    # L5 CV threshold: set to 10th percentile of human session CVs.
-    # Sessions below this threshold are flagged as suspiciously regular.
-    # If human players have CV ≥ 0.15, setting threshold at P10 gives ~90% TPR for macros.
-    cv_threshold = _percentile(session_cvs, 10) if session_cvs else 0.08
+    # --- L5: timing CV and entropy per session (inter-press intervals) ---
+    # Uses _extract_press_intervals() which mirrors validate_detection.py exactly:
+    # genuine R2 button-press intervals (100–1000ms range). The previous approach
+    # used inter-report intervals (~1ms at 1000Hz), producing CV≈0 and entropy≈0
+    # regardless of session content — both meaningless for L5 calibration.
+    # Sessions with fewer than _L5_MIN_PRESSES detected presses are excluded.
+    session_cvs: list = []
+    session_entropies: list = []
+    l5_excluded = 0
+    for i, s in enumerate(sessions):
+        intervals = _extract_press_intervals(s)
+        if len(intervals) < _L5_MIN_PRESSES:
+            print(f"  L5 WARNING: session {i + 1} has {len(intervals)} detected R2 presses "
+                  f"(need {_L5_MIN_PRESSES}) -- excluded from L5 calibration.")
+            l5_excluded += 1
+            continue
+        session_cvs.append(_cv(intervals))
+        session_entropies.append(_entropy_bits(intervals))
+    if l5_excluded == n_sessions:
+        print(f"  L5 WARNING: all {n_sessions} sessions excluded from L5 calibration. "
+              "Capture sessions with active R2 button use (>=20 presses per session).")
 
-    # --- L5: timing entropy per session ---
-    session_entropies = [
-        _entropy_bits(f["inter_event_ms"])
-        for f in all_features
-        if len(f["inter_event_ms"]) >= 10
-    ]
+    cv_threshold = _percentile(session_cvs, 10) if session_cvs else 0.08
     entropy_threshold = _percentile(session_entropies, 10) if session_entropies else 1.5
 
     # --- Stick noise floor (L4 calibration input) ---
@@ -423,10 +488,10 @@ def compute_thresholds(sessions: list) -> dict:
         )
     elif n_sessions < 25:
         confidence = "low"
-        confidence_note = f"N={n_sessions} sessions — thresholds are indicative only. Target N≥50."
+        confidence_note = f"N={n_sessions} sessions — thresholds are indicative only. Target N>=50."
     elif n_sessions < 50:
         confidence = "medium"
-        confidence_note = f"N={n_sessions} sessions — suitable for initial testing. Target N≥50 for production."
+        confidence_note = f"N={n_sessions} sessions — suitable for initial testing. Target N>=50 for production."
     else:
         confidence = "high"
         confidence_note = f"N={n_sessions} sessions — thresholds suitable for production validation."
@@ -473,14 +538,22 @@ def compute_thresholds(sessions: list) -> dict:
             "l5_cv_threshold": {
                 "recommended": round(cv_threshold, 4),
                 "current_magic_number": 0.08,
-                "derivation": "10th percentile of human session timing CVs",
+                "derivation": (
+                    "10th percentile of per-session inter-press interval CVs "
+                    "(rising-edge R2 detection, same logic as validate_detection.py). "
+                    f"Sessions used: {len(session_cvs)} / {n_sessions} "
+                    f"(excluded {l5_excluded} with <{_L5_MIN_PRESSES} presses)."
+                ),
                 "unit": "coefficient of variation (dimensionless)",
                 "ci95": [round(v, 4) for v in _ci95(session_cvs)] if session_cvs else None,
             },
             "l5_entropy_threshold": {
                 "recommended": round(entropy_threshold, 3),
                 "current_magic_number": 1.5,
-                "derivation": "10th percentile of human session timing entropy (10-bin histogram)",
+                "derivation": (
+                    "10th percentile of per-session inter-press interval entropy (10-bin histogram). "
+                    f"Sessions used: {len(session_entropies)} / {n_sessions}."
+                ),
                 "unit": "bits",
                 "ci95": [round(v, 3) for v in _ci95(session_entropies)] if session_entropies else None,
             },
