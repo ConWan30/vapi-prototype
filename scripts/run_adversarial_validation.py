@@ -35,6 +35,8 @@ DOCS_DIR.mkdir(exist_ok=True)
 L4_ANOMALY_THRESHOLD    = 5.869   # Mahalanobis distance in 6-proxy feature space
 L4_INJECTION_GYRO_THRESH = 20.0   # LSB std — below this with active triggers = injection
 L4_MIN_TRIGGER_FRAMES   = 10      # Minimum trigger-active frames to assess L2/L4 injection
+L2_GRAVITY_THRESHOLD    = 100.0   # LSB — mean accel_magnitude below this = zeroed IMU (no gravity)
+L2_GRAVITY_MIN_REPORTS  = 1000    # Minimum reports to assess gravity signal reliably
 L5_CV_THRESHOLD         = 0.08    # CV (std/mean) below this = timing too steady
 L5_ENTROPY_THRESHOLD    = 1.0     # Shannon entropy (bits) below this = too few distinct intervals
 L5_QUANT_THRESHOLD      = 0.55    # 60 Hz-snapping fraction above this = bot timer
@@ -192,11 +194,20 @@ def _extract_press_intervals(session: dict) -> list[float]:
 
 def check_l2(session: dict) -> dict:
     """
-    Detect software injection: zero IMU while sticks or triggers are active.
-    Returns dict with 'fired', 'gyro_std', 'trigger_frames'.
+    Detect software injection via two independent signals (either fires → detected):
+
+    Signal A (active-frame gyro): gyro_std < 20 LSB while sticks/triggers are active.
+      — Catches injection during gameplay but misses idle-start sessions.
+
+    Signal B (gravity): mean(accel_magnitude) < 100 LSB across all reports.
+      — Gravity always produces ~2048 LSB on real hardware regardless of player activity.
+        Zeroed accel (injection) produces magnitude = 0. Works on idle sessions.
+
+    Returns dict with 'fired', 'gyro_std', 'gravity_fired', 'mean_accel_mag', 'active_frames'.
     """
     reports = session.get("reports", [])
     trigger_frames_gyro: list[float] = []
+    accel_mags: list[float] = []
 
     for r in reports:
         f  = r.get("features", {})
@@ -204,6 +215,8 @@ def check_l2(session: dict) -> dict:
         l2 = float(f.get("l2_trigger") or 0)
         lx = abs(float(f.get("left_stick_x")  or 128) - 128)
         rx = abs(float(f.get("right_stick_x") or 128) - 128)
+
+        # Signal A: collect gyro during active-input frames
         active = r2 > 20 or l2 > 20 or lx > 15 or rx > 15
         if active:
             gx = float(f.get("gyro_x") or 0)
@@ -211,20 +224,42 @@ def check_l2(session: dict) -> dict:
             gz = float(f.get("gyro_z") or 0)
             trigger_frames_gyro.extend([gx, gy, gz])
 
-    if len(trigger_frames_gyro) < L4_MIN_TRIGGER_FRAMES * 3:
-        return {"fired": False, "gyro_std": None, "active_frames": 0,
-                "reason": "insufficient active frames"}
+        # Signal B: collect accel magnitude for gravity check
+        ax = float(f.get("accel_x") or 0)
+        ay = float(f.get("accel_y") or 0)
+        az = float(f.get("accel_z") or 0)
+        accel_mags.append(math.sqrt(ax*ax + ay*ay + az*az))
 
-    gyro_arr  = np.array(trigger_frames_gyro, dtype=np.float32)
-    gyro_std  = float(gyro_arr.std())
-    fired     = gyro_std < L4_INJECTION_GYRO_THRESH
+    # Signal A evaluation
+    if len(trigger_frames_gyro) >= L4_MIN_TRIGGER_FRAMES * 3:
+        gyro_arr  = np.array(trigger_frames_gyro, dtype=np.float32)
+        gyro_std  = float(gyro_arr.std())
+        signal_a  = gyro_std < L4_INJECTION_GYRO_THRESH
+    else:
+        gyro_std  = None
+        signal_a  = False
 
-    return {
+    # Signal B evaluation (gravity absent)
+    if len(accel_mags) >= L2_GRAVITY_MIN_REPORTS:
+        mean_accel_mag = float(np.mean(accel_mags))
+        signal_b = mean_accel_mag < L2_GRAVITY_THRESHOLD
+    else:
+        mean_accel_mag = None
+        signal_b = False
+
+    fired = signal_a or signal_b
+
+    result: dict = {
         "fired":          fired,
-        "gyro_std":       round(gyro_std, 3),
+        "gyro_std":       round(gyro_std, 3) if gyro_std is not None else None,
         "active_frames":  len(trigger_frames_gyro) // 3,
+        "gravity_fired":  signal_b,
+        "mean_accel_mag": round(mean_accel_mag, 1) if mean_accel_mag is not None else None,
         "inference":      "0x28 DRIVER_INJECT" if fired else "NOMINAL",
     }
+    if fired and not signal_a and signal_b:
+        result["reason"] = "gravity absent (accel_magnitude near zero)"
+    return result
 
 
 # ===========================================================================
@@ -582,6 +617,7 @@ def build_report(human_results: list[dict],
     w("CALIBRATED THRESHOLDS  (N=50, high confidence, 2026-03-02)")
     w("-" * 72)
     w(f"  L2 injection gyro std < {L4_INJECTION_GYRO_THRESH} LSB with active input")
+    w(f"     OR accel_magnitude mean < {L2_GRAVITY_THRESHOLD} LSB (gravity absent — works on idle sessions)")
     w(f"  L4 Mahalanobis distance > {L4_ANOMALY_THRESHOLD} (mean + 3-sigma, N=50)")
     w(f"  L5 CV < {L5_CV_THRESHOLD} | entropy < {L5_ENTROPY_THRESHOLD} bits | quant > {L5_QUANT_THRESHOLD}  (need >=2/3)")
     w()
