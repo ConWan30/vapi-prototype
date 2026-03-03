@@ -413,7 +413,7 @@ any level produce PITL inference codes committed into the PoAC record.
 | L2 | `hid_xinput_oracle.py` | `0x28` | Hard cheat | HID report vs. XInput API discrepancy |
 | L3 | `tinyml_backend_cheat.py` | `0x29`, `0x2A` | Hard cheat | 9-feature temporal behavioral analysis (30→64→32→6 INT8 net) |
 | L4 | `tinyml_biometric_fusion.py` | `0x30` | Advisory | 7-signal Mahalanobis kinematic fingerprint vs. per-device stable EMA |
-| L5 | `temporal_rhythm_oracle.py` | `0x2B` | Advisory | CV < 0.08, Shannon entropy < 1.5 bits, 60 Hz quantization > 0.55; fires on ≥ 2/3 |
+| L5 | `temporal_rhythm_oracle.py` | `0x2B` | Advisory | CV < 0.08, Shannon entropy < 1.0 bits, 60 Hz quantization > 0.55; fires on ≥ 2/3 |
 
 **L2 — HID injection detection.**
 Software injection attacks (SendInput, XInput emulation, vJoy, DS4Windows spoofing)
@@ -454,7 +454,7 @@ Bot scripts produce near-constant inter-press intervals. The oracle characterize
 the inter-event timing distribution over a 120-event deque (min 20 samples) and fires
 `0x2B TEMPORAL_ANOMALY` when ≥ 2 of 3 signals are suspicious:
 - Coefficient of variation (CV) < 0.08 — near-zero timing variance
-- Shannon entropy < 1.5 bits — few distinct interval values
+- Shannon entropy < 1.0 bits — few distinct interval values (hardware-calibrated N=50; human baseline: ~4.56 bits mean)
 - 60 Hz quantization score > 0.55 — intervals cluster at 16.67 ms multiples
 
 `rhythm_humanity_score = (cv_humanity + entropy_score + non_quant) / 3.0 ∈ [0,1]`
@@ -529,8 +529,8 @@ the on-chain PHG score reflect *quality* of human activity, not merely volume.
 
 **Biometric-anchored session continuity.**
 A player who gets a new controller inherits their PHG history if:
-`diagonal_mahalanobis(old_fingerprint, new_fingerprint) < 2.0`
-(the continuity threshold is tighter than the 3.0 anomaly threshold). The PHG score
+`diagonal_mahalanobis(old_fingerprint, new_fingerprint) < 4.617`
+(the continuity threshold is tighter than the 5.869 anomaly threshold). The PHG score
 is transferred on-chain via `PHGRegistry.inheritScore()`; the source is zeroed to
 prevent double-counting. Each device can be a continuity source and destination
 exactly once.
@@ -684,46 +684,57 @@ At IoTeX's typical gas price of 1 Gwei and IOTX at $0.03, a batch of 10 verifica
 costs approximately $0.00024. The P256 precompile at `0x0100` is essential: without it,
 P256 verification in pure Solidity requires ~1.2M gas per signature.
 
-### 8.3 Anti-Cheat Detection (Synthetic Test Patterns)
+### 8.3 Anti-Cheat Detection — Real Hardware Adversarial Validation
 
-**WARNING: All figures in this section are derived from synthetic test data. No
-claims about real-world detection accuracy should be drawn from these results.
-Real-hardware validation with labeled adversarial gameplay data is required before
-production deployment. All figures below are "on synthetic test patterns" only.**
+Detection benchmarks were produced by running six deterministic attack transforms
+against 55 real 1000 Hz DualShock Edge sessions (N=50 human baseline, 2026-03-02).
+Each adversarial session is a reproducible transformation of a real captured session
+targeting the specific physical property each PITL layer relies on.
 
-**Table 5: Heuristic Classifier Detection — SYNTHETIC DATA ONLY**
+**Table 5: Adversarial Detection Matrix — Real Hardware (DualShock Edge CFI-ZCP1, 1000 Hz)**
 
-| Input Pattern | Expected Class | Detection Rate | False Positive Rate |
-|---------------|---------------|----------------|---------------------|
-| Normal human gameplay | NOMINAL | 100% | 0% |
-| Skilled human gameplay | NOMINAL/SKILLED | 100% | 0% |
-| Macro (σ² < 1 ms²) | MACRO | 100% | 0% |
-| Aimbot snap (jerk > 2.0) | AIMBOT | 100% | 0% |
-| IMU mismatch (corr < 0.15) | IMU_MISS | 100% | 0% |
-| Input injection (IMU noise < 0.001) | INJECTION | 100% | 0% |
+| Attack Type | N | L2 Det% | L4 Det% | L5 Det% | Any% | Notes |
+|-------------|---|---------|---------|---------|------|-------|
+| Replay (chain-level) | 5 | 0% | 20% | 0% | 20% | Chain attack — PITL not the right layer; on-chain replay prevention handles this |
+| IMU-stripped injection | 10 | **100%** | 0% | 0% | **100%** | L2 gravity signal + active-frame gyro; zeroed accel always detectable |
+| Perfect-timing macro | 10 | 50% | 30% | **100%** | **100%** | L5 CV=0.0054, entropy=0.22 bits — far below human baseline |
+| Biometric transplant | 5 | 0% | 0% | 0% | 0% | Single-person dataset: chimeric fingerprint within one person's Mahalanobis ball |
+| Gradual warmup (bot→human) | 10 | 20% | 0% | 60% | 60% | Sessions 1–6 (α ≤ 0.56) detected; sessions 7–10 reach near-human territory |
+| Quantization-masked bot | 15 | 67% | 0% | **100%** | **100%** | Mean quant_score=0.898; entropy collapses to ~0 bits despite timing jitter |
 
-**Table 6: L5 Temporal Rhythm Thresholds — SYNTHETIC DATA ONLY**
+**Table 6: L5 Human Baseline — Hardware Calibrated (N=50 DualShock Edge Sessions)**
 
-| Session Type | Expected CV | L5 Fires? |
-|--------------|-------------|-----------|
-| Macro (constant interval) | < 0.08 | Yes |
-| Gold-tier human | > 0.15 | No |
-| Diamond-tier human | > 0.08 | No |
+| Metric | Human Mean | Human Min | Threshold | Safety Margin |
+|--------|-----------|-----------|-----------|---------------|
+| CV (std/mean) | 1.166 | 0.665 | < 0.08 | **14.6×** |
+| Shannon entropy | 4.562 bits | 3.033 bits | < 1.0 bits | **4.6×** |
+| Quant score | 0.590 | 0.423 | > 0.55 | — (2/3 rule prevents FP) |
 
-Diamond-tier humans are consistent but physiologically cannot match macro-level
-timing variance. If the CV threshold were set below 0.08, diamond-tier players would
-generate false positives — this is why 0.08 is chosen as the boundary.
+Human quant score (mean 0.59) slightly exceeds the threshold because humans also time
+button presses to game-loop frame boundaries. The 2/3-signal requirement prevents false
+positives since CV and entropy remain far on the human side.
 
-**Table 7: L4 Biometric Anomaly — SYNTHETIC DATA ONLY**
+**Table 7: L4 Biometric — N=50 Production Thresholds**
 
-| Scenario | Expected Mahalanobis d | L4 Fires? |
-|----------|----------------------|-----------|
-| Same human, different session | 1.0–2.5 | No (threshold 3.0) |
-| Different human, same controller | 3.5–6.0 | Yes |
-| Bot farm (identical profiles) | < 0.5 per pair | Cluster flagged |
+| Scenario | Mahalanobis d | L4 Fires? |
+|----------|--------------|-----------|
+| Same human, different session (hw_* baseline) | mean 3.2, max 6.84 | No (threshold **5.869**) |
+| Genuine biometric outlier (hw_007, aggressive trigger) | 6.84 | Yes — expected at 3σ |
+| Bot farm (transplant, same person) | Within personal ball | No — requires multi-person dataset |
 
-**Network correlation (synthetic):** 10 devices with identical biometric profiles
-(distance=0) form a single cluster with `farm_suspicion_score = 1.0` and `is_flagged=True`.
+**Human false positive rate: 2.0% (1/50 sessions).** The single FP (hw_007) is a genuine
+biometric outlier — onset velocity 5.2σ above mean — expected at the mean+3σ threshold.
+
+**Stationary control baseline.** A 30-second session with the controller untouched on a desk
+(sessions/adversarial/stationary\_control\_001.json, 999.7 Hz) confirms:
+- PITL result: NOMINAL
+- Gyro std at rest: 1.3–1.5 LSB; P95 gyro magnitude: 9.54 LSB
+- Mean accel magnitude: ~2150 LSB (gravity); **14,000× injection detection margin**
+
+**Known limitation.** The biometric transplant attack (0% detection) requires a multi-person
+calibration dataset to overcome. With a single-person N=50 baseline, chimeric fingerprints
+from the same individual remain within their own Mahalanobis ball. Detection requires
+fingerprints from ≥3 distinct people during calibration.
 
 ### 8.4 DualShock Edge Hardware Validation
 
@@ -776,11 +787,23 @@ All tests include embedded step-by-step physical procedures (timing guidance, ac
 prompts) so that operators without code expertise can execute the full hardware validation
 protocol. Tests are gated behind `@pytest.mark.hardware` and excluded from CI by default.
 
-**Remaining hardware validation gap.** The 28 tests validate the transport and physical
-signal pipeline. They do not provide labeled adversarial gameplay data — bot trajectories,
-injection tool streams, trained human-mimicking automation. Detection claims in Tables 5–7
-remain synthetic only. Populating these tests with adversarial captures is the primary
-gap between prototype and production-validated system (§10.1).
+**N=50 Biometric Calibration (2026-03-02).** Following the 28-test hardware validation,
+50 additional sessions were captured and used to calibrate all PITL thresholds empirically:
+
+| Threshold | Design-time estimate | Hardware-calibrated (N=50, mean+3σ) |
+|-----------|---------------------|--------------------------------------|
+| L4 anomaly (ANOMALY_THRESHOLD) | 3.0 | **5.869** |
+| L4 continuity (CONTINUITY_THRESHOLD) | 2.0 | **4.617** |
+| L5 entropy | 1.5 bits | **1.0 bits** (human min: 3.03 bits) |
+| L5 CV | 0.08 | 0.08 (unchanged; human mean: 1.17) |
+
+Calibration confidence: **HIGH** (N≥50). Values encoded as defaults in
+`controller/tinyml_biometric_fusion.py` and overridable via environment variables.
+See `calibration_profile.json` for the full calibration record.
+
+The adversarial validation suite (`scripts/run_adversarial_validation.py`) subsequently
+validated these thresholds against 55 adversarial sessions across 6 attack types —
+see §8.3 for the full detection matrix.
 
 ### 8.5 Test Coverage Summary
 
@@ -862,22 +885,24 @@ documents this attack surface explicitly.
 
 ### 9.3 Limitations
 
-**All detection benchmarks are synthetic.** The 100% detection rates in Table 5 are
-measured on synthetic test patterns generated by `tests/data/realistic_generators.py`.
-Real-world adversarial gameplay data — professional bot software, trained human-mimicking
-automation, hardware-level I²C spoofing — is required to validate real-world detection
-rates. Real-hardware benchmarks are the primary gap between the current prototype and
-a production-ready system.
+**Detection benchmarks are validated on single-player hardware data.** Table 5 now
+reflects real adversarial validation against 55 sessions (N=50 human baseline, DualShock
+Edge CFI-ZCP1). The biometric transplant attack achieves 0% detection because all 50
+calibration sessions are from a single person — chimeric fingerprints from the same
+individual remain within their own Mahalanobis ball. A production deployment requires
+calibration sessions from ≥3 distinct people to enable cross-person biometric discrimination.
 
-**Biometric thresholds are uncalibrated.** L4 ANOMALY_THRESHOLD (3.0) and
-CONTINUITY_THRESHOLD (2.0) are design-time estimates. The `pitl_calibration.py` tool
-provides operators with empirical threshold suggestions from their deployment data, but
-the defaults require validation across a diverse player population before production use.
+**Biometric thresholds are calibrated on one player population.** L4 ANOMALY_THRESHOLD
+(5.869) and CONTINUITY_THRESHOLD (4.617) are empirically calibrated on N=50 sessions
+from a single player. These thresholds should be recalibrated on each deployment's own
+player population using `scripts/threshold_calibrator.py`. Thresholds are configurable
+via environment variables without code changes.
 
 **Bridge is a trusted intermediary.** The ZK PITL circuit (§7.5.3) constrains the
-bridge's computation of biometric outputs, but the mock-mode default (`pitlVerifier = address(0)`)
-means the ZK guarantee is inactive in most deployments until the trusted setup ceremony
-is completed.
+bridge's computation of biometric outputs, but requires the ZK artifact files
+(`PitlSessionProof.wasm`, `PitlSessionProof_final.zkey`) to be present and the
+`PITLSessionRegistry` contract to be deployed. Without these, the ZK guarantee is
+inactive. See §10.2 and §10.3 for the path to full-ZK deployment.
 
 **No data confidentiality.** PoAC records are submitted in plaintext — inference results,
 action codes, and locations are visible on-chain.
@@ -888,15 +913,23 @@ action codes, and locations are visible on-chain.
 
 ### 10.1 Real-Hardware Adversarial Validation
 
-The most urgent gap is adversarial benchmarking on physical hardware. This requires:
-- A labeled dataset of real bot software inputs (aimbot trajectories, macro timings,
-  injected controller streams) captured via `scripts/capture_session.py`
-- A labeled dataset of legitimate competitive play across skill tiers (Bronze through Diamond)
-- Threshold calibration using `scripts/threshold_calibrator.py` on these datasets
-- Re-validation of Tables 5–7 with the calibrated thresholds
+**Addressed (2026-03-02).** The adversarial validation gap identified in earlier versions
+of this paper has been closed for the single-player case:
 
-The existing `tests/hardware/` suite and `tests/data/realistic_generators.py` provide
-the test infrastructure; filling it with real adversarial data is the critical next step.
+- **N=50 biometric calibration** — 50 DualShock Edge sessions captured at 1000 Hz;
+  L4/L5 thresholds derived empirically via `scripts/threshold_calibrator.py`
+- **6-attack adversarial suite** — 55 sessions generated by deterministic transforms of
+  real captures; full L2/L4/L5 pipeline validated (see Table 5, §8.3)
+- **Detection rates:** injection 100%, macro 100%, quant-masked 100%, warmup 60%
+- **Human false positive rate:** 2.0% (1/50 — within 3σ statistical expectation)
+- **Stationary control baseline** — 30s idle controller capture confirming IMU noise
+  floor (gyro std 1.3–1.5 LSB) and 14,000× injection detection margin
+
+**Remaining work:**
+- Multi-person calibration dataset (≥3 players) to enable biometric transplant detection
+- Professional bot software (aimbot trajectories, macro tools) as labeled adversarial data
+- Skill-tier diversity (Bronze through Diamond) to validate false positive rate across
+  play styles rather than a single player's sessions
 
 ### 10.2 Toward Full-ZK PoAC
 
