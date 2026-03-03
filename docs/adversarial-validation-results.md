@@ -3,8 +3,8 @@
 **Generated:** 2026-03-02  
 **Calibration:** N=50 DualShock Edge sessions, high confidence  
 **Human sessions:** 50 (real hw_* + synthetic baselines)  
-**Adversarial sessions:** 55 (6 attack types, real-data transforms)  
-**Detection (excl. replay):** 39/50 (78.0%)  
+**Adversarial sessions:** 57 (6 attack types, real-data transforms)  
+**Detection (excl. replay):** 39/52 (75.0%)  
 **False positive rate:** 1/50 (2.0%)
 
 ## Method
@@ -27,6 +27,8 @@ Perfect-timing macro          10     50.0%    30.0%   100.0%  100.0%
 Biometric transplant           5      0.0%     0.0%     0.0%    0.0%  L4 fired 0/5 (single-person dataset limits sensitivity)
 Gradual warmup (E)            10     20.0%     0.0%    60.0%   60.0%  sessions 1-3 bot_score mean=0.914
 Quant-masked bot              15     66.7%     0.0%   100.0%  100.0%  mean quant_score=0.898
+unknown                        1      0.0%     0.0%     0.0%    0.0%  (unlabelled)
+stationary                     1      0.0%     0.0%     0.0%    0.0%  (unlabelled)
 
 HUMAN SESSIONS  (false positive rate — lower is better)
 ------------------------------------------------------------------------
