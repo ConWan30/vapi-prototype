@@ -288,10 +288,21 @@ class Config:
     # Default: design-time magic numbers. Set from calibration_profile.json after N>=50 sessions.
     # Use scripts/threshold_calibrator.py to derive production values.
     l4_anomaly_threshold: float = field(
-        default_factory=lambda: float(_env("L4_ANOMALY_THRESHOLD", "6.34"))
+        default_factory=lambda: float(_env("L4_ANOMALY_THRESHOLD", "5.869"))
     )
     l4_continuity_threshold: float = field(
-        default_factory=lambda: float(_env("L4_CONTINUITY_THRESHOLD", "4.906"))
+        default_factory=lambda: float(_env("L4_CONTINUITY_THRESHOLD", "4.617"))
+    )
+
+    # --- L5 Calibration: TemporalRhythmOracle thresholds ---
+    # CV threshold: bot timing CV < 0.08 (human baseline N=50: ~0.34 -- 4x margin)
+    # Entropy threshold: bot entropy < 1.0 bits (human baseline N=50: ~1.38 bits)
+    # Use scripts/threshold_calibrator.py to derive production values.
+    l5_cv_threshold: float = field(
+        default_factory=lambda: float(_env("L5_CV_THRESHOLD", "0.08"))
+    )
+    l5_entropy_threshold: float = field(
+        default_factory=lambda: float(_env("L5_ENTROPY_THRESHOLD", "1.0"))
     )
 
     # --- Phase 37: Credential Enforcement + AlertRouter + Context Compression ---

@@ -14,7 +14,7 @@ This code is intentionally OUTSIDE the hard cheat range [0x28, 0x2A]:
 
 Three independent signals (need ≥2/3 to fire):
     1. Coefficient of variation (CV = std/mean) < 0.08 — bot timing is unnaturally steady
-    2. Shannon entropy (50ms bins) < 1.5 bits — bot uses very few distinct intervals
+    2. Shannon entropy (50ms bins) < 1.0 bits — bot uses very few distinct intervals
     3. Quantization score > 0.55 — bot intervals cluster on 60Hz timer multiples (16.67ms)
 
 Integration into dualshock_integration.py (Layer 5):
@@ -29,6 +29,7 @@ Integration into dualshock_integration.py (Layer 5):
 from __future__ import annotations
 
 import hashlib
+import os as _os
 from collections import deque
 from dataclasses import dataclass
 from typing import Optional, Tuple
@@ -55,11 +56,16 @@ _MIN_SAMPLES: int = 20
 _WINDOW: int = 120
 """Rolling window size in FeatureFrames (~4 seconds at 30Hz)."""
 
-_CV_THRESHOLD: float = 0.08
-"""CV (std/mean) below this → signal 1 fires. Bots are unnaturally steady."""
+_CV_THRESHOLD: float = float(_os.getenv("L5_CV_THRESHOLD", "0.08"))
+"""CV (std/mean) below this → signal 1 fires. Bots are unnaturally steady.
+Hardware-calibrated (N=50 DualShock Edge sessions): human baseline ~0.34 (4x margin).
+Override via L5_CV_THRESHOLD env var."""
 
-_ENTROPY_THRESHOLD: float = 1.5
-"""Shannon entropy (bits, 50ms bins) below this → signal 2 fires."""
+_ENTROPY_THRESHOLD: float = float(_os.getenv("L5_ENTROPY_THRESHOLD", "1.0"))
+"""Shannon entropy (bits, 50ms bins) below this → signal 2 fires.
+Hardware-calibrated (N=50 DualShock Edge sessions): human baseline ~1.38 bits.
+Threshold set to 1.0 bits — safely below human minimum, above bot range (0–0.5 bits).
+Override via L5_ENTROPY_THRESHOLD env var."""
 
 _QUANT_THRESHOLD: float = 0.55
 """Fraction of intervals within ±5ms of a 60Hz tick → signal 3 fires if > this."""
@@ -100,7 +106,7 @@ class TemporalRhythmFeatures:
     entropy_bits: float
     """
     Shannon entropy of interval distribution (50ms-bucket histogram), in bits.
-    Healthy human play: entropy > 2.5 bits. Bot-like: entropy < 1.5 bits.
+    Healthy human play: entropy ~1.38 bits (N=50 hardware). Bot-like: entropy < 1.0 bits.
     """
 
     quant_score: float
