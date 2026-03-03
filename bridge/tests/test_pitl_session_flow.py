@@ -26,6 +26,14 @@ sys.path.insert(0, str(BRIDGE_DIR))
 from vapi_bridge.pitl_prover import PITLProver, FEATURE_KEYS, PROOF_SIZE
 
 
+def _mock_prover() -> PITLProver:
+    """Return a PITLProver forced into mock mode via non-existent artifact paths."""
+    return PITLProver(
+        wasm_path="/nonexistent/PitlSessionProof.wasm",
+        zkey_path="/nonexistent/PitlSessionProof_final.zkey",
+    )
+
+
 # ---------------------------------------------------------------------------
 # Minimal _shutdown_cleanup surrogate
 # We cannot instantiate DualShockTransport (requires HID/hardware), so we
@@ -99,7 +107,7 @@ class TestPITLSessionFlow(unittest.TestCase):
 
     def test_2_proof_generated_with_valid_meta(self):
         """Session proof is generated and store_pitl_proof is called with valid meta."""
-        prover = PITLProver()
+        prover = _mock_prover()
         store = MagicMock()
         meta = _make_pending_meta(0.75)
 
@@ -115,7 +123,7 @@ class TestPITLSessionFlow(unittest.TestCase):
 
     def test_3_store_pitl_proof_called_exactly_once(self):
         """store_pitl_proof is called exactly once per shutdown block execution."""
-        prover = PITLProver()
+        prover = _mock_prover()
         store = MagicMock()
         meta = _make_pending_meta()
 
@@ -126,7 +134,7 @@ class TestPITLSessionFlow(unittest.TestCase):
 
     def test_4_submit_pitl_proof_called_when_chain_configured(self):
         """chain.submit_pitl_proof is called when chain is not None."""
-        prover = PITLProver()
+        prover = _mock_prover()
         store = MagicMock()
         chain = MagicMock()
         chain.submit_pitl_proof = AsyncMock(return_value="0xtxhash")
@@ -142,7 +150,7 @@ class TestPITLSessionFlow(unittest.TestCase):
 
     def test_5_submit_pitl_proof_not_called_when_chain_none(self):
         """chain.submit_pitl_proof is NOT called when chain is None."""
-        prover = PITLProver()
+        prover = _mock_prover()
         store = MagicMock()
         meta = _make_pending_meta()
 
@@ -154,7 +162,7 @@ class TestPITLSessionFlow(unittest.TestCase):
 
     def test_6_proof_skipped_when_meta_empty(self):
         """No proof is generated when _pending_pitl_meta is empty dict or None."""
-        prover = PITLProver()
+        prover = _mock_prover()
         store = MagicMock()
 
         # Empty dict
@@ -189,7 +197,7 @@ class TestPITLSessionFlow(unittest.TestCase):
 
     def test_8_hp_int_in_valid_range(self):
         """Generated humanity_prob_int is in [0, 1000]."""
-        prover = PITLProver()
+        prover = _mock_prover()
         store = MagicMock()
         meta = _make_pending_meta(humanity_prob=0.85)
 

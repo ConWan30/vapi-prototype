@@ -37,8 +37,16 @@ _DEVICE_A = "aa" * 32
 _DEVICE_B = "bb" * 32
 
 
+def _mock_prover() -> PITLProver:
+    """Return a PITLProver forced into mock mode via non-existent artifact paths."""
+    return PITLProver(
+        wasm_path="/nonexistent/PitlSessionProof.wasm",
+        zkey_path="/nonexistent/PitlSessionProof_final.zkey",
+    )
+
+
 def _make_proof(features=None, device_id=_DEVICE_A, l5=0.75, e4=0.2, infer=0x20, epoch=100):
-    prover = PITLProver()
+    prover = _mock_prover()
     return prover.generate_proof(
         features or _DEFAULT_FEATURES, device_id, l5, e4, infer, epoch
     )
@@ -92,7 +100,7 @@ class TestPITLProverMock(unittest.TestCase):
 
     def test_7_verify_proof_true_for_fresh_proof(self):
         """verify_proof must return True for a freshly generated mock proof."""
-        prover = PITLProver()
+        prover = _mock_prover()
         proof, fc, hp, null = prover.generate_proof(
             _DEFAULT_FEATURES, _DEVICE_A, 0.8, 0.1, 0x20, 42
         )
@@ -101,7 +109,7 @@ class TestPITLProverMock(unittest.TestCase):
 
     def test_8_verify_proof_false_for_tampered_proof(self):
         """Flipping one byte in the proof bytes must cause verify_proof to return False."""
-        prover = PITLProver()
+        prover = _mock_prover()
         proof, fc, hp, null = prover.generate_proof(
             _DEFAULT_FEATURES, _DEVICE_A, 0.7, 0.3, 0x20, 99
         )

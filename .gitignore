@@ -102,6 +102,7 @@ contracts/.env
 *.ptau
 contracts/circom.exe
 bridge/zk_artifacts/verification_key.json
+bridge/zk_artifacts/PitlSession_verification_key.json
 bridge/zk_artifacts/package-lock.json
 
 # Capture sessions — large binary, regenerate with capture_session.py
