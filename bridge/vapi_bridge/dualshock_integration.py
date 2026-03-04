@@ -396,6 +396,23 @@ class DualShockTransport:
         # Phase 27: ZK PITL session proof — injected by main.py
         self._pitl_prover = None  # PITLProver instance, None = proof generation disabled
 
+        # Phase C: L6 Active Physical Challenge-Response
+        self._l6_driver = None     # L6TriggerDriver, set below if enabled
+        self._l6_analyzer = None   # L6ResponseAnalyzer, set below if enabled
+        self._l6_pre_buffer: deque = deque(maxlen=50)  # last 50 feature snapshots
+        self._l6_pending: dict | None = None  # {profile_id, sent_ts, nonce_bytes} or None
+        self._l6_p_human: float = 0.5         # last L6 score (null default)
+        self._l6_loop_count: int = 0          # incremented every loop iteration
+        if getattr(self._cfg, "l6_challenges_enabled", False):
+            try:
+                from bridge.controller.l6_trigger_driver import L6TriggerDriver
+                from vapi_bridge.l6_response_analyzer import L6ResponseAnalyzer
+                self._l6_driver = L6TriggerDriver()
+                self._l6_analyzer = L6ResponseAnalyzer()
+                log.info("Phase C: L6 Active Challenge-Response enabled")
+            except Exception as _l6_exc:
+                log.warning("Phase C: L6 init failed (non-fatal): %s", _l6_exc)
+
     # ------------------------------------------------------------------
     # Public entry point
     # ------------------------------------------------------------------
@@ -898,7 +915,13 @@ class DualShockTransport:
                 _p_e4 = _math.exp(-_e4_cognitive_drift / 3.0)
             else:
                 _p_e4 = 0.5
-            _humanity_prob = 0.4 * _p_l4 + 0.4 * _p_l5 + 0.2 * _p_e4
+            if self._l6_driver is not None:
+                # Phase C: L6 active — reweight to include L6 challenge score
+                _humanity_prob = (
+                    0.35 * _p_l4 + 0.35 * _p_l5 + 0.15 * _p_e4 + 0.15 * self._l6_p_human
+                )
+            else:
+                _humanity_prob = 0.4 * _p_l4 + 0.4 * _p_l5 + 0.2 * _p_e4
 
             # Phase 21: store PITL metadata sidecar — read by Bridge.on_record() for persistence
             self._pending_pitl_meta = {
@@ -956,6 +979,48 @@ class DualShockTransport:
                 self._l2_mode_history = [int(getattr(f, "l2_effect_mode", 0)) for f in frames[-16:]]
                 self._r2_mode_history = [int(getattr(f, "r2_effect_mode", 0)) for f in frames[-16:]]
 
+            # --- Phase C: L6 pre-buffer update + response window expiry check ---
+            self._l6_loop_count += 1
+            if self._l6_driver is not None and frames:
+                _snap = frames[-1]
+                self._l6_pre_buffer.append({
+                    "features": {
+                        "r2":      getattr(_snap, "r2_trigger", 0),
+                        "l2":      getattr(_snap, "l2_trigger", 0),
+                        "accel_x": getattr(_snap, "accel_x", 0),
+                        "accel_y": getattr(_snap, "accel_y", 0),
+                        "accel_z": getattr(_snap, "accel_z", 0),
+                    }
+                })
+                if (self._l6_pending is not None
+                        and self._l6_analyzer is not None):
+                    _elapsed_s = time.monotonic() - self._l6_pending["sent_ts"]
+                    if _elapsed_s > getattr(self._cfg, "l6_challenge_timeout_s", 3.0):
+                        try:
+                            from bridge.controller.l6_challenge_profiles import CHALLENGE_PROFILES
+                            _prof = CHALLENGE_PROFILES[self._l6_pending["profile_id"]]
+                            _metrics = self._l6_analyzer.compute_metrics(
+                                list(self._l6_pre_buffer), [], _prof,
+                                self._l6_pending["sent_ts"],
+                            )
+                            self._l6_p_human = self._l6_analyzer.classify(_metrics)
+                            log.debug(
+                                "Phase C: L6 response scored p_human=%.3f profile=%d",
+                                self._l6_p_human, self._l6_pending["profile_id"],
+                            )
+                        except Exception as _exc:
+                            log.debug("Phase C: L6 response analysis failed (non-fatal): %s", _exc)
+                        finally:
+                            self._l6_pending = None
+                            if self._reader and self._reader.ds:
+                                try:
+                                    import asyncio as _asyncio
+                                    _asyncio.create_task(
+                                        self._l6_driver.clear_triggers(self._reader.ds)
+                                    )
+                                except Exception:
+                                    pass
+
             # --- Phase 13 E4: accumulate frames; update EWC world model every N intervals ---
             _e4_cognitive_drift = None
             if self._ewc_model is not None and frames:
@@ -995,6 +1060,32 @@ class DualShockTransport:
                             )
                         except Exception as _exc:
                             log.debug("Phase 25: E4 drift computation failed: %s", _exc)
+
+            # --- Phase C: L6 strategic challenge dispatch ---
+            if (self._l6_driver is not None
+                    and self._l6_pending is None
+                    and self._l6_loop_count % getattr(self._cfg, "l6_challenge_interval_ticks", 300) == 0
+                    and self._l6_loop_count > 0):
+                _recent = list(self._l6_pre_buffer)[-10:]
+                _player_active = any(
+                    r["features"].get("r2", 0) > 10 or r["features"].get("l2", 0) > 10
+                    for r in _recent
+                )
+                if _player_active and self._reader and self._reader.ds:
+                    try:
+                        _pid = self._l6_driver.sequencer.select_random_profile()
+                        _ts  = await self._l6_driver.send_challenge(_pid, self._reader.ds)
+                        self._l6_pending = {
+                            "profile_id":  _pid,
+                            "sent_ts":     _ts,
+                            "nonce_bytes": self._l6_driver.sequencer.current_nonce,
+                        }
+                        log.info(
+                            "Phase C: L6 challenge dispatched profile=%d nonce=%s",
+                            _pid, self._l6_pending["nonce_bytes"].hex(),
+                        )
+                    except Exception as _exc:
+                        log.warning("Phase C: L6 challenge dispatch failed (non-fatal): %s", _exc)
 
             # --- Pace to interval ---
             elapsed = time.monotonic() - t_start
@@ -1135,6 +1226,16 @@ class DualShockTransport:
                     snap.gyro_x,  snap.gyro_y,  snap.gyro_z,
                     snap.buttons, timestamp_ms,
                 )
+                # Phase C: extend commitment with L6 challenge fields (+4 bytes → 52 bytes)
+                if self._l6_driver is not None and self._l6_pending is not None:
+                    try:
+                        from bridge.controller.l6_challenge_profiles import get_profile_hash
+                        _l6_pid   = self._l6_pending["profile_id"]
+                        _l6_phash = get_profile_hash(_l6_pid)
+                        _l6_score = int(self._l6_p_human * 100)
+                        commitment_bytes += struct.pack(">BHB", _l6_pid, _l6_phash, _l6_score)
+                    except Exception:
+                        pass  # non-fatal — fall back to 48-byte commitment
                 sensor_hash = hashlib.sha256(commitment_bytes).digest()
 
             # Phase 13 E4+E2: World model hash = SHA-256(EWC_weights || preference_weights)
@@ -1276,6 +1377,14 @@ class DualShockTransport:
                 log.info("Preference model saved to %s", self._cfg.preference_model_path)
             except Exception as exc:
                 log.warning("Preference model save failed: %s", exc)
+
+        # Phase C: Restore triggers to baseline before shutdown
+        if self._l6_driver is not None and self._reader and self._reader.ds:
+            try:
+                await self._l6_driver.clear_triggers(self._reader.ds)
+                log.debug("Phase C: L6 triggers cleared on shutdown")
+            except Exception as _exc:
+                log.debug("Phase C: L6 trigger clear on shutdown failed (non-fatal): %s", _exc)
 
         # Phase 27: Generate ZK PITL session proof for this session
         if self._pitl_prover is not None and self._pending_pitl_meta:

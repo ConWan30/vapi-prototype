@@ -351,6 +351,17 @@ class Config:
     environments where USB enumeration fails or is undesirable.
     """
 
+    # --- Phase C: L6 Active Physical Challenge-Response ---
+    l6_challenges_enabled: bool = field(
+        default_factory=lambda: _env("L6_CHALLENGES_ENABLED", "false").lower() == "true"
+    )
+    l6_challenge_interval_ticks: int = field(
+        default_factory=lambda: int(_env("L6_CHALLENGE_INTERVAL_TICKS", "300"))
+    )
+    l6_challenge_timeout_s: float = field(
+        default_factory=lambda: float(_env("L6_CHALLENGE_TIMEOUT_S", "3.0"))
+    )
+
     def validate(self) -> list[str]:
         """Return list of configuration errors (empty = valid)."""
         errors = []
