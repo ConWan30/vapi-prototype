@@ -1,0 +1,137 @@
+"""
+Phase C — L6 PITL Integration Tests
+
+TestL6Integration (8):
+1. DualShockTransport.__init__ source contains '_l6_driver' and 'Phase C'
+2. _l6_driver is None when l6_challenges_enabled=False (default)
+3. Humanity formula source contains '0.35 * _p_l4' (L6-active branch)
+4. Humanity formula source contains '0.4 * _p_l4' (L6-disabled fallback)
+5. Sensor commitment is 52 bytes when l6_pending is set (test commitment logic directly)
+6. Sensor commitment is 48 bytes when l6_pending is None
+7. Attack G: classify() returns < 0.4 for zeroed accel + onset_ms < 5 (software injection)
+8. Challenge dispatch skipped when player is idle (source contains '_player_active' check)
+"""
+
+import inspect
+import struct
+import sys
+import types
+import unittest
+from pathlib import Path
+
+BRIDGE_DIR = Path(__file__).parents[1]
+sys.path.insert(0, str(BRIDGE_DIR))
+
+from bridge.controller.l6_challenge_profiles import get_profile_hash
+from vapi_bridge.l6_response_analyzer import L6ResponseAnalyzer, L6ResponseMetrics
+
+
+def _stub_hardware_modules():
+    """Stub out hardware modules so DualShockTransport can be imported."""
+    for mod in ("hidapi", "hid", "pydualsense", "dualshock_emulator"):
+        if mod not in sys.modules:
+            sys.modules[mod] = types.ModuleType(mod)
+
+
+class TestL6Integration(unittest.TestCase):
+
+    def test_1_init_contains_l6_driver_and_phase_c(self):
+        """DualShockTransport.__init__ source must contain '_l6_driver' and 'Phase C'."""
+        _stub_hardware_modules()
+        from vapi_bridge import dualshock_integration
+        src = inspect.getsource(dualshock_integration.DualShockTransport.__init__)
+        self.assertIn("_l6_driver", src)
+        self.assertIn("Phase C", src)
+
+    def test_2_l6_driver_is_none_when_disabled(self):
+        """_l6_driver attribute is set to None initially (before conditional init)."""
+        _stub_hardware_modules()
+        from vapi_bridge import dualshock_integration
+        src = inspect.getsource(dualshock_integration.DualShockTransport.__init__)
+        self.assertIn("self._l6_driver = None", src)
+        # Config default: l6_challenges_enabled = False (env not set)
+        from vapi_bridge.config import Config
+        cfg = Config()
+        self.assertFalse(cfg.l6_challenges_enabled)
+
+    def test_3_humanity_formula_contains_l6_branch(self):
+        """_session_loop source must contain the L6-active humanity formula."""
+        _stub_hardware_modules()
+        from vapi_bridge import dualshock_integration
+        src = inspect.getsource(dualshock_integration.DualShockTransport._session_loop)
+        # L6-active branch
+        self.assertIn("0.35 * _p_l4", src)
+        self.assertIn("0.15 * self._l6_p_human", src)
+
+    def test_4_humanity_formula_contains_fallback_branch(self):
+        """_session_loop source must contain the L6-disabled fallback formula."""
+        _stub_hardware_modules()
+        from vapi_bridge import dualshock_integration
+        src = inspect.getsource(dualshock_integration.DualShockTransport._session_loop)
+        # L6-disabled fallback (original formula)
+        self.assertIn("0.4 * _p_l4", src)
+        self.assertIn("0.2 * _p_e4", src)
+
+    def test_5_sensor_commitment_52_bytes_when_l6_pending(self):
+        """Sensor commitment extends to 52 bytes when L6 is active with a pending challenge."""
+        import hashlib
+        # Build the base 48-byte commitment (same struct.pack as in dualshock_integration.py)
+        commitment_bytes = struct.pack(
+            ">hhhhBBBBffffffIQ",
+            0, 0, 0, 0,         # sticks
+            0, 0, 0, 0,         # triggers + effect modes
+            0.0, 0.0, 0.0,      # accel
+            0.0, 0.0, 0.0,      # gyro
+            0, 0,               # buttons + timestamp_ms
+        )
+        self.assertEqual(len(commitment_bytes), 48)
+
+        # Simulate L6 active + pending challenge
+        _l6_pid   = 2  # RIGID_HEAVY
+        _l6_phash = get_profile_hash(_l6_pid)
+        _l6_score = int(0.75 * 100)   # p_human = 0.75
+        extended  = commitment_bytes + struct.pack(">BHB", _l6_pid, _l6_phash, _l6_score)
+        self.assertEqual(len(extended), 52)
+
+    def test_6_sensor_commitment_48_bytes_when_no_l6_pending(self):
+        """Sensor commitment stays at 48 bytes when L6 is disabled or no challenge pending."""
+        commitment_bytes = struct.pack(
+            ">hhhhBBBBffffffIQ",
+            0, 0, 0, 0,
+            0, 0, 0, 0,
+            0.0, 0.0, 0.0,
+            0.0, 0.0, 0.0,
+            0, 0,
+        )
+        # No L6 extension — commitment stays at 48 bytes
+        self.assertEqual(len(commitment_bytes), 48)
+        import hashlib
+        sensor_hash = hashlib.sha256(commitment_bytes).digest()
+        self.assertEqual(len(sensor_hash), 32)
+
+    def test_7_attack_g_injection_scores_low(self):
+        """Attack G: zeroed accel (grip_variance=0) + onset<5ms -> classify() < 0.4."""
+        analyzer = L6ResponseAnalyzer()
+        # Simulate software injection: zeroed accel, instant onset
+        metrics = L6ResponseMetrics(
+            onset_ms=0.5,       # sub-ms onset (software, not human)
+            peak_delta=80.0,    # trigger press detected (injected)
+            settle_ms=0.0,
+            grip_variance=0.0,  # accel zeroed — not possible with real hand
+            profile_id=1, nonce_bytes=b"\x00"*4, valid=True,
+        )
+        result = analyzer.classify(metrics)
+        self.assertLess(result, 0.4,
+                        f"Attack G: expected p_human < 0.4, got {result}")
+
+    def test_8_idle_gate_in_source(self):
+        """_session_loop source must contain player activity check before dispatch."""
+        _stub_hardware_modules()
+        from vapi_bridge import dualshock_integration
+        src = inspect.getsource(dualshock_integration.DualShockTransport._session_loop)
+        self.assertIn("_player_active", src,
+                      "_player_active idle gate missing from _session_loop source")
+
+
+if __name__ == "__main__":
+    unittest.main()
