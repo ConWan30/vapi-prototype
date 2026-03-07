@@ -396,6 +396,11 @@ class DualShockTransport:
         # Phase 27: ZK PITL session proof — injected by main.py
         self._pitl_prover = None  # PITLProver instance, None = proof generation disabled
 
+        # BT L0 physical presence verifier (set in _init_hardware after connect)
+        self._bt_presence_verifier = None   # BluetoothPresenceVerifier or None
+        self._bt_presence_score: float = 0.5  # last overall_score; 0.5 = neutral/USB
+        self._bt_seq_bytes_batch: list = []   # BT sequence counter bytes from last _poll_frames()
+
         # Phase C: L6 Active Physical Challenge-Response
         self._l6_driver = None     # L6TriggerDriver, set below if enabled
         self._l6_analyzer = None   # L6ResponseAnalyzer, set below if enabled
@@ -601,6 +606,19 @@ class DualShockTransport:
             log.info("DualSense Edge connected (device_id=%s...)", self._device_id.hex()[:16])
         else:
             log.warning("DualSense Edge not found — running in simulation mode")
+
+        # BT L0: Instantiate physical presence verifier (advisory, non-blocking)
+        try:
+            _ctrl_dir = str(Path(__file__).parents[3] / "controller")
+            if _ctrl_dir not in sys.path:
+                sys.path.insert(0, _ctrl_dir)
+            from l0_bluetooth_presence import BluetoothPresenceVerifier
+            _con_type = getattr(getattr(self._reader, "ds", None), "conType", None)
+            _transport_str = "bt" if (_con_type is not None and "BT" in str(_con_type).upper()) else "usb"
+            self._bt_presence_verifier = BluetoothPresenceVerifier(_transport_str)
+            log.info("L0 BluetoothPresenceVerifier ready (transport=%s)", _transport_str)
+        except Exception as _bp_exc:
+            log.debug("L0 BluetoothPresenceVerifier unavailable (non-fatal): %s", _bp_exc)
 
         # Phase 8: HID-XInput oracle (Layer 2)
         if getattr(self._cfg, "hid_oracle_enabled", False):
@@ -923,6 +941,26 @@ class DualShockTransport:
             else:
                 _humanity_prob = 0.4 * _p_l4 + 0.4 * _p_l5 + 0.2 * _p_e4
 
+            # BT L0: run presence check on this frame batch (advisory, 50-report window)
+            # _bt_seq_bytes_batch collected by _poll_frames() — activates sequence signal (0.5 weight)
+            if self._bt_presence_verifier is not None:
+                try:
+                    _bt_result = self._bt_presence_verifier.verify_presence(
+                        frames,
+                        bt_counter_bytes=self._bt_seq_bytes_batch if self._bt_seq_bytes_batch else None,
+                    )
+                    self._bt_presence_score = _bt_result.overall_score
+                    if _bt_result.is_bluetooth and _bt_result.overall_score < 0.3:
+                        log.warning(
+                            "BT physical presence check failed (score=%.2f, "
+                            "latency=%.1f ms, seq_gaps=%d)",
+                            _bt_result.overall_score,
+                            _bt_result.mean_interval_ms,
+                            _bt_result.sequence_gap_count,
+                        )
+                except Exception as _bt_exc:
+                    log.debug("L0 BT presence check error (non-fatal): %s", _bt_exc)
+
             # Phase 21: store PITL metadata sidecar — read by Bridge.on_record() for persistence
             self._pending_pitl_meta = {
                 "l4_distance":        _l4_distance,
@@ -937,6 +975,8 @@ class DualShockTransport:
                 "l4_drift_velocity":  _l4_drift_velocity,
                 "e4_cognitive_drift": _e4_cognitive_drift,
                 "humanity_prob":      _humanity_prob,
+                # BT L0 presence score (0.5 = neutral/USB; < 0.3 + BT = suspect)
+                "bt_presence_score":  self._bt_presence_score,
             }
 
             inf_name = GAMING_INFERENCE_NAMES.get(inference, f"0x{inference:02x}")
@@ -1099,15 +1139,21 @@ class DualShockTransport:
         if not self._reader:
             return []
         frames = []
+        bt_seq_bytes: list[int] = []  # BT sequence counter bytes; empty on USB (bt_seq_byte == -1)
         t_end = time.monotonic() + duration_s
         dt_ms = 8.0   # target ~120 Hz
         while time.monotonic() < t_end:
             snap = self._reader.poll()
             frames.append(snap)
+            # BT sequence counter — exposed via snap.bt_seq_byte (-1 = USB/unavailable)
+            if snap.bt_seq_byte >= 0:
+                bt_seq_bytes.append(snap.bt_seq_byte)
             # Phase 8 Layer 2: update HID-XInput oracle per frame
             if self._hid_oracle is not None:
                 self._hid_oracle.update(snap)
             time.sleep(dt_ms / 1000.0)
+        # Store for consumption by the BT presence verifier in the async loop
+        self._bt_seq_bytes_batch = bt_seq_bytes
         return frames
 
     def _classify(self, frames: list) -> tuple[int, int]:

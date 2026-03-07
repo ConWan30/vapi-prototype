@@ -35,6 +35,20 @@ try:
 except ImportError:
     _HID_AVAILABLE = False
 
+# Transport-aware HID parser from controller/
+_controller_dir = os.path.normpath(
+    os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "controller")
+)
+if _controller_dir not in sys.path:
+    sys.path.insert(0, _controller_dir)
+try:
+    from hid_report_parser import detect_transport as _detect_transport
+    from hid_report_parser import parse_report as _parse_report
+    from hid_report_parser import TransportType as _TransportType
+    _HID_PARSER_AVAILABLE = True
+except ImportError:
+    _HID_PARSER_AVAILABLE = False
+
 DEVICE_VID  = 0x054C   # Sony
 DEVICE_PID  = 0x0DF2   # DualSense Edge CFI-ZCP1
 DEVICE_NAME = "DualShock Edge CFI-ZCP1"
@@ -48,24 +62,45 @@ _PROGRESS_INTERVAL  = 10    # seconds between progress prints
 # Feature extraction
 # ---------------------------------------------------------------------------
 
-def _extract_features(raw: bytes) -> dict:
+def _extract_features(raw: bytes, transport=None) -> dict:
     """
-    Extract named features from a raw DualSense USB HID report.
+    Extract named features from a raw DualSense HID report (USB or Bluetooth).
 
-    Byte layout (USB mode, report_id=0x01, community-documented offsets):
-      byte 0: report_id
-      byte 1: left_stick_x   (uint8, center ~128)
-      byte 2: left_stick_y   (uint8, center ~128)
-      byte 3: right_stick_x  (uint8, center ~128)
-      byte 4: right_stick_y  (uint8, center ~128)
-      byte 5: L2 trigger     (uint8, 0=released, 255=fully pressed)
-      byte 6: R2 trigger     (uint8, 0=released, 255=fully pressed)
-      bytes 16–21: gyro x/y/z (int16 LE)
-      bytes 22–27: accel x/y/z (int16 LE)
+    Delegates to hid_report_parser.parse_report() when available so that BT
+    byte offsets (+1 shift) are applied automatically.  Falls back to the
+    original USB-only implementation when hid_report_parser is not importable.
 
-    NOTE: Byte offsets 16–27 are from community reverse-engineering and may vary
-    by firmware version. Validate against your specific controller firmware.
+    NOTE: _sensor_commitment still hashes the raw report bytes for backward
+    compatibility with threshold_calibrator.py.  The bridge uses a separate
+    canonical struct-packed commitment computed from InputSnapshot fields.
     """
+    # Always include envelope fields independent of transport
+    envelope = {
+        "report_id":     raw[0] if raw else None,
+        "report_length": len(raw),
+    }
+
+    if _HID_PARSER_AVAILABLE and transport is not None:
+        parsed = _parse_report(raw, transport)
+        return {
+            **envelope,
+            "left_stick_x":  parsed["lx"],
+            "left_stick_y":  parsed["ly"],
+            "right_stick_x": parsed["rx"],
+            "right_stick_y": parsed["ry"],
+            "l2_trigger":    parsed["l2"],
+            "r2_trigger":    parsed["r2"],
+            "buttons_0":     parsed["buttons_0"],
+            "buttons_1":     parsed["buttons_1"],
+            "gyro_x":        parsed["gyro_x"],
+            "gyro_y":        parsed["gyro_y"],
+            "gyro_z":        parsed["gyro_z"],
+            "accel_x":       parsed["accel_x"],
+            "accel_y":       parsed["accel_y"],
+            "accel_z":       parsed["accel_z"],
+        }
+
+    # Fallback: USB-only offsets (original implementation)
     def _u8(offset): return raw[offset] if len(raw) > offset else None
     def _i16(offset):
         if len(raw) >= offset + 2:
@@ -76,27 +111,21 @@ def _extract_features(raw: bytes) -> dict:
         return None
 
     return {
-        "report_id":      _u8(0),
-        "report_length":  len(raw),
-        "left_stick_x":   _u8(1),
-        "left_stick_y":   _u8(2),
-        "right_stick_x":  _u8(3),
-        "right_stick_y":  _u8(4),
-        "l2_trigger":     _u8(5),
-        "r2_trigger":     _u8(6),
-        # Bytes 8–9: digital button state (community-documented DualSense USB layout).
-        # buttons_0 byte 8: [7]Triangle [6]Circle [5]Cross [4]Square [3:0]D-pad
-        # buttons_1 byte 9: [7]R3 [6]L3 [5]Options [4]Create [3]R2d [2]L2d [1]R1 [0]L1
-        # R2 digital = buttons_1 bit 3; L2 digital = buttons_1 bit 2.
-        # NOTE: Offsets are community-reverse-engineered; validate against firmware.
-        "buttons_0":      _u8(8),
-        "buttons_1":      _u8(9),
-        "gyro_x":         _i16(16),
-        "gyro_y":         _i16(18),
-        "gyro_z":         _i16(20),
-        "accel_x":        _i16(22),
-        "accel_y":        _i16(24),
-        "accel_z":        _i16(26),
+        **envelope,
+        "left_stick_x":  _u8(1),
+        "left_stick_y":  _u8(2),
+        "right_stick_x": _u8(3),
+        "right_stick_y": _u8(4),
+        "l2_trigger":    _u8(5),
+        "r2_trigger":    _u8(6),
+        "buttons_0":     _u8(8),
+        "buttons_1":     _u8(9),
+        "gyro_x":        _i16(16),
+        "gyro_y":        _i16(18),
+        "gyro_z":        _i16(20),
+        "accel_x":       _i16(22),
+        "accel_y":       _i16(24),
+        "accel_z":       _i16(26),
     }
 
 
@@ -130,6 +159,8 @@ def _parse_args() -> argparse.Namespace:
                    help="Output JSON path (default: sessions/session_<timestamp>.json)")
     p.add_argument("--notes", type=str, default="",
                    help="User notes embedded in session metadata")
+    p.add_argument("--transport", choices=["usb", "bt", "auto"], default="auto",
+                   help="HID transport override: usb (64B), bt (78B), auto=detect (default: auto)")
     return p.parse_args()
 
 
@@ -142,7 +173,7 @@ def _default_output() -> str:
 # Capture loop
 # ---------------------------------------------------------------------------
 
-def run(duration_s: int, output_path: str, notes: str) -> int:
+def run(duration_s: int, output_path: str, notes: str, transport_arg: str = "auto") -> int:
     if not _HID_AVAILABLE:
         print("ERROR: 'hid' package not installed. Run: pip install hidapi", file=sys.stderr)
         return 1
@@ -151,7 +182,7 @@ def run(duration_s: int, output_path: str, notes: str) -> int:
     if not devices:
         print(
             f"ERROR: No device found (VID=0x{DEVICE_VID:04X}, PID=0x{DEVICE_PID:04X}).\n"
-            "Ensure DualShock Edge is connected via USB (not Bluetooth).\n"
+            "Ensure DualShock Edge is connected via USB or Bluetooth.\n"
             "Linux: run scripts/hardware_setup.sh for udev rules.",
             file=sys.stderr,
         )
@@ -175,9 +206,36 @@ def run(duration_s: int, output_path: str, notes: str) -> int:
         print(f"ERROR: Cannot open HID device: {exc}", file=sys.stderr)
         return 1
 
+    # --- Transport detection ---
+    _transport = None
+    _first_raw = None
+    if transport_arg != "auto" and _HID_PARSER_AVAILABLE:
+        _transport = _TransportType.USB if transport_arg == "usb" else _TransportType.BLUETOOTH
+        print(f"[TRANSPORT] Override: {_transport.value}")
+    else:
+        # Auto-detect from first report
+        _raw0 = h.read(_READ_BUFFER_SIZE, timeout_ms=2000)
+        if _raw0:
+            _first_raw = bytes(_raw0)
+            if _HID_PARSER_AVAILABLE:
+                _transport = _detect_transport(_first_raw)
+                print(f"[TRANSPORT] Detected: {_transport.value} (report length {len(_first_raw)})")
+            else:
+                print("[TRANSPORT] hid_report_parser unavailable — USB offsets assumed")
+
+    transport_str = _transport.value if _transport is not None else "usb"
+
     captured = []
     t_start  = time.perf_counter()
     t_last   = t_start
+
+    # Include first report captured during transport detection
+    if _first_raw:
+        captured.append({
+            "timestamp_ms":      0,
+            "features":          _extract_features(_first_raw, _transport),
+            "sensor_commitment": _sensor_commitment(_first_raw),
+        })
 
     try:
         while True:
@@ -199,7 +257,7 @@ def run(duration_s: int, output_path: str, notes: str) -> int:
             ts_ms        = int((now - t_start) * 1000)
             captured.append({
                 "timestamp_ms":      ts_ms,
-                "features":          _extract_features(raw_bytes),
+                "features":          _extract_features(raw_bytes, _transport),
                 "sensor_commitment": _sensor_commitment(raw_bytes),
             })
 
@@ -219,6 +277,7 @@ def run(duration_s: int, output_path: str, notes: str) -> int:
         "device_pid":           f"0x{DEVICE_PID:04X}",
         "device_name":          DEVICE_NAME,
         "product_string":       product_str,
+        "transport":            transport_str,
         "capture_timestamp":    capture_ts,
         "duration_requested_s": duration_s,
         "duration_actual_s":    round(t_actual, 3),
@@ -245,7 +304,7 @@ def run(duration_s: int, output_path: str, notes: str) -> int:
 def main() -> int:
     args = _parse_args()
     output = args.output if args.output else _default_output()
-    return run(args.duration, output, args.notes)
+    return run(args.duration, output, args.notes, transport_arg=args.transport)
 
 
 if __name__ == "__main__":

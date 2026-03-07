@@ -59,5 +59,55 @@ def hid_device(controller_device):
     except OSError as e:
         pytest.skip(f"Cannot open HID device: {e}. Check udev rules / permissions.")
 
+@pytest.fixture(scope="session")
+def bt_device():
+    """
+    Session-scoped fixture for BT DualShock Edge (USB cable must be disconnected).
+    Skips if no BT report (78 bytes, ID 0x31) is detected on the first read.
+    """
+    import sys, os
+    _ctrl_dir = os.path.normpath(
+        os.path.join(os.path.dirname(__file__), "..", "..", "controller")
+    )
+    if _ctrl_dir not in sys.path:
+        sys.path.insert(0, _ctrl_dir)
+    try:
+        import hid
+        from hid_report_parser import detect_transport, TransportType
+    except ImportError:
+        pytest.skip("hidapi or hid_report_parser not available")
+
+    devices = hid.enumerate(DUALSHOCK_EDGE_VID, DUALSHOCK_EDGE_PID)
+    if not devices:
+        pytest.skip("No DualShock Edge detected — connect via Bluetooth (USB disconnected)")
+
+    h = hid.device()
+    try:
+        h.open(DUALSHOCK_EDGE_VID, DUALSHOCK_EDGE_PID)
+        h.set_nonblocking(False)
+    except OSError as e:
+        pytest.skip(f"Cannot open HID device: {e}")
+
+    raw = bytes(h.read(128, timeout_ms=2000) or b"")
+    transport = detect_transport(raw)
+    if transport != TransportType.BLUETOOTH:
+        h.close()
+        pytest.skip(
+            f"Expected Bluetooth report (78B, ID 0x31) but got {len(raw)}B "
+            f"(transport={transport.value}) — disconnect USB cable and reconnect via BT"
+        )
+
+    yield h
+    try:
+        h.close()
+    except Exception:
+        pass
+
+
 def pytest_configure(config):
     config.addinivalue_line("markers", "hardware: requires physical DualShock Edge connected via USB")
+    config.addinivalue_line(
+        "markers",
+        "bluetooth: requires physical DualShock Edge (Sony CFI-ZCP1) connected via Bluetooth "
+        "(USB cable must be disconnected)",
+    )

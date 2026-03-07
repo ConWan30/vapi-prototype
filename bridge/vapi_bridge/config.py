@@ -305,7 +305,28 @@ class Config:
         default_factory=lambda: float(_env("L5_ENTROPY_THRESHOLD", "1.0"))
     )
 
-    # --- Phase 37: Credential Enforcement + AlertRouter + Context Compression ---
+    # --- Bluetooth transport thresholds ---
+    # Defaults mirror USB calibrated values until BT-specific calibration (N>=50 BT sessions).
+    # BT polling ~125-250 Hz vs USB 1000 Hz; 50-report windows cover 4x more wall-clock time.
+    # Recalibrate: python scripts/threshold_calibrator.py sessions/bt/*.json
+    bt_l4_anomaly_threshold: float = field(
+        default_factory=lambda: float(
+            _env("BT_L4_ANOMALY_THRESHOLD", _env("L4_ANOMALY_THRESHOLD", "5.869"))
+        )
+    )
+    bt_l5_cv_threshold: float = field(
+        default_factory=lambda: float(
+            _env("BT_L5_CV_THRESHOLD", _env("L5_CV_THRESHOLD", "0.08"))
+        )
+    )
+    bt_polling_rate_hz: float = field(
+        default_factory=lambda: float(_env("BT_POLLING_RATE_HZ", "250.0"))
+    )
+
+    # --- Phase 37: TournamentGateV3 + Credential Enforcement + AlertRouter ---
+    tournament_gate_v3_address: str = field(
+        default_factory=lambda: _env("TOURNAMENT_GATE_V3_ADDRESS", "")
+    )
     phg_credential_enforcement_enabled: bool = field(
         default_factory=lambda: _env("PHG_CREDENTIAL_ENFORCEMENT_ENABLED", "true").lower() == "true"
     )

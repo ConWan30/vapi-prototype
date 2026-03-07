@@ -168,6 +168,8 @@ class InputSnapshot:
     # Adaptive trigger resistance mode (tracked state; write-only on real hardware)
     l2_effect_mode: int = 0   # TriggerMode ordinal; 0 = Off
     r2_effect_mode: int = 0
+    # BT sequence counter byte (ds.states[0] for BT; -1 for USB / unavailable)
+    bt_seq_byte: int = -1
 
     def serialize(self) -> bytes:
         """Deterministic big-endian serialization — same as firmware."""
@@ -639,6 +641,8 @@ class DualSenseReader:
             self._is_edge = getattr(self.ds, 'is_edge', False)
             edge_str = " Edge" if self._is_edge else ""
             print(f"[CONTROLLER] DualSense{edge_str} connected!")
+            con_type = getattr(self.ds, 'conType', None)
+            print(f"[CONTROLLER] Transport: {con_type}")
             batt = getattr(self.ds, 'battery', None)
             batt_lvl = getattr(batt, 'Level', None) if batt else None
             if batt_lvl is not None:
@@ -717,15 +721,33 @@ class DualSenseReader:
             if getattr(ds.state, 'R5', False): buttons |= (1 << 19)
             snap.buttons = buttons  # re-assign with edge buttons
 
-        # IMU — pydualsense gyro uses Pitch/Yaw/Roll, accel uses X/Y/Z
-        snap.gyro_x = ds.state.gyro.Pitch / 1000.0
-        snap.gyro_y = ds.state.gyro.Yaw / 1000.0
-        snap.gyro_z = ds.state.gyro.Roll / 1000.0
+        # IMU — use ds.states (normalized list: BT = inReport[1:], USB = inReport) so that
+        # BT byte offsets are correct.  pydualsense bug: reads IMU from raw inReport[16:] at
+        # USB offsets even for BT (should be inReport[17:]).  ds.states[16:28] is correct for
+        # both transports.  Fallback to ds.state.gyro/accelerometer on first frame only (before
+        # the sendReport thread has populated ds.states).
+        _states = getattr(ds, 'states', None)
+        if _states is not None and len(_states) >= 28:
+            _s = bytes(_states)
+            snap.gyro_x = struct.unpack_from('<h', _s, 22)[0] / 1000.0
+            snap.gyro_y = struct.unpack_from('<h', _s, 24)[0] / 1000.0
+            snap.gyro_z = struct.unpack_from('<h', _s, 26)[0] / 1000.0
+            raw_ax = struct.unpack_from('<h', _s, 16)[0]
+            raw_ay = struct.unpack_from('<h', _s, 18)[0]
+            raw_az = struct.unpack_from('<h', _s, 20)[0]
+            # BT sequence counter: ds.states[0] (BT = inReport[1:], so index 0 = BT seq byte)
+            snap.bt_seq_byte = _states[0] & 0xFF
+        else:
+            # First-frame fallback: ds.states not yet populated.  Correct for USB;
+            # may be off by 1 byte for BT on first frame only — acceptable.
+            snap.gyro_x = ds.state.gyro.Pitch / 1000.0
+            snap.gyro_y = ds.state.gyro.Yaw / 1000.0
+            snap.gyro_z = ds.state.gyro.Roll / 1000.0
+            raw_ax = ds.state.accelerometer.X
+            raw_ay = ds.state.accelerometer.Y
+            raw_az = ds.state.accelerometer.Z
 
         # Accelerometer — raw int16 (~8192/g). Edge is gravity-compensated.
-        raw_ax = ds.state.accelerometer.X
-        raw_ay = ds.state.accelerometer.Y
-        raw_az = ds.state.accelerometer.Z
         if self._accel_scale is None:
             self._accel_scale = 8192.0
         snap.accel_x = raw_ax / self._accel_scale
