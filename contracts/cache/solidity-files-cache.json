@@ -45,8 +45,8 @@
       ]
     },
     "C:\\Users\\Contr\\vapi-pebble-prototype\\contracts\\contracts\\PoACVerifier.sol": {
-      "lastModificationDate": 1771783215412,
-      "contentHash": "cff8b14918a4a84ba42788a56a705293",
+      "lastModificationDate": 1772771496125,
+      "contentHash": "2f7ae02d0753d5c00bb4de5bd9fefc56",
       "sourceName": "contracts/PoACVerifier.sol",
       "solcConfig": {
         "version": "0.8.20",
@@ -786,8 +786,8 @@
       ]
     },
     "C:\\Users\\Contr\\vapi-pebble-prototype\\contracts\\contracts\\PITLSessionRegistry.sol": {
-      "lastModificationDate": 1772198318639,
-      "contentHash": "b3c4d6fadb4ba8d6fab8027c6f018a29",
+      "lastModificationDate": 1772302468881,
+      "contentHash": "6efc5771089a63eee5186e60ae1b414f",
       "sourceName": "contracts/PITLSessionRegistry.sol",
       "solcConfig": {
         "version": "0.8.20",
@@ -824,8 +824,8 @@
       ]
     },
     "C:\\Users\\Contr\\vapi-pebble-prototype\\contracts\\contracts\\FederatedThreatRegistry.sol": {
-      "lastModificationDate": 1772229838137,
-      "contentHash": "630e400d9ed6864906eb8c3f95e9b502",
+      "lastModificationDate": 1772302411406,
+      "contentHash": "4d64ddf8f17fd3472b5a47a7ba5f0de0",
       "sourceName": "contracts/FederatedThreatRegistry.sol",
       "solcConfig": {
         "version": "0.8.20",
@@ -861,8 +861,8 @@
       ]
     },
     "C:\\Users\\Contr\\vapi-pebble-prototype\\contracts\\contracts\\PHGCredential.sol": {
-      "lastModificationDate": 1772203299525,
-      "contentHash": "77f1c08ef1cb85881319dd8ae80b95cf",
+      "lastModificationDate": 1772771473031,
+      "contentHash": "e01126608b57e48147f0fabd5cfa66a1",
       "sourceName": "contracts/PHGCredential.sol",
       "solcConfig": {
         "version": "0.8.20",
@@ -895,6 +895,83 @@
       ],
       "artifacts": [
         "PHGCredential"
+      ]
+    },
+    "C:\\Users\\Contr\\vapi-pebble-prototype\\contracts\\contracts\\TournamentGateV3.sol": {
+      "lastModificationDate": 1772287804549,
+      "contentHash": "ddecad86291a0582bf0e33fe227fae43",
+      "sourceName": "contracts/TournamentGateV3.sol",
+      "solcConfig": {
+        "version": "0.8.20",
+        "settings": {
+          "viaIR": true,
+          "optimizer": {
+            "enabled": true,
+            "runs": 200
+          },
+          "evmVersion": "paris",
+          "outputSelection": {
+            "*": {
+              "*": [
+                "abi",
+                "evm.bytecode",
+                "evm.deployedBytecode",
+                "evm.methodIdentifiers",
+                "metadata"
+              ],
+              "": [
+                "ast"
+              ]
+            }
+          }
+        }
+      },
+      "imports": [
+        "./PHGRegistry.sol",
+        "./PHGCredential.sol"
+      ],
+      "versionPragmas": [
+        "^0.8.19"
+      ],
+      "artifacts": [
+        "TournamentGateV3"
+      ]
+    },
+    "C:\\Users\\Contr\\vapi-pebble-prototype\\contracts\\contracts\\PitlSessionProofVerifier.sol": {
+      "lastModificationDate": 1772989113303,
+      "contentHash": "f37a72f44fe7230410de35dc416e8250",
+      "sourceName": "contracts/PitlSessionProofVerifier.sol",
+      "solcConfig": {
+        "version": "0.8.20",
+        "settings": {
+          "viaIR": true,
+          "optimizer": {
+            "enabled": true,
+            "runs": 200
+          },
+          "evmVersion": "paris",
+          "outputSelection": {
+            "*": {
+              "*": [
+                "abi",
+                "evm.bytecode",
+                "evm.deployedBytecode",
+                "evm.methodIdentifiers",
+                "metadata"
+              ],
+              "": [
+                "ast"
+              ]
+            }
+          }
+        }
+      },
+      "imports": [],
+      "versionPragmas": [
+        ">=0.7.0 <0.9.0"
+      ],
+      "artifacts": [
+        "PitlSessionProofVerifier"
       ]
     }
   }

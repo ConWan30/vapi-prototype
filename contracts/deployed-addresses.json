@@ -1,0 +1,33 @@
+{
+  "_note": "IoTeX Testnet — full deployment complete 2026-03-08",
+  "_deployer": "0xfCF4681e57C8de9650c3Eb4dA8e26dC9441A5EF1",
+  "_network": "iotex_testnet",
+  "_chainId": 4690,
+  "_status": "COMPLETE — 14 contracts deployed (PITLSessionRegistry now live with real ZK verifier)",
+  "_explorer": "https://testnet.iotexscan.io/address/",
+  "_iotx_spent": "~7.2 IOTX total (PitlSessionProofVerifier added 2026-03-08)",
+
+  "TieredDeviceRegistry":      "0x73753E916eEE0DAfEc1f6a16d98d4E4aFf9E8230",
+  "PoACVerifier":               "0x26178AD95DB507f0D298fAAFC19752fC86166c6C",
+  "BountyMarket":               "0x6B288EfbC26cDBd02d1e3735299274597242315E",
+  "SkillOracle":                "0xABA74481066bAdC72c6f51Fb1af3E0eD6BfbCe50",
+  "ProgressAttestation":        "0x822be18aC92520A7fdb4887f10BfB340edEb8AB1",
+  "TeamProofAggregator":        "0x0b4227CE704Ca780a9CeDD3Ab0F277E81e0008F4",
+  "PHGRegistry":                "0x70a35469A289949fce43d70886A27655a7033321",
+  "TournamentGate":             "0xea9a3f30474a75f90D3B66A496907fB34cADd7C1",
+  "IdentityContinuityRegistry": "0x980A28f6907f38558D946C1D0C18844c60d44ba4",
+  "TournamentGateV2":           "0x6369C96BB98E234Df9E1a4d72843dE8C56fCe786",
+  "PITLSessionRegistry":        "0x8da0A497234C57914a46279A8F938C07D3Eb5f12",
+  "PHGCredential":              "0x0Af852f5850f7bf50151BbBC14905f3a160f7F27",
+  "FederatedThreatRegistry":    "0xe837FaB5B441b37E2bA215FA14Ee11427DCd0f24",
+  "TournamentGateV3":               "0x6fEe9F6fB24A3e6cEF93f0cA5cA9875625c5D4Ef",
+  "PitlSessionProofVerifier":       "0x07D3ca1548678410edC505406f022399920d4072",
+
+  "_wiring_notes": {
+    "BountyMarket_gate": "TournamentGateV2 wired (setTournamentGate called in deploy-phase25.js). TournamentGateV3 is bridge-queryable but NOT wired to BountyMarket (gate already set). Wire V3 manually if needed.",
+    "TieredDeviceRegistry_updaters": "PoACVerifier and BountyMarket granted setReputationUpdater=true",
+    "IdentityContinuityRegistry": "Wired into PHGRegistry via setIdentityRegistry()",
+    "PITLSessionRegistry": "LIVE — PitlSessionProofVerifier wired via setPITLVerifier() on 2026-03-08. Real Groth16 proofs required.",
+    "PitlSessionProofVerifier": "Groth16 verifier for PitlSessionProof circuit. Contract renamed from Groth16Verifier to PitlSessionProofVerifier before deploy."
+  }
+}
