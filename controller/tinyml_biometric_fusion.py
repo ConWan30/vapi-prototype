@@ -220,6 +220,10 @@ class BiometricFeatureExtractor:
             return float(getattr(snap, attr, default))
 
         # 1. Trigger resistance change rate
+        # NOTE: This feature is game-specific. In NCAA Football 26, adaptive trigger modes
+        # are static throughout play (no L2/R2 mode changes) so this is always 0.0 for
+        # that game. Signal activates in trigger-heavy games (e.g., FPS with variable
+        # resistance profiles) where the game/driver changes trigger effect modes mid-session.
         l2_modes = [int(getattr(s, "l2_effect_mode", 0)) for s in snaps]
         r2_modes = [int(getattr(s, "r2_effect_mode", 0)) for s in snaps]
         mode_changes = sum(
@@ -234,12 +238,15 @@ class BiometricFeatureExtractor:
         onset_vel_l2 = _compute_trigger_onset_velocity(l2_vals)
         onset_vel_r2 = _compute_trigger_onset_velocity(r2_vals)
 
-        # 3. Micro-tremor: accel variance during still frames (gyro_mag < 0.01)
+        # 3. Micro-tremor: accel variance during still frames
+        # Threshold 20.0 LSB = raw HID gyro noise floor at rest (~14 LSB std).
+        # Previous threshold 0.01 assumed normalized rad/s — never matched raw LSB values
+        # (active play: 201 LSB, rest: 14–50 LSB), so zero frames ever passed the gate.
         still_accel_mags = []
         for s in snaps:
             gx = _g(s, "gyro_x"); gy = _g(s, "gyro_y"); gz = _g(s, "gyro_z")
             gyro_mag = math.sqrt(gx * gx + gy * gy + gz * gz)
-            if gyro_mag < 0.01:
+            if gyro_mag < 20.0:  # raw LSB threshold (rest noise floor ~14 LSB)
                 ax = _g(s, "accel_x"); ay = _g(s, "accel_y"); az = _g(s, "accel_z")
                 still_accel_mags.append(math.sqrt(ax * ax + ay * ay + az * az))
         micro_tremor_var = float(np.var(still_accel_mags)) if len(still_accel_mags) >= 5 else 0.0
@@ -271,7 +278,11 @@ class BiometricFeatureExtractor:
         rx_vels = np.diff(rx_vals) / 32768.0
         dt_vals = [max(_g(s, "inter_frame_us", 1000) / 1_000_000.0, 1e-6) for s in snaps[1:]]
         fs = 1.0 / max(float(np.median(dt_vals)), 1e-6)
-        if len(rx_vels) >= 32:
+        # Tremor FFT requires >=512 frames for adequate frequency resolution.
+        # At 1000 Hz: 512 frames -> bin width ~1.95 Hz, resolving the 8-12 Hz tremor band.
+        # With <512 frames the band collapses to 1-2 bins and is indistinguishable from noise.
+        # Callers should pass window_frames=1024 when tremor features matter.
+        if len(rx_vels) >= 512:
             fft_mag = np.abs(np.fft.rfft(rx_vels))
             freqs   = np.fft.rfftfreq(len(rx_vels), d=1.0 / fs)
             total_power = float(np.sum(fft_mag ** 2)) or 1e-9
