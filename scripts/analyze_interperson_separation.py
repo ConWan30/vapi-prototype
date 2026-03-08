@@ -67,7 +67,7 @@ PLAYER_SESSIONS = {
 POLLING_RATE_MIN = 800.0
 POLLING_RATE_MAX = 1100.0
 
-WINDOW_SIZE = 50  # frames per biometric window (matches task specification)
+WINDOW_SIZE = 1024  # frames per biometric window; 1024 required for tremor FFT (~1Hz/bin at 1000Hz)
 FEATURE_NAMES = [
     "trigger_resistance_change_rate",
     "trigger_onset_velocity_l2",
@@ -185,12 +185,13 @@ def _extract_features_inline(snaps: list[_SnapProxy]) -> np.ndarray:
     onset_vel_l2 = _compute_trigger_onset_velocity(l2_vals)
     onset_vel_r2 = _compute_trigger_onset_velocity(r2_vals)
 
-    # 3. Micro-tremor: accel variance during still frames (gyro_mag < 0.01)
+    # 3. Micro-tremor: accel variance during still frames
+    # 20.0 LSB = raw HID gyro noise floor at rest (active play ~201 LSB, rest ~14-50 LSB)
     still_accel_mags = []
     for s in snaps:
         gx = _g(s, "gyro_x"); gy = _g(s, "gyro_y"); gz = _g(s, "gyro_z")
         gyro_mag = math.sqrt(gx * gx + gy * gy + gz * gz)
-        if gyro_mag < 0.01:
+        if gyro_mag < 20.0:  # raw LSB threshold
             ax = _g(s, "accel_x"); ay = _g(s, "accel_y"); az = _g(s, "accel_z")
             still_accel_mags.append(math.sqrt(ax * ax + ay * ay + az * az))
     micro_tremor_var = float(np.var(still_accel_mags)) if len(still_accel_mags) >= 5 else 0.0
@@ -222,7 +223,7 @@ def _extract_features_inline(snaps: list[_SnapProxy]) -> np.ndarray:
     rx_vels = np.diff(rx_vals) / 32768.0
     dt_vals = [max(_g(s, "inter_frame_us", 1000) / 1_000_000.0, 1e-6) for s in snaps[1:]]
     fs = 1.0 / max(float(np.median(dt_vals)), 1e-6)
-    if len(rx_vels) >= 32:
+    if len(rx_vels) >= 512:  # min 512 frames for ~2Hz/bin resolution at 1000Hz
         fft_mag = np.abs(np.fft.rfft(rx_vels))
         freqs   = np.fft.rfftfreq(len(rx_vels), d=1.0 / fs)
         total_power = float(np.sum(fft_mag ** 2)) or 1e-9
@@ -431,9 +432,34 @@ def run_analysis() -> dict:
     player_labels  = [s["player"] for s in included]
     session_names  = [s["session_name"] for s in included]
 
-    # --- Global covariance (all sessions pooled) ---
-    cov_global, cov_inv_global = robust_cov_inv(mean_vectors)
-    print(f"Global covariance rank: {np.linalg.matrix_rank(cov_global)}")
+    # Fix 4: Auto-exclude structurally-zero features before computing distances.
+    # Features with zero variance across ALL sessions contribute no discriminative signal
+    # and inflate the condition number of the covariance matrix (Mahalanobis breaks down).
+    feature_stds = np.std(mean_vectors, axis=0)
+    zero_var_mask = feature_stds < 1e-9
+    active_mask = ~zero_var_mask
+    n_active = int(np.sum(active_mask))
+    excluded_feat_names = [FEATURE_NAMES[i] for i in range(N_FEATURES) if zero_var_mask[i]]
+    active_feat_names   = [FEATURE_NAMES[i] for i in range(N_FEATURES) if active_mask[i]]
+
+    if excluded_feat_names:
+        print(f"Auto-excluded {len(excluded_feat_names)} zero-variance features (no signal across all sessions):")
+        for fn in excluded_feat_names:
+            print(f"  - {fn}")
+        print(f"Active features ({n_active}): {', '.join(active_feat_names)}")
+        print()
+    else:
+        print(f"All {N_FEATURES} features have non-zero variance -- no auto-exclusion.")
+        print()
+
+    # Store active (projected) vector per session for downstream Mahalanobis computation
+    for s in included:
+        s["_active_vec"] = np.array(s["mean_vector"])[active_mask]
+    mean_vectors_active = mean_vectors[:, active_mask]
+
+    # --- Global covariance (all sessions pooled, active features only) ---
+    cov_global, cov_inv_global = robust_cov_inv(mean_vectors_active)
+    print(f"Global covariance rank: {np.linalg.matrix_rank(cov_global)} / {n_active}")
     print()
 
     # --- Per-player mean vectors ---
@@ -443,9 +469,9 @@ def run_analysis() -> dict:
     for p, sl in player_sessions.items():
         if not sl:
             continue
-        vecs = np.array([s["mean_vector"] for s in sl])
+        vecs = np.array([s["_active_vec"] for s in sl])
         player_means[p]   = np.mean(vecs, axis=0)
-        player_vectors[p] = [np.array(s["mean_vector"]) for s in sl]
+        player_vectors[p] = [s["_active_vec"] for s in sl]
 
     # --- Intra-player distances ---
     print("INTRA-PLAYER DISTANCES (each session -> their player mean)")
@@ -456,7 +482,7 @@ def run_analysis() -> dict:
         if not sl or p not in player_means:
             continue
         mu = player_means[p]
-        dists = [mahalanobis_distance(np.array(s["mean_vector"]), mu, cov_inv_global) for s in sl]
+        dists = [mahalanobis_distance(s["_active_vec"], mu, cov_inv_global) for s in sl]
         intra_stats[p] = {
             "n_sessions":  len(sl),
             "distances":   dists,
@@ -557,7 +583,7 @@ def run_analysis() -> dict:
 
     for s in included:
         true_player = s["player"]
-        vec = np.array(s["mean_vector"])
+        vec = s["_active_vec"]
         best_player = None
         best_dist   = float("inf")
         for p, mu in player_means.items():
@@ -588,11 +614,14 @@ def run_analysis() -> dict:
 
     # --- Compile full result dict ---
     result = {
-        "analysis_version":   "1.0",
+        "analysis_version":   "2.0",
         "n_sessions_included": len(included),
         "n_sessions_excluded": len(excluded),
         "n_features":          N_FEATURES,
+        "n_active_features":   n_active,
         "feature_names":       FEATURE_NAMES,
+        "active_feature_names": active_feat_names,
+        "excluded_feature_names": excluded_feat_names,
         "window_size":         WINDOW_SIZE,
         "extractor_mode":      "live" if _EXTRACTOR_AVAILABLE else "inline_fallback",
         "player_session_counts": {p: len(sl) for p, sl in player_sessions.items()},
@@ -679,10 +708,21 @@ def write_markdown(result: dict, path: Path) -> None:
     lines.append("**Sessions:** N=69 captured, " +
                  f"{n_inc} included, {n_exc} excluded (polling-rate filter)  ")
     lines.append(f"**Players:** 3 (Player 1: hw_005–hw_044, Player 2: hw_045–hw_058, Player 3: hw_059–hw_073)  ")
-    lines.append(f"**Feature space:** 11-dimensional L4 biometric fingerprint  ")
+    n_active_feat = result["n_active_features"]
+    excl_feats = result.get("excluded_feature_names", [])
+    lines.append(f"**Feature space:** {result['n_features']}-dimensional L4 biometric fingerprint "
+                 f"({n_active_feat} active after zero-variance exclusion)  ")
     lines.append(f"**Window size:** {result['window_size']} frames  ")
-    lines.append(f"**Distance metric:** Full Mahalanobis (Tikhonov-regularized covariance)")
+    lines.append(f"**Distance metric:** Full Mahalanobis on active features (Tikhonov-regularized covariance)")
     lines.append("")
+
+    if excl_feats:
+        lines.append("> **Auto-excluded features (zero variance across all sessions):** " +
+                     ", ".join(f"`{f}`" for f in excl_feats) + "  ")
+        lines.append("> These features are structurally zero in the current N=69 corpus "
+                     "(game-specific or hardware field added after capture). "
+                     "They are reported below but excluded from Mahalanobis computation.")
+        lines.append("")
 
     lines.append("## Executive Summary")
     lines.append("")
