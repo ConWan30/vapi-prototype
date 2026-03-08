@@ -113,6 +113,34 @@ class BiometricFeatureFrame:
     stick_autocorr_lag5: float = 0.0
     """Same as lag-1 but at lag-5 frames. Captures longer-range temporal structure."""
 
+    tremor_peak_hz: float = 0.0
+    """
+    Dominant FFT frequency in right-stick X velocity spectrum (Hz).
+    Human physiological tremor: 8-12 Hz.
+    Bot PID oscillation: 0 Hz (static) or 30-60 Hz. Bot constant hold: 0 Hz.
+    Requires ≥32 frames; set to 0.0 if insufficient.
+    """
+
+    tremor_band_power: float = 0.0
+    """
+    Fraction of FFT power in the 8-12 Hz physiological tremor band.
+    Human: typically > 0.10. Bot (static or PID): < 0.03.
+    Requires ≥32 frames; set to 0.0 if insufficient.
+    """
+
+    touchpad_active_fraction: float = 0.0
+    """
+    Fraction of frames where touch_active is True.
+    Human thumb resting pattern: player-specific. Software injection: 0.0 (no touch data).
+    """
+
+    touch_position_variance: float = 0.0
+    """
+    Variance of touch0_x normalized [0, 1] during active touch frames.
+    Low variance = consistent thumb resting position (player fingerprint).
+    Set to 0.0 if fewer than 3 active touch frames.
+    """
+
     def to_vector(self) -> np.ndarray:
         return np.array([
             self.trigger_resistance_change_rate,
@@ -122,6 +150,10 @@ class BiometricFeatureFrame:
             self.grip_asymmetry,
             self.stick_autocorr_lag1,
             self.stick_autocorr_lag5,
+            self.tremor_peak_hz,
+            self.tremor_band_power,
+            self.touchpad_active_fraction,
+            self.touch_position_variance,
         ], dtype=np.float32)
 
 # ---------------------------------------------------------------------------
@@ -152,7 +184,7 @@ class _InputSnapshotLike:
 # Biometric feature extractor
 # ---------------------------------------------------------------------------
 
-_BIO_FEATURE_DIM = 7
+_BIO_FEATURE_DIM = 11
 
 class BiometricFeatureExtractor:
     """
@@ -234,6 +266,32 @@ class BiometricFeatureExtractor:
         autocorr_lag1 = _autocorr(stick_vels, lag=1)
         autocorr_lag5 = _autocorr(stick_vels, lag=5)
 
+        # 6. Right-stick tremor FFT (8-12 Hz physiological tremor)
+        rx_vals = np.array([float(getattr(s, "right_stick_x", 0)) for s in snaps], dtype=np.float32)
+        rx_vels = np.diff(rx_vals) / 32768.0
+        dt_vals = [max(_g(s, "inter_frame_us", 1000) / 1_000_000.0, 1e-6) for s in snaps[1:]]
+        fs = 1.0 / max(float(np.median(dt_vals)), 1e-6)
+        if len(rx_vels) >= 32:
+            fft_mag = np.abs(np.fft.rfft(rx_vels))
+            freqs   = np.fft.rfftfreq(len(rx_vels), d=1.0 / fs)
+            total_power = float(np.sum(fft_mag ** 2)) or 1e-9
+            peak_idx = int(np.argmax(fft_mag))
+            tremor_peak_hz  = float(freqs[peak_idx])
+            band_mask = (freqs >= 8.0) & (freqs <= 12.0)
+            tremor_band_power = float(np.sum(fft_mag[band_mask] ** 2) / total_power)
+        else:
+            tremor_peak_hz = 0.0
+            tremor_band_power = 0.0
+
+        # 7. Touchpad biometric (resting thumb contact pattern)
+        touch_xs = [
+            float(getattr(s, "touch0_x", 0)) / 1920.0
+            for s in snaps
+            if bool(getattr(s, "touch_active", False))
+        ]
+        touchpad_active_fraction = len(touch_xs) / n
+        touch_position_variance = float(np.var(touch_xs)) if len(touch_xs) >= 3 else 0.0
+
         return BiometricFeatureFrame(
             trigger_resistance_change_rate=resistance_change_rate,
             trigger_onset_velocity_l2=onset_vel_l2,
@@ -242,6 +300,10 @@ class BiometricFeatureExtractor:
             grip_asymmetry=grip_asym,
             stick_autocorr_lag1=autocorr_lag1,
             stick_autocorr_lag5=autocorr_lag5,
+            tremor_peak_hz=tremor_peak_hz,
+            tremor_band_power=tremor_band_power,
+            touchpad_active_fraction=touchpad_active_fraction,
+            touch_position_variance=touch_position_variance,
         )
 
 
@@ -309,8 +371,10 @@ class BiometricFusionClassifier:
     # Thresholds configurable via environment variables (set before module import,
     # or override on individual instances after __init__ for per-device calibration).
     # Production values come from scripts/threshold_calibrator.py run on N>=50 sessions.
-    ANOMALY_THRESHOLD: float = float(_os.getenv("L4_ANOMALY_THRESHOLD", "5.869"))
-    CONTINUITY_THRESHOLD: float = float(_os.getenv("L4_CONTINUITY_THRESHOLD", "4.617"))
+    # Phase 17 empirical calibration (N=69 sessions, 11-feature space).
+    # Source: scripts/batch_analyze_phase17_signals.py → docs/phase17-validation-results.md
+    ANOMALY_THRESHOLD: float = float(_os.getenv("L4_ANOMALY_THRESHOLD", "7.019"))
+    CONTINUITY_THRESHOLD: float = float(_os.getenv("L4_CONTINUITY_THRESHOLD", "5.369"))
     CONFIDENCE_MIN: int = 180          # Minimum confidence to report anomaly [0-255]
     CONFIDENCE_SCALE: float = 30.0     # Maps distance above threshold to confidence
     VAR_FLOOR: float = 1e-6            # Prevent division by zero in Mahalanobis

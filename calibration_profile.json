@@ -1,73 +1,79 @@
 {
-  "calibration_version": "1.0",
-  "n_sessions": 50,
+  "calibration_version": "1.1",
+  "n_sessions": 69,
   "confidence_level": "high",
-  "confidence_note": "N=50 sessions \u2014 thresholds suitable for production validation.",
+  "confidence_note": "N=69 sessions — thresholds suitable for production validation.",
   "hardware_note": "All thresholds derived from real DualShock Edge hardware data. Replace bridge magic numbers with these values after validating false-positive rate at each skill tier.",
+  "phase17_note": "L4 thresholds updated from 7-feature to 11-feature space (Phase 17 validation). Touchpad and tremor FFT features are 0.0 in all N=69 pre-Phase-17 sessions; they add zero-variance dimensions that slightly widen the threshold (+1.6% vs 7-feature).",
   "thresholds": {
     "l4_mahalanobis_anomaly": {
-      "recommended": 5.869,
+      "recommended": 7.019,
+      "previous_7feature": 6.905,
       "current_magic_number": 3.0,
-      "derivation": "mean + 3\u03c3 of per-session Mahalanobis distance from population centroid (6-proxy biometric feature space; ~99.7th percentile assuming Gaussian). Feature space: onset_l2, onset_r2, tremor_var, grip_asym, autocorr_lag1, autocorr_lag5.",
+      "derivation": "mean + 3sigma of per-session Mahalanobis distance from population centroid (11-feature biometric space, Phase 17). Feature space: trigger_resistance_change_rate, trigger_onset_velocity_l2/r2, micro_tremor_accel_variance, grip_asymmetry, stick_autocorr_lag1/5, tremor_peak_hz, tremor_band_power, touchpad_active_fraction, touch_position_variance.",
       "unit": "Mahalanobis distance (dimensionless)",
-      "dist_mean": 2.113,
-      "dist_std": 1.252,
-      "n_fingerprints": 50,
+      "dist_mean": 2.068,
+      "dist_std": 1.650,
+      "n_fingerprints": 69,
+      "n_sessions_exceed_threshold": 2,
       "ci95": [
-        1.766,
-        2.46
+        1.672,
+        2.464
       ]
     },
     "l4_mahalanobis_continuity": {
-      "recommended": 4.617,
+      "recommended": 5.369,
+      "previous_7feature": 5.190,
       "current_magic_number": 2.0,
-      "derivation": "mean + 2\u03c3 of per-session Mahalanobis distance from population centroid (6-proxy biometric feature space; ~95th percentile assuming Gaussian).",
+      "derivation": "mean + 2sigma of per-session Mahalanobis distance from population centroid (11-feature biometric space, Phase 17).",
       "unit": "Mahalanobis distance (dimensionless)",
       "ci95": [
-        1.766,
-        2.46
+        1.672,
+        2.464
       ]
     },
     "l5_cv_threshold": {
-      "recommended": 0.341,
+      "recommended": 1.1059,
       "current_magic_number": 0.08,
-      "derivation": "10th percentile of per-session inter-press interval CVs (rising-edge R2 detection, same logic as validate_detection.py). Sessions used: 44 / 50 (excluded 6 with <20 presses).",
+      "derivation": "10th percentile of per-session inter-press interval CVs (rising-edge R2 detection, same logic as validate_detection.py). Sessions used: 63 / 69 (excluded 6 with <20 presses).",
       "unit": "coefficient of variation (dimensionless)",
       "ci95": [
-        0.8357,
-        1.1542
+        1.417,
+        1.6299
       ]
     },
     "l5_entropy_threshold": {
-      "recommended": 1.382,
+      "recommended": 0.961,
       "current_magic_number": 1.5,
-      "derivation": "10th percentile of per-session inter-press interval entropy (10-bin histogram). Sessions used: 44 / 50.",
+      "derivation": "10th percentile of per-session inter-press interval entropy (10-bin histogram). Sessions used: 63 / 69.",
       "unit": "bits",
       "ci95": [
-        2.092,
-        2.454
+        1.502,
+        1.745
       ]
     },
     "stick_noise_floor_lsb": {
-      "recommended": 20.47,
+      "recommended": 19.28,
       "current_magic_number": 5.0,
       "derivation": "mean of per-axis std across all sessions",
-      "unit": "LSB (raw ADC counts, range 0\u2013255)"
+      "unit": "LSB (raw ADC counts, range 0-255)"
     },
     "imu_gyro_noise_floor_lsb": {
-      "recommended": 320.08,
+      "recommended": 332.99,
       "current_magic_number": 50.0,
       "derivation": "95th percentile of per-axis gyro std across sessions",
       "unit": "LSB (raw ADC counts)"
     }
   },
   "session_stats": {
-    "mean_polling_rate_hz": 793.9,
-    "mean_reports_per_session": 136135.0,
-    "session_cv_mean": 0.995,
-    "session_entropy_mean": 2.273,
-    "l4_mahal_dist_mean": 2.113,
-    "l4_mahal_dist_std": 1.252,
-    "l4_fingerprints_extracted": 50
+    "mean_polling_rate_hz": 943.8,
+    "mean_reports_per_session": 211255.0,
+    "session_cv_mean": 1.5235,
+    "session_entropy_mean": 1.624,
+    "l4_mahal_dist_mean_11feature": 2.068,
+    "l4_mahal_dist_std_11feature": 1.650,
+    "l4_mahal_dist_mean_7feature": 1.762,
+    "l4_mahal_dist_std_7feature": 1.714,
+    "l4_fingerprints_extracted": 69
   }
 }
