@@ -3,30 +3,33 @@
 **Date:** 2026-03-08  
 **Sessions:** N=69 captured, 64 included, 5 excluded (polling-rate filter)  
 **Players:** 3 (Player 1: hw_005–hw_044, Player 2: hw_045–hw_058, Player 3: hw_059–hw_073)  
-**Feature space:** 11-dimensional L4 biometric fingerprint  
-**Window size:** 50 frames  
-**Distance metric:** Full Mahalanobis (Tikhonov-regularized covariance)
+**Feature space:** 11-dimensional L4 biometric fingerprint (8 active after zero-variance exclusion)  
+**Window size:** 1024 frames  
+**Distance metric:** Full Mahalanobis on active features (Tikhonov-regularized covariance)
+
+> **Auto-excluded features (zero variance across all sessions):** `trigger_resistance_change_rate`, `touchpad_active_fraction`, `touch_position_variance`  
+> These features are structurally zero in the current N=69 corpus (game-specific or hardware field added after capture). They are reported below but excluded from Mahalanobis computation.
 
 ## Executive Summary
 
 | Metric | Value |
 |--------|-------|
-| Mean intra-player distance | 1.210 |
-| Mean inter-player distance | 0.611 |
-| **Separation ratio (inter/intra)** | **0.505** |
-| Leave-one-out classification accuracy | 51.6% (33/64) |
+| Mean intra-player distance | 0.635 |
+| Mean inter-player distance | 0.230 |
+| **Separation ratio (inter/intra)** | **0.362** |
+| Leave-one-out classification accuracy | 42.2% (27/64) |
 
 **Conclusion:** NO SEPARATION — fingerprint does not distinguish between players
 
-The 11-feature L4 fingerprint shows **weak or no inter-player separation** (ratio 0.50). This may reflect insufficient session diversity, feature space limitations (e.g., touchpad features all zero in current dataset), or genuine similarity of play styles across players. Intra-player consistency detection remains valid despite low inter-player separation.
+The 11-feature L4 fingerprint shows **weak or no inter-player separation** (ratio 0.36). This may reflect insufficient session diversity, feature space limitations (e.g., touchpad features all zero in current dataset), or genuine similarity of play styles across players. Intra-player consistency detection remains valid despite low inter-player separation.
 
 ## Per-Player Statistics
 
 | Player   | Sessions | Intra Mean | Intra Std | Intra Min | Intra Max | Intra Median |
 | -------- | -------- | ---------- | --------- | --------- | --------- | ------------ |
-| Player 1 | 38       | 1.154      | 1.057     | 0.423     | 7.060     | 0.893        |
-| Player 2 | 14       | 1.006      | 0.531     | 0.200     | 1.804     | 0.853        |
-| Player 3 | 12       | 1.471      | 1.537     | 0.427     | 6.430     | 0.993        |
+| Player 1 | 38       | 0.716      | 0.830     | 0.006     | 4.290     | 0.412        |
+| Player 2 | 14       | 0.661      | 0.658     | 0.094     | 2.636     | 0.478        |
+| Player 3 | 12       | 0.527      | 0.522     | 0.018     | 2.048     | 0.362        |
 
 ## Inter-Player Distance Matrix (Mahalanobis)
 
@@ -34,82 +37,88 @@ Distance between each pair of player mean feature vectors using the shared globa
 
 |          | Player 1 | Player 2 | Player 3 |
 | -------- | -------- | -------- | -------- |
-| Player 1 | —        | 0.363    | 0.871    |
-| Player 2 | 0.363    | —        | 0.598    |
-| Player 3 | 0.871    | 0.598    | —        |
+| Player 1 | —        | 0.051    | 0.343    |
+| Player 2 | 0.051    | —        | 0.295    |
+| Player 3 | 0.343    | 0.295    | —        |
 
 ## Intra-Player Distance Distribution
 
 Mahalanobis distance from each session's mean feature vector to its player's centroid, using the global covariance.
 
-**Player 1** (N=38 sessions, mean=1.154):
-  7.060, 0.580, 0.851, 0.696, 0.513, 0.596, 1.866, 0.725, 0.835, 0.570, 0.759, 1.076, 0.752, 1.096, 0.926, 0.491, 1.623, 0.439, 1.181, 0.644, 0.620, 0.657, 1.255, 1.397, 1.720, 1.457, 1.650, 0.625, 0.958, 1.441, 1.589, 1.000, 1.399, 0.723, 0.423, 1.866, 0.869, 0.918
+**Player 1** (N=38 sessions, mean=0.716):
+  1.834, 0.464, 0.193, 4.290, 0.051, 0.073, 1.644, 0.406, 0.809, 0.163, 0.006, 0.604, 0.057, 0.276, 0.267, 0.479, 1.732, 1.989, 0.662, 0.019, 0.605, 0.255, 0.328, 0.418, 0.886, 0.153, 1.026, 0.127, 1.746, 0.032, 0.311, 1.286, 0.141, 1.865, 0.379, 0.620, 0.615, 0.403
 
-**Player 2** (N=14 sessions, mean=1.006):
-  0.200, 1.804, 1.753, 1.786, 1.707, 0.631, 1.011, 0.712, 0.616, 0.734, 0.972, 0.473, 0.514, 1.175
+**Player 2** (N=14 sessions, mean=0.661):
+  0.847, 0.442, 0.814, 1.471, 0.094, 0.546, 0.117, 2.636, 0.515, 0.143, 0.157, 0.769, 0.280, 0.420
 
-**Player 3** (N=12 sessions, mean=1.471):
-  6.430, 0.427, 1.281, 0.999, 0.769, 1.788, 0.988, 0.894, 1.232, 0.781, 1.437, 0.626
+**Player 3** (N=12 sessions, mean=0.527):
+  2.048, 0.178, 0.744, 0.275, 0.835, 0.166, 0.018, 0.329, 0.442, 0.161, 0.394, 0.734
 
 ## Feature Means by Player
 
 Per-feature mean values for each player's session set. Features with high inter-player variation are the strongest biometric discriminators.
 
-| Feature                        | Player 1           | Player 2           | Player 3           | Inter-Range |
-| ------------------------------ | ------------------ | ------------------ | ------------------ | ----------- |
-| tremor_peak_hz                 | 0.4131 (+/-0.5300) | 0.4811 (+/-0.4332) | 0.8613 (+/-1.4717) | 0.4483      |
-| grip_asymmetry                 | 1.0124 (+/-0.0325) | 1.0047 (+/-0.0042) | 1.0026 (+/-0.0020) | 0.0098      |
-| stick_autocorr_lag1            | 0.0279 (+/-0.0135) | 0.0262 (+/-0.0147) | 0.0227 (+/-0.0134) | 0.0053      |
-| stick_autocorr_lag5            | 0.0124 (+/-0.0061) | 0.0119 (+/-0.0076) | 0.0092 (+/-0.0056) | 0.0032      |
-| trigger_onset_velocity_r2      | 0.0017 (+/-0.0012) | 0.0012 (+/-0.0008) | 0.0011 (+/-0.0006) | 0.0006      |
-| trigger_onset_velocity_l2      | 0.0004 (+/-0.0004) | 0.0002 (+/-0.0002) | 0.0002 (+/-0.0002) | 0.0002      |
-| trigger_resistance_change_rate | 0.0000 (+/-0.0000) | 0.0000 (+/-0.0000) | 0.0000 (+/-0.0000) | 0.0000      |
-| micro_tremor_accel_variance    | 0.0000 (+/-0.0000) | 0.0000 (+/-0.0000) | 0.0000 (+/-0.0000) | 0.0000      |
-| tremor_band_power              | 0.0000 (+/-0.0000) | 0.0000 (+/-0.0000) | 0.0000 (+/-0.0000) | 0.0000      |
-| touchpad_active_fraction       | 0.0000 (+/-0.0000) | 0.0000 (+/-0.0000) | 0.0000 (+/-0.0000) | 0.0000      |
-| touch_position_variance        | 0.0000 (+/-0.0000) | 0.0000 (+/-0.0000) | 0.0000 (+/-0.0000) | 0.0000      |
+| Feature                        | Player 1                 | Player 2                 | Player 3                 | Inter-Range |
+| ------------------------------ | ------------------------ | ------------------------ | ------------------------ | ----------- |
+| micro_tremor_accel_variance    | 8766.9396 (+/-5160.8163) | 8526.8386 (+/-4386.2235) | 7276.6082 (+/-2846.5756) | 1490.3314   |
+| tremor_peak_hz                 | 0.7075 (+/-1.1032)       | 1.0174 (+/-1.1592)       | 7.7951 (+/-21.7266)      | 7.0876      |
+| stick_autocorr_lag5            | 0.1316 (+/-0.0583)       | 0.1144 (+/-0.0626)       | 0.0983 (+/-0.0559)       | 0.0332      |
+| stick_autocorr_lag1            | 0.1464 (+/-0.0646)       | 0.1303 (+/-0.0721)       | 0.1145 (+/-0.0650)       | 0.0320      |
+| grip_asymmetry                 | 1.0407 (+/-0.0613)       | 1.0330 (+/-0.0289)       | 1.0249 (+/-0.0293)       | 0.0157      |
+| trigger_onset_velocity_r2      | 0.0041 (+/-0.0046)       | 0.0028 (+/-0.0021)       | 0.0027 (+/-0.0021)       | 0.0014      |
+| tremor_band_power              | 0.0037 (+/-0.0032)       | 0.0045 (+/-0.0030)       | 0.0040 (+/-0.0024)       | 0.0008      |
+| trigger_onset_velocity_l2      | 0.0010 (+/-0.0010)       | 0.0009 (+/-0.0008)       | 0.0009 (+/-0.0006)       | 0.0002      |
+| trigger_resistance_change_rate | 0.0000 (+/-0.0000)       | 0.0000 (+/-0.0000)       | 0.0000 (+/-0.0000)       | 0.0000      |
+| touchpad_active_fraction       | 0.0000 (+/-0.0000)       | 0.0000 (+/-0.0000)       | 0.0000 (+/-0.0000)       | 0.0000      |
+| touch_position_variance        | 0.0000 (+/-0.0000)       | 0.0000 (+/-0.0000)       | 0.0000 (+/-0.0000)       | 0.0000      |
 
 ## Leave-One-Out Classification Results
 
 Each session was classified to the nearest player centroid (Mahalanobis) using the global covariance. Player mean vectors were computed from ALL sessions (no held-out centroid recomputation — this is a bias-aware first-pass estimate).
 
-**Accuracy: 51.6% (33/64 sessions correctly assigned)**
+**Accuracy: 42.2% (27/64 sessions correctly assigned)**
 
 Misclassified sessions:
 
 | Session | True Player | Predicted | Best Dist |
 | ------- | ----------- | --------- | --------- |
-| hw_007  | Player 1    | Player 3  | 0.717     |
-| hw_009  | Player 1    | Player 2  | 0.453     |
-| hw_011  | Player 1    | Player 2  | 1.786     |
-| hw_013  | Player 1    | Player 2  | 0.725     |
-| hw_019  | Player 1    | Player 2  | 0.786     |
-| hw_020  | Player 1    | Player 2  | 0.352     |
-| hw_021  | Player 1    | Player 2  | 1.540     |
-| hw_023  | Player 1    | Player 2  | 1.091     |
-| hw_024  | Player 1    | Player 2  | 0.636     |
-| hw_030  | Player 1    | Player 2  | 1.389     |
-| hw_031  | Player 1    | Player 2  | 1.639     |
-| hw_032  | Player 1    | Player 2  | 0.528     |
-| hw_033  | Player 1    | Player 2  | 0.941     |
-| hw_034  | Player 1    | Player 3  | 1.216     |
-| hw_035  | Player 1    | Player 3  | 0.814     |
-| hw_040  | Player 1    | Player 2  | 1.786     |
-| hw_041  | Player 1    | Player 2  | 0.822     |
-| hw_046  | Player 2    | Player 3  | 1.709     |
-| hw_051  | Player 2    | Player 1  | 1.010     |
-| hw_052  | Player 2    | Player 1  | 0.618     |
-| hw_053  | Player 2    | Player 1  | 0.610     |
-| hw_054  | Player 2    | Player 1  | 0.695     |
-| hw_055  | Player 2    | Player 3  | 0.954     |
-| hw_058  | Player 2    | Player 3  | 1.029     |
-| hw_060  | Player 3    | Player 2  | 0.324     |
-| hw_061  | Player 3    | Player 1  | 0.755     |
-| hw_062  | Player 3    | Player 1  | 0.389     |
-| hw_063  | Player 3    | Player 2  | 0.348     |
-| hw_064  | Player 3    | Player 2  | 1.714     |
-| hw_070  | Player 3    | Player 2  | 0.197     |
-| hw_071  | Player 3    | Player 1  | 0.883     |
+| hw_005  | Player 1    | Player 3  | 1.530     |
+| hw_006  | Player 1    | Player 3  | 0.171     |
+| hw_007  | Player 1    | Player 2  | 0.143     |
+| hw_010  | Player 1    | Player 2  | 0.026     |
+| hw_011  | Player 1    | Player 3  | 1.344     |
+| hw_018  | Player 1    | Player 3  | 0.097     |
+| hw_019  | Player 1    | Player 3  | 0.157     |
+| hw_021  | Player 1    | Player 3  | 1.432     |
+| hw_023  | Player 1    | Player 3  | 0.386     |
+| hw_027  | Player 1    | Player 3  | 0.159     |
+| hw_028  | Player 1    | Player 3  | 0.189     |
+| hw_029  | Player 1    | Player 3  | 0.598     |
+| hw_031  | Player 1    | Player 3  | 0.720     |
+| hw_034  | Player 1    | Player 2  | 0.026     |
+| hw_035  | Player 1    | Player 3  | 0.156     |
+| hw_036  | Player 1    | Player 3  | 0.988     |
+| hw_037  | Player 1    | Player 2  | 0.091     |
+| hw_039  | Player 1    | Player 3  | 0.174     |
+| hw_040  | Player 1    | Player 3  | 0.350     |
+| hw_041  | Player 1    | Player 3  | 0.319     |
+| hw_042  | Player 1    | Player 3  | 0.186     |
+| hw_045  | Player 2    | Player 1  | 0.796     |
+| hw_046  | Player 2    | Player 1  | 0.393     |
+| hw_047  | Player 2    | Player 3  | 0.563     |
+| hw_048  | Player 2    | Player 3  | 1.223     |
+| hw_050  | Player 2    | Player 3  | 0.327     |
+| hw_052  | Player 2    | Player 1  | 2.585     |
+| hw_053  | Player 2    | Player 3  | 0.300     |
+| hw_056  | Player 2    | Player 3  | 0.534     |
+| hw_057  | Player 2    | Player 1  | 0.229     |
+| hw_058  | Player 2    | Player 1  | 0.370     |
+| hw_060  | Player 3    | Player 2  | 0.163     |
+| hw_061  | Player 3    | Player 1  | 0.418     |
+| hw_062  | Player 3    | Player 2  | 0.038     |
+| hw_063  | Player 3    | Player 1  | 0.511     |
+| hw_066  | Player 3    | Player 1  | 0.030     |
+| hw_071  | Player 3    | Player 1  | 0.053     |
 
 ## Excluded Sessions
 
@@ -125,7 +134,7 @@ Misclassified sessions:
 
 ### Implications for VAPI Protocol
 
-1. **Player-specific fingerprinting needs more features.** The current separation ratio of 0.50 suggests feature augmentation or longer session windows before per-player identification is reliable.
+1. **Player-specific fingerprinting needs more features.** The current separation ratio of 0.36 suggests feature augmentation or longer session windows before per-player identification is reliable.
 
 2. **Touchpad biometrics.** All 69 sessions show zero touchpad activity (touch_active=False throughout). Adding the `touch_active`/`touch0_x` fields from capture_session.py Phase 17 will add player-specific thumb-resting patterns as a discriminator. This is expected to improve separation significantly.
 
