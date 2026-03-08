@@ -82,7 +82,7 @@ class TestBiometricFeatureFrame(unittest.TestCase):
             stick_autocorr_lag5=0.4,
         )
         v = frame.to_vector()
-        self.assertEqual(v.shape, (7,))
+        self.assertEqual(v.shape, (11,))
         self.assertAlmostEqual(float(v[0]), 1.5)
         self.assertAlmostEqual(float(v[4]), 1.2)
 
@@ -106,7 +106,7 @@ class TestBiometricFeatureExtractor(unittest.TestCase):
         snaps = _make_snaps(60, vary_trigger=True)
         frame = BiometricFeatureExtractor.extract(snaps)
         v = frame.to_vector()
-        self.assertEqual(v.shape, (7,))
+        self.assertEqual(v.shape, (11,))
 
     def test_micro_tremor_nonzero_in_still_conditions(self):
         # Still frames: gyro near zero, accel varies slightly
@@ -159,8 +159,8 @@ class TestBiometricFusionClassifier(unittest.TestCase):
         clf = self._make_classifier_warmed(n=7)
         # Manually set fingerprint to something very different from fresh snaps
         import numpy as np
-        clf._mean = np.array([100.0, 100.0, 100.0, 100.0, 100.0, 100.0, 100.0], dtype=np.float64)
-        clf._var  = np.array([0.01, 0.01, 0.01, 0.01, 0.01, 0.01, 0.01], dtype=np.float64)
+        clf._mean = np.array([100.0]*11, dtype=np.float64)
+        clf._var  = np.array([0.01]*11, dtype=np.float64)
 
         frame = BiometricFeatureFrame()  # all zeros — far from mean=100
         result = clf.classify(frame)
@@ -233,6 +233,190 @@ class TestHelpers(unittest.TestCase):
     def test_trigger_onset_velocity_no_press(self):
         result = _compute_trigger_onset_velocity([0] * 50)
         self.assertEqual(result, 0.0)
+
+
+# ---------------------------------------------------------------------------
+# Phase 17: Tremor FFT + Touchpad + Feature Vector Dimension Tests
+# ---------------------------------------------------------------------------
+
+import json
+import math
+import numpy as np
+
+SESSION_DIR = Path(__file__).resolve().parents[2] / "sessions" / "human"
+
+
+def _make_snap(i: int, rx: int = 0, touch_active: bool = False,
+               touch0_x: int = 0, inter_frame_us: int = 1000, **kwargs):
+    """Factory for synthetic InputSnapshot-like objects."""
+    defaults = dict(
+        left_stick_x=0, left_stick_y=0,
+        right_stick_x=rx, right_stick_y=0,
+        l2_trigger=0, r2_trigger=0,
+        l2_effect_mode=0, r2_effect_mode=0,
+        gyro_x=0.0, gyro_y=0.0, gyro_z=0.0,
+        accel_x=0.0, accel_y=0.0, accel_z=1.0,
+        inter_frame_us=inter_frame_us,
+        touch_active=touch_active,
+        touch0_x=touch0_x,
+        touch0_y=0,
+    )
+    defaults.update(kwargs)
+    return type("_S", (), defaults)()
+
+
+class TestTremorFFT(unittest.TestCase):
+    """Phase 17: right-stick tremor FFT (8-12 Hz physiological tremor)."""
+
+    def _snaps_with_tremor(self, freq_hz: float, n: int = 120, fs_hz: float = 1000.0) -> list:
+        """Generate snaps with right_stick_x oscillating at freq_hz."""
+        dt_us = int(1_000_000 / fs_hz)
+        return [
+            _make_snap(i, rx=int(3000 * math.sin(2 * math.pi * freq_hz * i / fs_hz)),
+                       inter_frame_us=dt_us)
+            for i in range(n)
+        ]
+
+    def test_tremor_peak_hz_detects_8hz(self):
+        """8 Hz oscillation → tremor_peak_hz ∈ [6, 10]. Needs >=512 frames for FFT."""
+        snaps = self._snaps_with_tremor(8.0, n=600)  # 600 snaps, 599 velocity samples >= 512
+        feats = BiometricFeatureExtractor.extract(snaps, window_frames=600)
+        self.assertGreater(feats.tremor_peak_hz, 0.0)
+        self.assertGreaterEqual(feats.tremor_peak_hz, 6.0)
+        self.assertLessEqual(feats.tremor_peak_hz, 10.0,
+                             msg=f"Expected ~8 Hz, got {feats.tremor_peak_hz:.2f}")
+
+    def test_tremor_peak_hz_detects_10hz(self):
+        """10 Hz oscillation → tremor_peak_hz ∈ [8, 12]. Needs >=512 frames for FFT."""
+        snaps = self._snaps_with_tremor(10.0, n=600)  # 600 snaps, 599 velocity samples >= 512
+        feats = BiometricFeatureExtractor.extract(snaps, window_frames=600)
+        self.assertGreaterEqual(feats.tremor_peak_hz, 8.0)
+        self.assertLessEqual(feats.tremor_peak_hz, 12.0,
+                             msg=f"Expected ~10 Hz, got {feats.tremor_peak_hz:.2f}")
+
+    def test_bot_static_stick_low_band_power(self):
+        """
+        Static stick (rx=constant) → velocity=0 → tremor_band_power ~ 0.
+        A perfectly static bot has no tremor.
+        """
+        snaps = [_make_snap(i, rx=5000) for i in range(120)]
+        feats = BiometricFeatureExtractor.extract(snaps)
+        # tremor_peak_hz at DC (0 Hz) or close; band_power should be very low
+        self.assertLess(feats.tremor_band_power, 0.10,
+                        msg="Static bot should have near-zero 8-12 Hz band power")
+
+    def test_tremor_insufficient_data(self):
+        """Fewer than 512 frames → tremor FFT fields = 0.0 (insufficient frequency resolution)."""
+        snaps = [_make_snap(i, rx=int(1000 * math.sin(i))) for i in range(20)]
+        feats = BiometricFeatureExtractor.extract(snaps)
+        # With < 10 frames extract returns zeros; with 20 frames no FFT (< 512 threshold)
+        self.assertEqual(feats.tremor_peak_hz, 0.0)
+        self.assertEqual(feats.tremor_band_power, 0.0)
+
+    def test_tremor_band_power_is_fraction(self):
+        """tremor_band_power ∈ [0, 1] for any input."""
+        snaps = self._snaps_with_tremor(10.0, n=120)
+        feats = BiometricFeatureExtractor.extract(snaps)
+        self.assertGreaterEqual(feats.tremor_band_power, 0.0)
+        self.assertLessEqual(feats.tremor_band_power, 1.0)
+
+
+class TestTouchpadBiometric(unittest.TestCase):
+    """Phase 17: touchpad active fraction and position variance."""
+
+    def test_touchpad_active_fraction(self):
+        """50% active frames → touchpad_active_fraction ≈ 0.5."""
+        snaps = [_make_snap(i, touch_active=(i % 2 == 0), touch0_x=960)
+                 for i in range(120)]
+        feats = BiometricFeatureExtractor.extract(snaps)
+        self.assertAlmostEqual(feats.touchpad_active_fraction, 0.5, delta=0.05)
+
+    def test_no_touch_zero_fraction(self):
+        """No touch → fraction = 0, variance = 0."""
+        snaps = [_make_snap(i, touch_active=False) for i in range(120)]
+        feats = BiometricFeatureExtractor.extract(snaps)
+        self.assertAlmostEqual(feats.touchpad_active_fraction, 0.0)
+        self.assertAlmostEqual(feats.touch_position_variance, 0.0)
+
+    def test_touch_position_variance_consistent(self):
+        """Consistent touch position → variance ≈ 0."""
+        snaps = [_make_snap(i, touch_active=True, touch0_x=960) for i in range(120)]
+        feats = BiometricFeatureExtractor.extract(snaps)
+        self.assertAlmostEqual(feats.touch_position_variance, 0.0, places=4)
+
+    def test_touch_position_variance_spread(self):
+        """Random touch positions → variance > 0."""
+        rng = np.random.default_rng(42)
+        xs = rng.integers(0, 1920, size=120)
+        snaps = [_make_snap(i, touch_active=True, touch0_x=int(xs[i])) for i in range(120)]
+        feats = BiometricFeatureExtractor.extract(snaps)
+        self.assertGreater(feats.touch_position_variance, 0.0)
+
+    def test_touch_variance_below_min_frames(self):
+        """Fewer than 3 active touch frames → touch_position_variance = 0.0."""
+        snaps = [_make_snap(i, touch_active=(i < 2), touch0_x=500) for i in range(120)]
+        feats = BiometricFeatureExtractor.extract(snaps)
+        self.assertAlmostEqual(feats.touch_position_variance, 0.0)
+
+
+class TestFeatureVectorDimension(unittest.TestCase):
+    """Phase 17: BiometricFeatureFrame now has 11 features."""
+
+    def test_feature_vector_dim_11(self):
+        """to_vector() returns a (11,) numpy array."""
+        frame = BiometricFeatureFrame()
+        vec = frame.to_vector()
+        self.assertEqual(len(vec), 11, f"Expected 11 features, got {len(vec)}")
+
+    def test_feature_vector_contains_new_fields(self):
+        """New fields appear in correct positions (indices 7-10)."""
+        frame = BiometricFeatureFrame(
+            tremor_peak_hz=10.5,
+            tremor_band_power=0.30,
+            touchpad_active_fraction=0.40,
+            touch_position_variance=0.05,
+        )
+        vec = frame.to_vector()
+        self.assertAlmostEqual(float(vec[7]), 10.5, places=3)
+        self.assertAlmostEqual(float(vec[8]), 0.30, places=3)
+        self.assertAlmostEqual(float(vec[9]), 0.40, places=3)
+        self.assertAlmostEqual(float(vec[10]), 0.05, places=3)
+
+    def test_session_fixture_extract_dim_11(self):
+        """
+        Load hw_005.json session (no touchpad fields) and verify extract()
+        returns a BiometricFeatureFrame with a length-11 vector.
+        """
+        path = SESSION_DIR / "hw_005.json"
+        if not path.exists():
+            self.skipTest("hw_005.json not present")
+        with open(path, encoding="utf-8") as fh:
+            data = json.load(fh)
+
+        snaps = []
+        for r in data["reports"][:200]:
+            f = r["features"]
+            snap = _make_snap(
+                0,
+                rx=int(f.get("right_stick_x", 0)),
+                inter_frame_us=1000,
+                gyro_x=float(f.get("gyro_x", 0.0)),
+                gyro_y=float(f.get("gyro_y", 0.0)),
+                gyro_z=float(f.get("gyro_z", 0.0)),
+                accel_x=float(f.get("accel_x", 0.0)),
+                accel_y=float(f.get("accel_y", 0.0)),
+                accel_z=float(f.get("accel_z", 1.0)),
+                l2_trigger=int(f.get("l2_trigger", 0)),
+                r2_trigger=int(f.get("r2_trigger", 0)),
+                l2_effect_mode=0, r2_effect_mode=0,
+            )
+            snaps.append(snap)
+
+        feats = BiometricFeatureExtractor.extract(snaps)
+        self.assertEqual(len(feats.to_vector()), 11)
+        # Tremor peak should be > 0 from real stick data (not static)
+        # (if stick is active enough to have a non-DC peak)
+        self.assertGreaterEqual(feats.tremor_peak_hz, 0.0)
 
 
 if __name__ == "__main__":
