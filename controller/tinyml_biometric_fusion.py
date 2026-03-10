@@ -66,6 +66,24 @@ BIOMETRIC_MODEL_MANIFEST_HASH: bytes = hashlib.sha256(BIOMETRIC_MODEL_VERSION).d
 """SHA-256 of model version string. Used as model_manifest_hash in PoAC body."""
 
 # ---------------------------------------------------------------------------
+# Frame window constants
+# ---------------------------------------------------------------------------
+
+LIVE_WINDOW_FRAMES: int = 120
+"""Live classification window (~0.12s at 1000Hz polling).
+Tremor FFT (features 8-9) is inactive below 512 frames — tremor_peak_hz and
+tremor_band_power will always be 0.0 in the live path at this window size.
+"""
+
+CALIBRATION_WINDOW_FRAMES: int = 1024
+"""Calibration/offline analysis window (~1s at 1000Hz polling).
+Satisfies the >=512 frame gate for tremor FFT with ~0.98 Hz/bin resolution,
+which can resolve the 8-12 Hz physiological tremor band.
+Pass window_frames=CALIBRATION_WINDOW_FRAMES to extract() when running
+threshold_calibrator.py or analyze_interperson_separation.py.
+"""
+
+# ---------------------------------------------------------------------------
 # Biometric feature dataclass (7 signals beyond the existing 30-feature FeatureFrame)
 # ---------------------------------------------------------------------------
 
@@ -197,7 +215,7 @@ class BiometricFeatureExtractor:
     @staticmethod
     def extract(
         snapshots: Sequence[object],
-        window_frames: int = 120,
+        window_frames: int = LIVE_WINDOW_FRAMES,
     ) -> BiometricFeatureFrame:
         """
         Extract biometric features from a window of InputSnapshot objects.
@@ -205,7 +223,9 @@ class BiometricFeatureExtractor:
         Args:
             snapshots: Recent InputSnapshot frames (most recent last).
                        Requires at least 10 frames; returns zeros if fewer.
-            window_frames: Maximum frames to use (default: ~1 second at 120Hz).
+            window_frames: Maximum frames to use.
+                LIVE_WINDOW_FRAMES (120): default live path — tremor FFT inactive (<512 gate).
+                CALIBRATION_WINDOW_FRAMES (1024): offline analysis — tremor FFT active.
 
         Returns:
             BiometricFeatureFrame with 7 features.
@@ -389,6 +409,14 @@ class BiometricFusionClassifier:
     CONFIDENCE_MIN: int = 180          # Minimum confidence to report anomaly [0-255]
     CONFIDENCE_SCALE: float = 30.0     # Maps distance above threshold to confidence
     VAR_FLOOR: float = 1e-6            # Prevent division by zero in Mahalanobis
+    ZERO_VAR_THRESHOLD: float = 1e-4
+    """Features with training variance below this are excluded from Mahalanobis distance.
+    Prevents structurally-zero features (e.g. touchpad in pre-Phase-17 sessions,
+    trigger_resistance_change_rate in static-trigger games) from causing false-positive
+    0x30 alerts when the feature first becomes active in legitimate use.
+    The EMA fingerprint still updates on all features — exclusion only applies
+    to the distance computation in classify().
+    """
 
     def __init__(self) -> None:
         self._mean: np.ndarray = np.zeros(_BIO_FEATURE_DIM, dtype=np.float64)
@@ -483,7 +511,20 @@ class BiometricFusionClassifier:
         # Gate behind a BiometricFusionClassifier.USE_FULL_COVARIANCE class flag (default False)
         # until empirical calibration data from real hardware sessions is available.
         # Requires minimum ~500 NOMINAL sessions per device for a stable covariance estimate.
-        distance = float(np.sqrt(np.sum(diff ** 2 / var_safe)))
+
+        # Exclude features with near-zero training variance (structurally inactive features).
+        # With VAR_FLOOR = 1e-6, a feature always-zero in training has ref_var ≈ 1e-6.
+        # If a post-training sample has value 0.8: contribution = 0.8² / 1e-6 = 640,000 →
+        # false-positive 0x30. This occurs for touchpad features (pre-Phase-17 sessions)
+        # and trigger_resistance_change_rate (static-trigger games like NCAA Football 26).
+        # After the threshold is met (training variance accumulates), the feature re-enters.
+        active_mask = ref_var > self.ZERO_VAR_THRESHOLD
+        if not np.any(active_mask):
+            # Degenerate: fingerprint has no informative features yet.
+            self.last_distance = 0.0
+            return None
+
+        distance = float(np.sqrt(np.sum(diff[active_mask] ** 2 / var_safe[active_mask])))
         self.last_distance = distance
 
         if distance <= self.ANOMALY_THRESHOLD:
