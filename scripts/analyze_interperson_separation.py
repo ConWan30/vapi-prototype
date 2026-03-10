@@ -54,6 +54,11 @@ except ImportError as e:
     warnings.warn(f"Could not import BiometricFeatureExtractor: {e}. Using inline fallback.")
     _EXTRACTOR_AVAILABLE = False
 
+try:
+    from tinyml_biometric_fusion import CALIBRATION_WINDOW_FRAMES as WINDOW_SIZE  # type: ignore
+except ImportError:
+    WINDOW_SIZE = 1024  # fallback: 1024 frames ≥ 512 tremor FFT gate, ~0.98 Hz/bin at 1000 Hz
+
 # ---------------------------------------------------------------------------
 # Player session mapping
 # ---------------------------------------------------------------------------
@@ -66,8 +71,6 @@ PLAYER_SESSIONS = {
 
 POLLING_RATE_MIN = 800.0
 POLLING_RATE_MAX = 1100.0
-
-WINDOW_SIZE = 1024  # frames per biometric window; 1024 required for tremor FFT (~1Hz/bin at 1000Hz)
 FEATURE_NAMES = [
     "trigger_resistance_change_rate",
     "trigger_onset_velocity_l2",
@@ -943,6 +946,18 @@ def write_markdown(result: dict, path: Path) -> None:
 # ---------------------------------------------------------------------------
 
 def main() -> int:
+    import argparse
+    parser = argparse.ArgumentParser(
+        description="VAPI multi-person L4 Mahalanobis separation analysis."
+    )
+    parser.add_argument(
+        "--output-suffix", default="",
+        help="Suffix appended before the file extension in output filenames "
+             "(e.g., '--output-suffix -v2' produces "
+             "interperson-separation-analysis-v2.md). Default: no suffix.",
+    )
+    args = parser.parse_args()
+
     try:
         result = run_analysis()
     except Exception as e:
@@ -951,15 +966,17 @@ def main() -> int:
         traceback.print_exc()
         return 1
 
+    suffix = args.output_suffix
+
     # Save raw data JSON
     DOCS_DIR.mkdir(parents=True, exist_ok=True)
-    data_path = DOCS_DIR / "interperson-separation-data.json"
+    data_path = DOCS_DIR / f"interperson-separation-data{suffix}.json"
     with open(data_path, "w", encoding="utf-8") as f:
         json.dump(result, f, indent=2)
     print(f"Raw data written -> {data_path}")
 
     # Save markdown report
-    md_path = DOCS_DIR / "interperson-separation-analysis.md"
+    md_path = DOCS_DIR / f"interperson-separation-analysis{suffix}.md"
     write_markdown(result, md_path)
 
     print()
