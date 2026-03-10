@@ -25,6 +25,7 @@ from temporal_rhythm_oracle import (
     TRIANGLE_BIT,
     TemporalRhythmFeatures,
     TemporalRhythmOracle,
+    _HASH_SEPARATOR,
     _L2_PRESS_THRESH,
     _L2_RELEASE_THRESH,
     _MIN_SAMPLES,
@@ -224,6 +225,26 @@ class TestRhythmHash(unittest.TestCase):
         oracle.push_frame(_Frame(inter_press_ms=200.0))
         h2 = oracle.rhythm_hash()
         self.assertNotEqual(h1, h2)
+
+    def test_cross_only_hash_differs_from_empty(self):
+        """Intervals only in _cross_intervals → hash differs from fully empty oracle."""
+        oracle = TemporalRhythmOracle()
+        for v in [100.0, 120.0, 80.0, 150.0]:
+            oracle._cross_intervals.append(v)
+        empty = TemporalRhythmOracle()
+        self.assertNotEqual(oracle.rhythm_hash(), empty.rhythm_hash())
+        self.assertEqual(len(oracle.rhythm_hash()), 32)
+
+    def test_same_intervals_different_button_different_hash(self):
+        """Same values in Cross vs L2 deque → different hashes (separator enforced)."""
+        vals = [100.0, 200.0, 150.0] * 5
+        oracle_cross = TemporalRhythmOracle()
+        oracle_l2    = TemporalRhythmOracle()
+        for v in vals:
+            oracle_cross._cross_intervals.append(v)
+        for v in vals:
+            oracle_l2._l2_intervals.append(v)
+        self.assertNotEqual(oracle_cross.rhythm_hash(), oracle_l2.rhythm_hash())
 
 
 # ---------------------------------------------------------------------------
