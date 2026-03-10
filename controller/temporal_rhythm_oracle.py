@@ -30,6 +30,7 @@ from __future__ import annotations
 
 import hashlib
 import os as _os
+import time as _time
 from collections import deque
 from dataclasses import dataclass
 from typing import Optional, Tuple
@@ -56,6 +57,15 @@ _MIN_SAMPLES: int = 20
 _WINDOW: int = 120
 """Rolling window size in FeatureFrames (~4 seconds at 30Hz)."""
 
+_R2_PRESS_THRESH: int = 64
+"""r2_trigger ADC threshold — button 'pressed' when crossing from below (mirrors threshold_calibrator.py)."""
+
+_R2_RELEASE_THRESH: int = 30
+"""r2_trigger ADC threshold — button 'released' when dropping below."""
+
+CROSS_BIT: int = 1 << 0
+"""InputSnapshot.buttons bit 0 = Cross (X) button (set by DualSenseReader.poll() from ds.state.cross)."""
+
 _CV_THRESHOLD: float = float(_os.getenv("L5_CV_THRESHOLD", "0.08"))
 """CV (std/mean) below this → signal 1 fires. Bots are unnaturally steady.
 Hardware-calibrated (N=50 DualShock Edge sessions): human baseline ~0.34 (4x margin).
@@ -81,6 +91,18 @@ _BASE_CONFIDENCE: int = 180
 
 _CONFIDENCE_PER_SIGNAL: int = 25
 """Additional confidence per anomaly signal beyond the base."""
+
+_L2_PRESS_THRESH: int = 64
+"""L2 ADC threshold — button 'pressed' when crossing from below (symmetric to R2)."""
+
+_L2_RELEASE_THRESH: int = 30
+"""L2 ADC release hysteresis (symmetric to R2)."""
+
+TRIANGLE_BIT: int = 1 << 3
+"""InputSnapshot.buttons bit 3 = Triangle button."""
+
+_POOL_MIN_PER_BUTTON: int = 5
+"""Minimum per-button sample count to contribute to pooled IBI fallback."""
 
 
 # ---------------------------------------------------------------------------
@@ -122,6 +144,9 @@ class TemporalRhythmFeatures:
     confidence: int
     """Encoded confidence: _BASE_CONFIDENCE + anomaly_signals × _CONFIDENCE_PER_SIGNAL."""
 
+    source: str = "unknown"
+    """Informational: which button or 'pooled' was used to score this window."""
+
 
 # ---------------------------------------------------------------------------
 # Oracle class
@@ -145,7 +170,19 @@ class TemporalRhythmOracle:
     """
 
     def __init__(self) -> None:
-        self._intervals: deque = deque(maxlen=_WINDOW)
+        self._intervals: deque = deque(maxlen=_WINDOW)        # R2 intervals (push_frame compat)
+        self._cross_intervals: deque = deque(maxlen=_WINDOW)  # Cross (X) intervals (push_snapshot)
+        self._l2_intervals: deque = deque(maxlen=_WINDOW)     # L2 digital intervals
+        self._triangle_intervals: deque = deque(maxlen=_WINDOW)  # Triangle intervals
+        # Rising-edge state for push_snapshot()
+        self._r2_above: bool = False
+        self._cross_above: bool = False
+        self._l2_above: bool = False
+        self._triangle_above: bool = False
+        self._r2_last_press_ts: float = 0.0
+        self._cross_last_press_ts: float = 0.0
+        self._l2_last_press_ts: float = 0.0
+        self._triangle_last_press_ts: float = 0.0
 
     # ------------------------------------------------------------------
     # Frame ingestion
@@ -162,6 +199,72 @@ class TemporalRhythmOracle:
         if ms > 0.0:
             self._intervals.append(ms)
 
+    def push_snapshot(self, snap: object) -> None:
+        """
+        Rising-edge detection on Cross (X) and R2 from a live InputSnapshot.
+
+        Replaces push_frame() in the live PITL pipeline (dualshock_integration.py).
+        push_frame() is kept unchanged for backward compatibility with existing tests.
+
+        Cross: snap.buttons bit 0  (DualSenseReader.poll() sets from ds.state.cross)
+        R2:    snap.r2_trigger >= 64 / < 30 hysteresis (mirrors threshold_calibrator.py)
+
+        Intervals are appended to per-button deques:
+          _cross_intervals  — Cross (X)
+          _intervals        — R2 (shared with push_frame path)
+        """
+        now_wall = _time.monotonic() * 1000.0  # ms absolute timestamp
+
+        buttons = int(getattr(snap, "buttons", 0))
+        r2 = int(getattr(snap, "r2_trigger", 0))
+
+        # Cross (X) rising edge
+        cross_pressed = bool(buttons & CROSS_BIT)
+        if cross_pressed and not self._cross_above:
+            self._cross_above = True
+            if self._cross_last_press_ts > 0:
+                dt = now_wall - self._cross_last_press_ts
+                if dt > 0:
+                    self._cross_intervals.append(dt)
+            self._cross_last_press_ts = now_wall
+        elif not cross_pressed:
+            self._cross_above = False
+
+        # R2 rising edge (hysteresis)
+        if not self._r2_above and r2 >= _R2_PRESS_THRESH:
+            self._r2_above = True
+            if self._r2_last_press_ts > 0:
+                dt = now_wall - self._r2_last_press_ts
+                if dt > 0:
+                    self._intervals.append(dt)
+            self._r2_last_press_ts = now_wall
+        elif self._r2_above and r2 < _R2_RELEASE_THRESH:
+            self._r2_above = False
+
+        # L2 digital (symmetric to R2 — same hysteresis thresholds)
+        l2_val = int(getattr(snap, "l2_trigger", 0))
+        if not self._l2_above and l2_val >= _L2_PRESS_THRESH:
+            self._l2_above = True
+            if self._l2_last_press_ts > 0.0:
+                dt = now_wall - self._l2_last_press_ts
+                if dt > 0.0:
+                    self._l2_intervals.append(dt)
+            self._l2_last_press_ts = now_wall
+        elif self._l2_above and l2_val < _L2_RELEASE_THRESH:
+            self._l2_above = False
+
+        # Triangle (digital button, bit 3)
+        tri_pressed = bool(getattr(snap, "buttons", 0) & TRIANGLE_BIT)
+        if tri_pressed and not self._triangle_above:
+            self._triangle_above = True
+            if self._triangle_last_press_ts > 0.0:
+                dt = now_wall - self._triangle_last_press_ts
+                if dt > 0.0:
+                    self._triangle_intervals.append(dt)
+            self._triangle_last_press_ts = now_wall
+        elif not tri_pressed and self._triangle_above:
+            self._triangle_above = False
+
     # ------------------------------------------------------------------
     # Feature extraction
     # ------------------------------------------------------------------
@@ -173,11 +276,36 @@ class TemporalRhythmOracle:
         Returns None if fewer than _MIN_SAMPLES intervals have been collected
         or if all intervals are effectively zero.
         """
-        intervals = list(self._intervals)
-        if len(intervals) < _MIN_SAMPLES:
+        # Priority order: Cross > L2_dig > R2 > Triangle (descending IBI CV per N=69 calibration)
+        _PRIORITY_DEQUES = [
+            ("cross",    self._cross_intervals),
+            ("l2_dig",   self._l2_intervals),
+            ("r2",       self._intervals),
+            ("triangle", self._triangle_intervals),
+        ]
+
+        # Step 1: Try single-button with >= _MIN_SAMPLES
+        arr = None
+        source = None
+        for name, dq in _PRIORITY_DEQUES:
+            if len(dq) >= _MIN_SAMPLES:
+                arr = np.array(dq, dtype=np.float32)
+                source = name
+                break
+
+        # Step 2: Pooled fallback — merge all buttons with >= _POOL_MIN_PER_BUTTON
+        if arr is None:
+            pool: list = []
+            for name, dq in _PRIORITY_DEQUES:
+                if len(dq) >= _POOL_MIN_PER_BUTTON:
+                    pool.extend(dq)
+            if len(pool) >= _MIN_SAMPLES:
+                arr = np.array(pool, dtype=np.float32)
+                source = "pooled"
+
+        if arr is None:
             return None
 
-        arr = np.array(intervals, dtype=np.float32)
         mean = float(arr.mean())
         if mean < 1e-6:
             return None
@@ -213,12 +341,13 @@ class TemporalRhythmOracle:
         confidence = min(230, _BASE_CONFIDENCE + signals * _CONFIDENCE_PER_SIGNAL)
 
         return TemporalRhythmFeatures(
-            sample_count=len(intervals),
+            sample_count=len(arr),
             cv=cv,
             entropy_bits=entropy_bits,
             quant_score=quant_score,
             anomaly_signals=signals,
             confidence=confidence,
+            source=source,
         )
 
     # ------------------------------------------------------------------
@@ -274,5 +403,16 @@ class TemporalRhythmOracle:
     # ------------------------------------------------------------------
 
     def reset(self) -> None:
-        """Clear the interval window. Classify will return None until refilled."""
+        """Clear interval windows and rising-edge state. Classify will return None until refilled."""
         self._intervals.clear()
+        self._cross_intervals.clear()
+        self._l2_intervals.clear()
+        self._triangle_intervals.clear()
+        self._r2_above = False
+        self._cross_above = False
+        self._l2_above = False
+        self._triangle_above = False
+        self._r2_last_press_ts = 0.0
+        self._cross_last_press_ts = 0.0
+        self._l2_last_press_ts = 0.0
+        self._triangle_last_press_ts = 0.0
