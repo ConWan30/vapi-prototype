@@ -20,10 +20,17 @@ import numpy as np
 sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "controller"))
 
 from temporal_rhythm_oracle import (
+    CROSS_BIT,
     INFER_TEMPORAL_ANOMALY,
+    TRIANGLE_BIT,
     TemporalRhythmFeatures,
     TemporalRhythmOracle,
+    _L2_PRESS_THRESH,
+    _L2_RELEASE_THRESH,
     _MIN_SAMPLES,
+    _POOL_MIN_PER_BUTTON,
+    _R2_PRESS_THRESH,
+    _R2_RELEASE_THRESH,
     _WINDOW,
 )
 
@@ -248,6 +255,239 @@ class TestIntegrationWithInferenceCodes(unittest.TestCase):
             msg="0x2B should be registered in GAMING_INFERENCE_NAMES",
         )
         self.assertEqual(GAMING_INFERENCE_NAMES[INFER_TEMPORAL_ANOMALY], "TEMPORAL_ANOMALY")
+
+
+# ---------------------------------------------------------------------------
+# Group 6: push_snapshot() — multi-button rising-edge detection
+# ---------------------------------------------------------------------------
+
+class _Snap:
+    """Minimal InputSnapshot stub for push_snapshot() tests."""
+    def __init__(self, buttons: int = 0, r2_trigger: int = 0, l2_trigger: int = 0):
+        self.buttons     = buttons
+        self.r2_trigger  = r2_trigger
+        self.l2_trigger  = l2_trigger
+        self.inter_frame_us = 1000
+
+
+def _snap_cross(pressed: bool) -> _Snap:
+    return _Snap(buttons=CROSS_BIT if pressed else 0)
+
+
+def _snap_r2(value: int) -> _Snap:
+    return _Snap(r2_trigger=value)
+
+
+def _snap_l2(value: int) -> _Snap:
+    return _Snap(r2_trigger=0, buttons=0, l2_trigger=value)
+
+
+def _snap_triangle(pressed: bool) -> _Snap:
+    return _Snap(buttons=(TRIANGLE_BIT if pressed else 0))
+
+
+class TestPushSnapshot(unittest.TestCase):
+
+    def test_cross_rising_edge_populates_cross_intervals(self):
+        """Rising Cross edge → _cross_intervals grows; _intervals stays empty."""
+        oracle = TemporalRhythmOracle()
+        # Simulate 5 Cross press/release cycles
+        for _ in range(5):
+            oracle.push_snapshot(_snap_cross(True))
+            oracle.push_snapshot(_snap_cross(False))
+        self.assertGreater(len(oracle._cross_intervals), 0)
+        self.assertEqual(len(oracle._intervals), 0)
+
+    def test_r2_rising_edge_populates_r2_intervals(self):
+        """Rising R2 edge → _intervals grows; _cross_intervals stays empty."""
+        oracle = TemporalRhythmOracle()
+        for _ in range(5):
+            oracle.push_snapshot(_snap_r2(_R2_PRESS_THRESH))
+            oracle.push_snapshot(_snap_r2(_R2_RELEASE_THRESH - 1))
+        self.assertGreater(len(oracle._intervals), 0)
+        self.assertEqual(len(oracle._cross_intervals), 0)
+
+    def test_cross_preferred_when_both_have_sufficient_samples(self):
+        """When both Cross and R2 have >= _MIN_SAMPLES, extract_features uses Cross."""
+        oracle = TemporalRhythmOracle()
+        # Inject known intervals directly — bypass timing dependency
+        # Cross: human-like high-CV intervals
+        cross_ivs = [300.0, 550.0, 420.0, 800.0, 250.0] * 6  # 30 samples, high CV
+        r2_ivs    = [600.0, 610.0, 605.0, 608.0, 602.0] * 5  # 25 samples, low CV (bot-like)
+        for v in cross_ivs:
+            oracle._cross_intervals.append(v)
+        for v in r2_ivs:
+            oracle._intervals.append(v)
+        feats = oracle.extract_features()
+        self.assertIsNotNone(feats)
+        # Cross CV >> R2 CV; if Cross is selected, CV should be high
+        self.assertGreater(feats.cv, 0.15, "Cross selected: expect human-like high CV")
+
+    def test_cross_fallback_when_r2_insufficient(self):
+        """When R2 < _MIN_SAMPLES but Cross >= _MIN_SAMPLES, Cross is used."""
+        oracle = TemporalRhythmOracle()
+        for v in [400.0, 600.0, 350.0, 750.0, 500.0] * 5:  # 25 Cross samples
+            oracle._cross_intervals.append(v)
+        # R2: only 5 samples — insufficient
+        for v in [500.0] * 5:
+            oracle._intervals.append(v)
+        feats = oracle.extract_features()
+        self.assertIsNotNone(feats, "Cross fallback should produce features")
+        self.assertEqual(feats.sample_count, 25)
+
+    def test_r2_fallback_when_cross_insufficient(self):
+        """When Cross < _MIN_SAMPLES but R2 >= _MIN_SAMPLES, R2 is used (backward compat)."""
+        oracle = TemporalRhythmOracle()
+        for v in [500.0] * 3:  # only 3 Cross samples — insufficient
+            oracle._cross_intervals.append(v)
+        for v in [400.0, 650.0, 320.0, 780.0, 490.0] * 5:  # 25 R2 samples
+            oracle._intervals.append(v)
+        feats = oracle.extract_features()
+        self.assertIsNotNone(feats, "R2 fallback should produce features")
+        self.assertEqual(feats.sample_count, 25)
+
+    def test_bot_pattern_on_cross_fires_temporal_anomaly(self):
+        """Regular Cross timing (CV~0) → classify() returns TEMPORAL_ANOMALY."""
+        oracle = TemporalRhythmOracle()
+        # Bot: perfectly regular 500ms Cross intervals
+        for _ in range(_MIN_SAMPLES + 5):
+            oracle._cross_intervals.append(500.0)
+        result = oracle.classify()
+        self.assertIsNotNone(result, "Bot Cross pattern should fire 0x2B")
+        code, conf = result
+        self.assertEqual(code, INFER_TEMPORAL_ANOMALY)
+        self.assertGreaterEqual(conf, 200)
+
+    def test_reset_clears_both_deques_and_state(self):
+        """reset() clears _intervals, _cross_intervals, and rising-edge state."""
+        oracle = TemporalRhythmOracle()
+        oracle._intervals.append(500.0)
+        oracle._cross_intervals.append(400.0)
+        oracle._r2_above = True
+        oracle._cross_above = True
+        oracle._r2_last_press_ts = 1000.0
+        oracle._cross_last_press_ts = 2000.0
+        oracle.reset()
+        self.assertEqual(len(oracle._intervals), 0)
+        self.assertEqual(len(oracle._cross_intervals), 0)
+        self.assertFalse(oracle._r2_above)
+        self.assertFalse(oracle._cross_above)
+        self.assertEqual(oracle._r2_last_press_ts, 0.0)
+        self.assertEqual(oracle._cross_last_press_ts, 0.0)
+
+
+# ---------------------------------------------------------------------------
+# Group 7: Phase 39 — L2_dig, Triangle, priority, pooled mode
+# ---------------------------------------------------------------------------
+
+class TestMultiButtonPhase39(unittest.TestCase):
+
+    def test_l2_digital_rising_edge_populates_l2_intervals(self):
+        """L2 ADC 0→100→0 cycle → interval recorded in _l2_intervals."""
+        oracle = TemporalRhythmOracle()
+        for _ in range(5):
+            oracle.push_snapshot(_snap_l2(_L2_PRESS_THRESH))
+            oracle.push_snapshot(_snap_l2(_L2_RELEASE_THRESH - 1))
+        self.assertGreater(len(oracle._l2_intervals), 0)
+        self.assertEqual(len(oracle._intervals), 0)
+        self.assertEqual(len(oracle._cross_intervals), 0)
+
+    def test_triangle_rising_edge_populates_triangle_intervals(self):
+        """Triangle press/release cycle → interval recorded in _triangle_intervals."""
+        oracle = TemporalRhythmOracle()
+        for _ in range(5):
+            oracle.push_snapshot(_snap_triangle(True))
+            oracle.push_snapshot(_snap_triangle(False))
+        self.assertGreater(len(oracle._triangle_intervals), 0)
+        self.assertEqual(len(oracle._intervals), 0)
+        self.assertEqual(len(oracle._cross_intervals), 0)
+
+    def test_priority_cross_over_l2_when_both_sufficient(self):
+        """25 Cross + 25 L2 intervals → source='cross' (highest priority)."""
+        oracle = TemporalRhythmOracle()
+        # Cross: human-like high-CV intervals
+        for v in [300.0, 550.0, 420.0, 800.0, 250.0] * 5:
+            oracle._cross_intervals.append(v)
+        # L2_dig: bot-like low-CV intervals
+        for v in [200.0, 201.0, 199.0, 200.5, 200.2] * 5:
+            oracle._l2_intervals.append(v)
+        feats = oracle.extract_features()
+        self.assertIsNotNone(feats)
+        self.assertEqual(feats.source, "cross")
+        # Cross CV >> L2_dig CV
+        self.assertGreater(feats.cv, 0.15, "Cross selected: expect high CV")
+
+    def test_priority_l2_over_r2_when_cross_insufficient(self):
+        """3 Cross, 25 L2_dig, 25 R2 → source='l2_dig'."""
+        oracle = TemporalRhythmOracle()
+        for v in [400.0] * 3:
+            oracle._cross_intervals.append(v)
+        for v in [350.0, 600.0, 280.0, 720.0, 450.0] * 5:
+            oracle._l2_intervals.append(v)
+        for v in [500.0, 510.0, 495.0, 505.0, 500.5] * 5:
+            oracle._intervals.append(v)
+        feats = oracle.extract_features()
+        self.assertIsNotNone(feats)
+        self.assertEqual(feats.source, "l2_dig")
+
+    def test_priority_r2_over_triangle_when_above_insufficient(self):
+        """3 Cross, 3 L2_dig, 25 R2, 25 Triangle → source='r2'."""
+        oracle = TemporalRhythmOracle()
+        for v in [400.0] * 3:
+            oracle._cross_intervals.append(v)
+        for v in [300.0] * 3:
+            oracle._l2_intervals.append(v)
+        for v in [500.0, 480.0, 520.0, 490.0, 510.0] * 5:
+            oracle._intervals.append(v)
+        for v in [600.0, 620.0, 580.0, 610.0, 595.0] * 5:
+            oracle._triangle_intervals.append(v)
+        feats = oracle.extract_features()
+        self.assertIsNotNone(feats)
+        self.assertEqual(feats.source, "r2")
+
+    def test_pooled_mode_fires_when_no_single_button_sufficient(self):
+        """8 Cross + 8 L2 + 8 R2 + 8 Triangle = 32 pooled >= 20 → source='pooled'."""
+        oracle = TemporalRhythmOracle()
+        # Each button has 8 samples (>= _POOL_MIN_PER_BUTTON=5, < _MIN_SAMPLES=20)
+        vals = [300.0, 450.0, 280.0, 600.0, 350.0, 420.0, 500.0, 380.0]
+        for v in vals:
+            oracle._cross_intervals.append(v)
+        for v in vals:
+            oracle._l2_intervals.append(v)
+        for v in vals:
+            oracle._intervals.append(v)
+        for v in vals:
+            oracle._triangle_intervals.append(v)
+        feats = oracle.extract_features()
+        self.assertIsNotNone(feats, "Pooled mode should produce features")
+        self.assertEqual(feats.source, "pooled")
+        self.assertGreaterEqual(feats.sample_count, _MIN_SAMPLES)
+
+    def test_pooled_mode_skips_buttons_below_pool_min(self):
+        """2 Cross (< _POOL_MIN_PER_BUTTON) excluded; 10 L2 + 10 R2 = 20 pooled → fires."""
+        oracle = TemporalRhythmOracle()
+        for v in [400.0, 500.0]:  # only 2 — below _POOL_MIN_PER_BUTTON
+            oracle._cross_intervals.append(v)
+        for v in [300.0, 450.0, 280.0, 600.0, 350.0, 420.0, 500.0, 380.0, 340.0, 460.0]:
+            oracle._l2_intervals.append(v)
+        for v in [310.0, 460.0, 290.0, 610.0, 360.0, 430.0, 510.0, 390.0, 350.0, 470.0]:
+            oracle._intervals.append(v)
+        feats = oracle.extract_features()
+        self.assertIsNotNone(feats, "Pool (L2+R2=20) should fire even with Cross excluded")
+        self.assertEqual(feats.source, "pooled")
+        # Cross's 2 samples should NOT be in the pool (pool = 10+10 = 20)
+        self.assertEqual(feats.sample_count, 20)
+
+    def test_bot_pattern_on_l2_fires_temporal_anomaly(self):
+        """Constant 500ms L2 IBI pattern → classify() returns (0x2B, >= 205)."""
+        oracle = TemporalRhythmOracle()
+        for _ in range(_MIN_SAMPLES + 5):
+            oracle._l2_intervals.append(500.0)
+        result = oracle.classify()
+        self.assertIsNotNone(result, "Bot L2 pattern should fire 0x2B")
+        code, conf = result
+        self.assertEqual(code, INFER_TEMPORAL_ANOMALY)
+        self.assertGreaterEqual(conf, 205)
 
 
 if __name__ == "__main__":
