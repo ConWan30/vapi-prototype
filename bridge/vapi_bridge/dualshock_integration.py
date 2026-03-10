@@ -92,7 +92,14 @@ GAMING_INFERENCE_NAMES = {
     0x30: "BIOMETRIC_ANOMALY",
     # Phase 16B: temporal rhythm advisory (outside cheat range)
     0x2B: "TEMPORAL_ANOMALY",
+    # Phase 17: cross-modal latency + stick-IMU correlation (advisory)
+    0x31: "IMU_BUTTON_DECOUPLED",
+    0x32: "STICK_IMU_DECOUPLED",
 }
+
+# Phase 17: advisory inference codes
+INFER_IMU_BUTTON_DECOUPLED  = 0x31  # IMU micro-disturbance absent before button press
+INFER_STICK_IMU_DECOUPLED   = 0x32  # Stick-IMU temporal correlation absent
 
 # PoAC action codes
 ACTION_BOOT         = 0x09
@@ -383,6 +390,9 @@ class DualShockTransport:
         self._r2_mode_history: list[int] = []  # Last 16 R2 mode values for trigger_mode_hash
         # Phase 16B: Layer 5 Temporal Rhythm Oracle
         self._temporal_oracle  = None   # TemporalRhythmOracle, set in _init_hardware
+        # Phase 17: Layer 2B/2C new oracles
+        self._imu_press_oracle = None   # ImuPressCorrelationOracle (L2B), set in _init_hardware
+        self._stick_imu_oracle = None   # StickImuCorrelationOracle (L2C), set in _init_hardware
         # Phase 19: Universal Device Abstraction Layer
         self._device_profile   = None   # DeviceProfile, resolved in _init_hardware
         # Phase 21: PITL metadata sidecar — set each loop iteration, read by Bridge.on_record
@@ -395,6 +405,10 @@ class DualShockTransport:
         self._continuity_lock: asyncio.Lock = asyncio.Lock()
         # Phase 27: ZK PITL session proof — injected by main.py
         self._pitl_prover = None  # PITLProver instance, None = proof generation disabled
+
+        # Phase 38: per-player calibration profile cache (6h TTL, populated from Mode 6)
+        self._player_profile_cache: dict[str, float] = {}  # device_id_hex -> personal anomaly threshold
+        self._player_profile_cache_ts: float = 0.0
 
         # BT L0 physical presence verifier (set in _init_hardware after connect)
         self._bt_presence_verifier = None   # BluetoothPresenceVerifier or None
@@ -417,6 +431,32 @@ class DualShockTransport:
                 log.info("Phase C: L6 Active Challenge-Response enabled")
             except Exception as _l6_exc:
                 log.warning("Phase C: L6 init failed (non-fatal): %s", _l6_exc)
+
+    # ------------------------------------------------------------------
+    # Phase 38: Per-player effective L4 threshold
+    # ------------------------------------------------------------------
+    def _get_effective_l4_threshold(self, device_id_hex: str) -> float:
+        """Return the effective L4 anomaly threshold for this device (Phase 38).
+
+        Returns min(global_cfg_threshold, personal_profile_threshold).
+        Personal profiles are tighter-than-global by construction (Mode 6).
+        Cache is refreshed every 6 hours to align with InsightSynthesizer cycle.
+        Falls back to global config threshold if no personal profile exists.
+        """
+        _CACHE_TTL = 21600.0  # 6 hours
+        now = time.time()
+        if now - self._player_profile_cache_ts > _CACHE_TTL:
+            self._player_profile_cache.clear()
+            self._player_profile_cache_ts = now
+        if device_id_hex not in self._player_profile_cache:
+            global_thresh = float(getattr(self._cfg, "l4_anomaly_threshold", 7.019))
+            try:
+                profile = self._store.get_player_calibration_profile(device_id_hex)
+                personal_thresh = profile["anomaly_threshold"] if profile else global_thresh
+            except Exception:
+                personal_thresh = global_thresh
+            self._player_profile_cache[device_id_hex] = min(global_thresh, personal_thresh)
+        return self._player_profile_cache[device_id_hex]
 
     # ------------------------------------------------------------------
     # Public entry point
@@ -708,6 +748,24 @@ class DualShockTransport:
         except Exception:
             log.warning("TemporalRhythmOracle unavailable — Layer 5 inactive")
 
+        # Phase 17: Layer 2B — IMU-Button Press Cross-Modal Latency Oracle
+        try:
+            from l2b_imu_press_correlation import ImuPressCorrelationOracle  # type: ignore
+            self._imu_press_oracle = ImuPressCorrelationOracle()
+            log.info("Layer 2B ImuPressCorrelationOracle initialised")
+        except Exception as exc:
+            self._imu_press_oracle = None
+            log.warning("ImuPressCorrelationOracle unavailable — Layer 2B inactive: %s", exc)
+
+        # Phase 17: Layer 2C — Stick-IMU Temporal Cross-Correlation Oracle
+        try:
+            from l2c_stick_imu_correlation import StickImuCorrelationOracle  # type: ignore
+            self._stick_imu_oracle = StickImuCorrelationOracle()
+            log.info("Layer 2C StickImuCorrelationOracle initialised")
+        except Exception as exc:
+            self._stick_imu_oracle = None
+            log.warning("StickImuCorrelationOracle unavailable — Layer 2C inactive: %s", exc)
+
         # Phase 19: Resolve device profile (DeviceProfileRegistry)
         try:
             from vapi_bridge.device_registry import DeviceProfileRegistry
@@ -813,6 +871,24 @@ class DualShockTransport:
                                     )
                     except Exception:
                         pass  # policy lookup is always non-fatal
+                # Phase 38: per-player personal profile threshold (Mode 6 living calibration)
+                if bio_result is None and self._device_id is not None:
+                    try:
+                        _personal_thresh = self._get_effective_l4_threshold(
+                            self._device_id.hex()
+                        )
+                        _d = getattr(self._biometric_classifier, "last_distance", None)
+                        if _d is not None and _d > _personal_thresh:
+                            _excess = _d - _personal_thresh
+                            _conf = min(255, 180 + int(_excess * 30.0))
+                            bio_result = (0x30, _conf)  # INFER_BIOMETRIC_ANOMALY
+                            log.debug(
+                                "BIOMETRIC_ANOMALY via personal profile "
+                                "(d=%.2f, personal_thresh=%.3f)",
+                                _d, _personal_thresh,
+                            )
+                    except Exception:
+                        pass  # personal profile lookup is always non-fatal
                 if bio_result is not None:
                     inference, confidence = bio_result
                     log.debug(
@@ -870,9 +946,10 @@ class DualShockTransport:
             _l5_quant_score = None
             _l5_anomaly_signals = None
             _l5_rhythm_humanity = None
+            _l5_source = "unknown"
             if self._temporal_oracle is not None and inference not in CHEAT_CODES:
-                for f in frames:
-                    self._temporal_oracle.push_frame(f)
+                for snap in frames:
+                    self._temporal_oracle.push_snapshot(snap)
                 temporal_result = self._temporal_oracle.classify()
                 if temporal_result is not None:
                     inference, confidence = temporal_result
@@ -885,6 +962,7 @@ class DualShockTransport:
                         _l5_entropy_bits = float(_l5_feats.entropy_bits)
                         _l5_quant_score = float(_l5_feats.quant_score)
                         _l5_anomaly_signals = int(_l5_feats.anomaly_signals)
+                        _l5_source = str(_l5_feats.source)  # Phase 40: which button/pool scored
                 except Exception:
                     pass
                 # Phase 25: positive humanity signal from L5 (inverts anomaly into [0,1] score)
@@ -893,6 +971,44 @@ class DualShockTransport:
                         _l5_rhythm_humanity = self._temporal_oracle.rhythm_humanity_score()
                     except Exception:
                         pass
+
+            # --- Phase 17 Layer 2B: IMU-Button Cross-Modal Latency Oracle ---
+            # Detects absence of physical IMU precursor before button press (advisory 0x31).
+            _l2b_coupled_fraction = None
+            _l2b_p_human = 0.5
+            if self._imu_press_oracle is not None and inference not in CHEAT_CODES:
+                for snap in frames:
+                    self._imu_press_oracle.push_snapshot(snap)
+                imu_result = self._imu_press_oracle.classify()
+                if imu_result is not None:
+                    inference, confidence = imu_result
+                    log.debug("IMU_BUTTON_DECOUPLED detected (confidence=%d)", confidence)
+                try:
+                    _l2b_feats = self._imu_press_oracle.extract_features()
+                    if _l2b_feats is not None:
+                        _l2b_coupled_fraction = float(_l2b_feats.coupled_fraction)
+                        _l2b_p_human = self._imu_press_oracle.humanity_score()
+                except Exception:
+                    pass
+
+            # --- Phase 17 Layer 2C: Stick-IMU Temporal Cross-Correlation Oracle ---
+            # Detects absence of physical stick-to-gyro causal coupling (advisory 0x32).
+            _l2c_max_corr = None
+            _l2c_p_human = 0.5
+            if self._stick_imu_oracle is not None and inference not in CHEAT_CODES:
+                for snap in frames:
+                    self._stick_imu_oracle.push_snapshot(snap)
+                stick_result = self._stick_imu_oracle.classify()
+                if stick_result is not None:
+                    inference, confidence = stick_result
+                    log.debug("STICK_IMU_DECOUPLED detected (confidence=%d)", confidence)
+                try:
+                    _l2c_feats = self._stick_imu_oracle.extract_features()
+                    if _l2c_feats is not None:
+                        _l2c_max_corr = float(_l2c_feats.max_causal_corr)
+                        _l2c_p_human = self._stick_imu_oracle.humanity_score()
+                except Exception:
+                    pass
 
             # Phase 23: Post-warmup continuity check — fires once when L4 classifier warms up.
             # Persists the classifier's mean/var state and launches async continuity attestation.
@@ -923,7 +1039,7 @@ class DualShockTransport:
                 if self._continuity_prover is not None:
                     asyncio.create_task(self._check_continuity())
 
-            # Phase 25: Bayesian humanity probability fusion — L4 × L5 × E4
+            # Phase 25 / Phase 17: Bayesian humanity probability fusion — L4 × L5 × E4 × L2B × L2C
             if _l4_warmed and _l4_distance is not None:
                 _p_l4 = _math.exp(-max(0.0, _l4_distance - 2.0))
             else:
@@ -933,13 +1049,22 @@ class DualShockTransport:
                 _p_e4 = _math.exp(-_e4_cognitive_drift / 3.0)
             else:
                 _p_e4 = 0.5
+            # Phase 17: L2B/L2C humanity signals (0.5 = neutral when oracle not warmed up)
+            _p_l2b = _l2b_p_human  # already defaults to 0.5
+            _p_l2c = _l2c_p_human  # already defaults to 0.5
             if self._l6_driver is not None:
-                # Phase C: L6 active — reweight to include L6 challenge score
+                # Phase C + Phase 17: L6 active — reweight to include L6 + L2B + L2C
                 _humanity_prob = (
-                    0.35 * _p_l4 + 0.35 * _p_l5 + 0.15 * _p_e4 + 0.15 * self._l6_p_human
+                    0.23 * _p_l4 + 0.22 * _p_l5 + 0.15 * _p_e4
+                    + 0.15 * self._l6_p_human
+                    + 0.15 * _p_l2b + 0.10 * _p_l2c
                 )
             else:
-                _humanity_prob = 0.4 * _p_l4 + 0.4 * _p_l5 + 0.2 * _p_e4
+                # Phase 17: 5-signal formula (L4 + L5 + E4 + L2B + L2C)
+                _humanity_prob = (
+                    0.28 * _p_l4 + 0.27 * _p_l5 + 0.20 * _p_e4
+                    + 0.15 * _p_l2b + 0.10 * _p_l2c
+                )
 
             # BT L0: run presence check on this frame batch (advisory, 50-report window)
             # _bt_seq_bytes_batch collected by _poll_frames() — activates sequence signal (0.5 weight)
@@ -972,11 +1097,18 @@ class DualShockTransport:
                 "l5_anomaly_signals": _l5_anomaly_signals,
                 # Phase 25: agent intelligence fields
                 "l5_rhythm_humanity": _l5_rhythm_humanity,
+                "l5_source":          _l5_source,  # Phase 40: 'cross'|'l2_dig'|'r2'|'triangle'|'pooled'
                 "l4_drift_velocity":  _l4_drift_velocity,
                 "e4_cognitive_drift": _e4_cognitive_drift,
                 "humanity_prob":      _humanity_prob,
                 # BT L0 presence score (0.5 = neutral/USB; < 0.3 + BT = suspect)
                 "bt_presence_score":  self._bt_presence_score,
+                # Phase 17: L2B IMU-button latency oracle
+                "l2b_coupled_fraction": _l2b_coupled_fraction,
+                "l2b_p_human":          _l2b_p_human,
+                # Phase 17: L2C stick-IMU correlation oracle
+                "l2c_max_corr":         _l2c_max_corr,
+                "l2c_p_human":          _l2c_p_human,
             }
 
             inf_name = GAMING_INFERENCE_NAMES.get(inference, f"0x{inference:02x}")
