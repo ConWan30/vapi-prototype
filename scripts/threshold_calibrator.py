@@ -252,7 +252,115 @@ def _session_biometric_fingerprint(session: dict) -> list | None:
 _R2_PRESS_THRESH   = 64   # Analog: "pressed" when crossing from below
 _R2_RELEASE_THRESH = 30   # Analog: "released" when dropping below
 _R2_DIGITAL_BIT    = 3    # buttons_1 bit 3 = R2 digital (DualSense USB)
+_L2_DIGITAL_BIT    = 2    # buttons_1 bit 2 = L2 digital (symmetric to R2)
 _L5_MIN_PRESSES    = 20   # Minimum presses for reliable L5 calibration
+_L5_POOL_MIN       = 5    # Minimum per-button presses to contribute to pooled mode
+_CROSS_BIT         = 0x20 # buttons_0 bit 5 = Cross (X) in raw USB HID report
+_TRIANGLE_BIT_RAW  = 0x80 # buttons_0 bit 7 = Triangle in raw USB HID report
+
+
+def _extract_cross_intervals(session: dict) -> list:
+    """
+    Extract inter-press intervals (ms) from Cross (X) button events.
+    Uses rising-edge detection on buttons_0 bit 5 (raw USB HID report byte 8).
+    Mirrors _extract_press_intervals() logic; called when R2 has insufficient presses.
+    """
+    reports = session.get("reports", [])
+    intervals: list = []
+    prev_ts = None
+    above = False
+    for r in reports:
+        feat = r.get("features", {})
+        b0 = feat.get("buttons_0")
+        if b0 is None:
+            continue
+        pressed = bool(b0 & _CROSS_BIT)
+        if not above and pressed:
+            above = True
+            if prev_ts is not None:
+                dt = r["timestamp_ms"] - prev_ts
+                if dt > 0:
+                    intervals.append(float(dt))
+            prev_ts = float(r["timestamp_ms"])
+        elif above and not pressed:
+            above = False
+    return intervals
+
+
+def _extract_l2_intervals(session: dict) -> list:
+    """
+    Extract inter-press intervals (ms) from L2 trigger events.
+    Mirrors _extract_press_intervals() exactly but for L2:
+      1. Digital: buttons_1 bit 2 when available (DualSense USB: L2 = bit 2).
+      2. Analog fallback: hysteresis on l2_trigger (press>=64, release<30).
+    """
+    reports = session.get("reports", [])
+    intervals: list = []
+    prev_ts = None
+    above_thresh = False
+
+    use_digital = any(
+        r.get("features", {}).get("buttons_1") is not None
+        for r in reports[:10]
+    )
+
+    for r in reports:
+        feat = r.get("features", {})
+        if use_digital:
+            b1 = feat.get("buttons_1")
+            if b1 is None:
+                continue
+            pressed = bool((b1 >> _L2_DIGITAL_BIT) & 1)
+            if not above_thresh and pressed:
+                above_thresh = True
+                if prev_ts is not None:
+                    dt = r["timestamp_ms"] - prev_ts
+                    if dt > 0:
+                        intervals.append(float(dt))
+                prev_ts = float(r["timestamp_ms"])
+            elif above_thresh and not pressed:
+                above_thresh = False
+        else:
+            l2 = feat.get("l2_trigger", 0) or 0
+            if not above_thresh and l2 >= _R2_PRESS_THRESH:
+                above_thresh = True
+                if prev_ts is not None:
+                    dt = r["timestamp_ms"] - prev_ts
+                    if dt > 0:
+                        intervals.append(float(dt))
+                prev_ts = float(r["timestamp_ms"])
+            elif above_thresh and l2 < _R2_RELEASE_THRESH:
+                above_thresh = False
+
+    return intervals
+
+
+def _extract_triangle_intervals(session: dict) -> list:
+    """
+    Extract inter-press intervals (ms) from Triangle button events.
+    Uses rising-edge detection on buttons_0 bit 7 (raw USB HID).
+    Mirrors _extract_cross_intervals() logic with _TRIANGLE_BIT_RAW.
+    """
+    reports = session.get("reports", [])
+    intervals: list = []
+    prev_ts = None
+    above = False
+    for r in reports:
+        feat = r.get("features", {})
+        b0 = feat.get("buttons_0")
+        if b0 is None:
+            continue
+        pressed = bool(b0 & _TRIANGLE_BIT_RAW)
+        if not above and pressed:
+            above = True
+            if prev_ts is not None:
+                dt = r["timestamp_ms"] - prev_ts
+                if dt > 0:
+                    intervals.append(float(dt))
+            prev_ts = float(r["timestamp_ms"])
+        elif above and not pressed:
+            above = False
+    return intervals
 
 
 def _extract_press_intervals(session: dict) -> list:
@@ -391,26 +499,113 @@ def compute_thresholds(sessions: list) -> dict:
     n_sessions = len(all_features)
 
     # --- L5: timing CV and entropy per session (inter-press intervals) ---
-    # Uses _extract_press_intervals() which mirrors validate_detection.py exactly:
-    # genuine R2 button-press intervals (100–1000ms range). The previous approach
-    # used inter-report intervals (~1ms at 1000Hz), producing CV≈0 and entropy≈0
-    # regardless of session content — both meaningless for L5 calibration.
-    # Sessions with fewer than _L5_MIN_PRESSES detected presses are excluded.
+    # Button preference mirrors live TemporalRhythmOracle.extract_features() priority:
+    #   Cross (CV=1.373) > L2_dig (1.333) > R2 (1.176) > Triangle (1.138)
+    # Pooled fallback: merge all buttons with >=_L5_POOL_MIN presses when no single
+    # button reaches _L5_MIN_PRESSES — closes coverage gap for mixed play styles.
     session_cvs: list = []
     session_entropies: list = []
     l5_excluded = 0
+
+    # Per-button coverage tracking for session_stats output
+    _btn_cross_counts: list = []
+    _btn_l2_counts: list = []
+    _btn_r2_counts: list = []
+    _btn_tri_counts: list = []
+    _btn_cross_cvs: list = []
+    _btn_l2_cvs: list = []
+    _btn_r2_cvs: list = []
+    _btn_tri_cvs: list = []
+    _pooled_only_gain = 0   # sessions rescued exclusively by pooled mode
+
     for i, s in enumerate(sessions):
-        intervals = _extract_press_intervals(s)
-        if len(intervals) < _L5_MIN_PRESSES:
-            print(f"  L5 WARNING: session {i + 1} has {len(intervals)} detected R2 presses "
-                  f"(need {_L5_MIN_PRESSES}) -- excluded from L5 calibration.")
+        cross_ivs = _extract_cross_intervals(s)
+        l2_ivs    = _extract_l2_intervals(s)
+        r2_ivs    = _extract_press_intervals(s)
+        tri_ivs   = _extract_triangle_intervals(s)
+
+        # Track per-button raw counts
+        _btn_cross_counts.append(len(cross_ivs))
+        _btn_l2_counts.append(len(l2_ivs))
+        _btn_r2_counts.append(len(r2_ivs))
+        _btn_tri_counts.append(len(tri_ivs))
+
+        # Accumulate per-button CVs for coverage stats (only if sufficient)
+        if len(cross_ivs) >= _L5_MIN_PRESSES:
+            _btn_cross_cvs.append(_cv(cross_ivs))
+        if len(l2_ivs) >= _L5_MIN_PRESSES:
+            _btn_l2_cvs.append(_cv(l2_ivs))
+        if len(r2_ivs) >= _L5_MIN_PRESSES:
+            _btn_r2_cvs.append(_cv(r2_ivs))
+        if len(tri_ivs) >= _L5_MIN_PRESSES:
+            _btn_tri_cvs.append(_cv(tri_ivs))
+
+        # Priority selection — mirrors TemporalRhythmOracle.extract_features()
+        intervals = None
+        btn_label = None
+        for ivs, label in [
+            (cross_ivs, "Cross(X)"),
+            (l2_ivs,    "L2_dig"),
+            (r2_ivs,    "R2"),
+            (tri_ivs,   "Triangle"),
+        ]:
+            if len(ivs) >= _L5_MIN_PRESSES:
+                intervals = ivs
+                btn_label = label
+                break
+
+        # Pooled fallback
+        if intervals is None:
+            pool = []
+            for ivs in [cross_ivs, l2_ivs, r2_ivs, tri_ivs]:
+                if len(ivs) >= _L5_POOL_MIN:
+                    pool.extend(ivs)
+            if len(pool) >= _L5_MIN_PRESSES:
+                intervals = pool
+                btn_label = "pooled"
+                _pooled_only_gain += 1
+
+        if intervals is None:
+            print(f"  L5 WARNING: session {i + 1} — Cross={len(cross_ivs)} L2={len(l2_ivs)} "
+                  f"R2={len(r2_ivs)} Triangle={len(tri_ivs)} presses "
+                  f"(need {_L5_MIN_PRESSES} single or {_L5_POOL_MIN}+ each pooled) "
+                  f"-- excluded from L5 calibration.")
             l5_excluded += 1
             continue
+
+        _ = btn_label  # available for verbose logging
         session_cvs.append(_cv(intervals))
         session_entropies.append(_entropy_bits(intervals))
+
     if l5_excluded == n_sessions:
         print(f"  L5 WARNING: all {n_sessions} sessions excluded from L5 calibration. "
-              "Capture sessions with active R2 button use (>=20 presses per session).")
+              "Capture sessions with active button use (>=20 presses per session on any button).")
+
+    # Build 4-button coverage summary
+    _l5_button_coverage = {
+        "cross":    {
+            "n_sessions_sufficient": sum(1 for c in _btn_cross_counts if c >= _L5_MIN_PRESSES),
+            "mean_press_count": round(_mean(_btn_cross_counts), 1) if _btn_cross_counts else 0,
+            "mean_cv": round(_mean(_btn_cross_cvs), 4) if _btn_cross_cvs else None,
+        },
+        "l2_dig":   {
+            "n_sessions_sufficient": sum(1 for c in _btn_l2_counts if c >= _L5_MIN_PRESSES),
+            "mean_press_count": round(_mean(_btn_l2_counts), 1) if _btn_l2_counts else 0,
+            "mean_cv": round(_mean(_btn_l2_cvs), 4) if _btn_l2_cvs else None,
+        },
+        "r2":       {
+            "n_sessions_sufficient": sum(1 for c in _btn_r2_counts if c >= _L5_MIN_PRESSES),
+            "mean_press_count": round(_mean(_btn_r2_counts), 1) if _btn_r2_counts else 0,
+            "mean_cv": round(_mean(_btn_r2_cvs), 4) if _btn_r2_cvs else None,
+        },
+        "triangle": {
+            "n_sessions_sufficient": sum(1 for c in _btn_tri_counts if c >= _L5_MIN_PRESSES),
+            "mean_press_count": round(_mean(_btn_tri_counts), 1) if _btn_tri_counts else 0,
+            "mean_cv": round(_mean(_btn_tri_cvs), 4) if _btn_tri_cvs else None,
+        },
+        "pooled_only_gain": _pooled_only_gain,
+        "total_excluded": l5_excluded,
+    }
 
     cv_threshold = _percentile(session_cvs, 10) if session_cvs else 0.08
     entropy_threshold = _percentile(session_entropies, 10) if session_entropies else 1.5
@@ -539,10 +734,11 @@ def compute_thresholds(sessions: list) -> dict:
                 "recommended": round(cv_threshold, 4),
                 "current_magic_number": 0.08,
                 "derivation": (
-                    "10th percentile of per-session inter-press interval CVs "
-                    "(rising-edge R2 detection, same logic as validate_detection.py). "
+                    "10th percentile of per-session inter-press interval CVs. "
+                    "Button priority: Cross > L2_dig > R2 > Triangle; pooled fallback "
+                    f"when no single button has >= {_L5_MIN_PRESSES} presses. "
                     f"Sessions used: {len(session_cvs)} / {n_sessions} "
-                    f"(excluded {l5_excluded} with <{_L5_MIN_PRESSES} presses)."
+                    f"(excluded {l5_excluded}, pooled-rescued {_pooled_only_gain})."
                 ),
                 "unit": "coefficient of variation (dimensionless)",
                 "ci95": [round(v, 4) for v in _ci95(session_cvs)] if session_cvs else None,
@@ -580,6 +776,7 @@ def compute_thresholds(sessions: list) -> dict:
             "l4_mahal_dist_mean": round(dist_mean, 3) if mahal_distances else None,
             "l4_mahal_dist_std":  round(dist_std, 3)  if mahal_distances else None,
             "l4_fingerprints_extracted": len(fingerprints),
+            "l5_button_coverage": _l5_button_coverage,
         },
     }
 
