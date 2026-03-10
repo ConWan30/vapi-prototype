@@ -104,6 +104,11 @@ TRIANGLE_BIT: int = 1 << 3
 _POOL_MIN_PER_BUTTON: int = 5
 """Minimum per-button sample count to contribute to pooled IBI fallback."""
 
+_HASH_SEPARATOR: bytes = b"\xff\xff\xff\xff"
+"""4-byte sentinel separating per-button deques in rhythm_hash().
+0xFFFFFFFF is not a representable interval value (intervals are positive ms → int > 0),
+so it cannot collide with real data and ensures different button arrangements hash distinctly."""
+
 
 # ---------------------------------------------------------------------------
 # Feature dataclass
@@ -390,13 +395,26 @@ class TemporalRhythmOracle:
 
     def rhythm_hash(self) -> bytes:
         """
-        SHA-256 of the current interval window (each value as big-endian uint32).
+        SHA-256 of all four button interval windows in canonical priority order:
+        Cross ‖ L2 ‖ R2 ‖ Triangle, each separated by _HASH_SEPARATOR.
+
+        The separator ensures the same intervals stored in different button deques
+        produce distinct hashes — a bot using only Cross cannot produce the same
+        commitment as one using only R2 with identical timing values.
 
         Can be included in sensor_commitment extensions to commit timing
         distribution data into the on-chain PoAC record.
         """
-        data = b"".join(int(v).to_bytes(4, "big") for v in self._intervals)
-        return hashlib.sha256(data).digest()
+        parts: list = []
+        for dq in (
+            self._cross_intervals,
+            self._l2_intervals,
+            self._intervals,           # R2 / push_frame compat
+            self._triangle_intervals,
+        ):
+            parts.append(b"".join(int(v).to_bytes(4, "big") for v in dq))
+            parts.append(_HASH_SEPARATOR)
+        return hashlib.sha256(b"".join(parts)).digest()
 
     # ------------------------------------------------------------------
     # Lifecycle
