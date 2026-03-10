@@ -419,5 +419,119 @@ class TestFeatureVectorDimension(unittest.TestCase):
         self.assertGreaterEqual(feats.tremor_peak_hz, 0.0)
 
 
+# ---------------------------------------------------------------------------
+# Phase 38 — Zero-variance feature exclusion in classify()
+# ---------------------------------------------------------------------------
+
+class TestZeroVarianceExclusion(unittest.TestCase):
+    """
+    Verify that BiometricFusionClassifier.classify() excludes features whose
+    training variance is below ZERO_VAR_THRESHOLD from the Mahalanobis distance.
+
+    Root cause being guarded against:
+      - touchpad_active_fraction and touch_position_variance are 0.0 across all
+        N=69 pre-Phase-17 sessions (touch_active field not captured until Phase 17).
+      - trigger_resistance_change_rate is 0.0 in static-trigger games (NCAA Football 26).
+      - With VAR_FLOOR = 1e-6, a feature always-zero in training has ref_var ≈ 1e-6.
+      - If a new legitimate session has touchpad_active_fraction = 0.8:
+            contribution = 0.8² / 1e-6 = 640,000 → false-positive 0x30 advisory.
+    """
+
+    def _make_zero_touchpad_frame(self, **overrides) -> BiometricFeatureFrame:
+        kw = dict(
+            trigger_resistance_change_rate=0.0,
+            trigger_onset_velocity_l2=0.2,
+            trigger_onset_velocity_r2=0.2,
+            micro_tremor_accel_variance=500.0,
+            grip_asymmetry=1.0,
+            stick_autocorr_lag1=0.5,
+            stick_autocorr_lag5=0.3,
+            tremor_peak_hz=9.5,
+            tremor_band_power=0.15,
+            touchpad_active_fraction=0.0,
+            touch_position_variance=0.0,
+        )
+        kw.update(overrides)
+        return BiometricFeatureFrame(**kw)
+
+    def _warm_up_classifier(self, clf: BiometricFusionClassifier, n_extra: int = 0) -> None:
+        """Warm up the classifier with all-zero touchpad frames."""
+        for _ in range(clf.N_WARMUP_SESSIONS + 1 + n_extra):
+            clf.update_fingerprint(self._make_zero_touchpad_frame())
+
+    def test_no_false_positive_when_touchpad_activates(self):
+        """Post-Phase-17 touchpad becoming active must NOT trigger 0x30 advisory."""
+        clf = BiometricFusionClassifier()
+        clf.ANOMALY_THRESHOLD = 5.0
+        self._warm_up_classifier(clf)
+
+        # Touchpad suddenly active — training fingerprint has zero variance for this feature
+        new_frame = self._make_zero_touchpad_frame(
+            touchpad_active_fraction=0.8,
+            touch_position_variance=0.05,
+        )
+        result = clf.classify(new_frame)
+        self.assertIsNone(
+            result,
+            f"False-positive 0x30: touchpad zero-var feature inflated "
+            f"distance={clf.last_distance:.3f} (threshold={clf.ANOMALY_THRESHOLD})",
+        )
+
+    def test_last_distance_does_not_explode_from_zero_var_feature(self):
+        """last_distance stays below anomaly threshold even with extreme touchpad value."""
+        clf = BiometricFusionClassifier()
+        clf.ANOMALY_THRESHOLD = 5.0
+        self._warm_up_classifier(clf)
+
+        new_frame = self._make_zero_touchpad_frame(touchpad_active_fraction=1.0)
+        clf.classify(new_frame)
+        self.assertLess(
+            clf.last_distance, 100.0,
+            f"last_distance={clf.last_distance:.3f} is suspiciously large — "
+            "zero-var touchpad feature was probably not excluded.",
+        )
+
+    def test_genuine_anomaly_still_detected_on_active_features(self):
+        """An anomaly on non-zero-variance features is still detected after exclusion logic."""
+        clf = BiometricFusionClassifier()
+        clf.ANOMALY_THRESHOLD = 5.0
+        self._warm_up_classifier(clf)
+
+        # Inject a massive deviation on grip_asymmetry (always active feature)
+        anomalous_frame = self._make_zero_touchpad_frame(grip_asymmetry=100.0)
+        result = clf.classify(anomalous_frame)
+        self.assertIsNotNone(
+            result,
+            "Expected 0x30 for massive grip_asymmetry deviation, got None. "
+            f"last_distance={clf.last_distance:.3f}",
+        )
+        self.assertEqual(result[0], INFER_BIOMETRIC_ANOMALY)
+
+    def test_active_mask_uses_training_var_not_sample_var(self):
+        """
+        The active_mask is computed from ref_var (training), not the current sample.
+        A feature with zero training variance is excluded regardless of sample value.
+        """
+        clf = BiometricFusionClassifier()
+        # Warm up with trigger_resistance_change_rate always 0.0
+        for _ in range(clf.N_WARMUP_SESSIONS + 1):
+            clf.update_fingerprint(self._make_zero_touchpad_frame(
+                trigger_resistance_change_rate=0.0
+            ))
+
+        # Sample has large trigger_resistance_change_rate — still excluded because training var ≈ 0
+        frame = self._make_zero_touchpad_frame(trigger_resistance_change_rate=50.0)
+        before_distance = 0.0
+        clf.classify(frame)
+        after_distance = clf.last_distance
+
+        # Without exclusion: contribution = 50² / 1e-6 = 2.5e9. With exclusion: 0.
+        self.assertLess(
+            after_distance, 1000.0,
+            f"trigger_resistance_change_rate (zero-var in training) was NOT excluded — "
+            f"distance={after_distance:.3f}",
+        )
+
+
 if __name__ == "__main__":
     unittest.main()
