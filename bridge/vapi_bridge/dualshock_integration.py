@@ -380,7 +380,7 @@ class DualShockTransport:
         self._TriggerModes = None
         # Phase 13: Agent capability enhancement modules (wired in _init_hardware)
         self._biometric_classifier = None   # BiometricFusionClassifier (E1)
-        self._bio_extractor_cls    = None   # BiometricFeatureExtractor class ref (B3: not re-imported per loop)
+        self._bio_extractor        = None   # BiometricFeatureExtractor instance (stateful ring buffer)
         self._ewc_model            = None   # EWCWorldModel (E4)
         self._preference_model     = None   # PreferenceModel (E2)
         self._frame_buffer: list   = []     # Accumulated frames for EWC session update
@@ -713,7 +713,7 @@ class DualShockTransport:
                 self._biometric_classifier.ANOMALY_THRESHOLD = self._cfg.l4_anomaly_threshold
             if self._cfg.l4_continuity_threshold != BiometricFusionClassifier.CONTINUITY_THRESHOLD:
                 self._biometric_classifier.CONTINUITY_THRESHOLD = self._cfg.l4_continuity_threshold
-            self._bio_extractor_cls    = BiometricFeatureExtractor   # B3: store class ref
+            self._bio_extractor        = BiometricFeatureExtractor()  # persistent instance; ring buffer accumulates across calls
             self._ewc_model            = EWCWorldModel()
             self._preference_model     = PreferenceModel()
             # Pin biometric model version into every PoAC record's model_manifest_hash
@@ -846,8 +846,8 @@ class DualShockTransport:
             _l4_features_json = None
             _l4_drift_velocity = None
             if self._biometric_classifier is not None and inference not in CHEAT_CODES:
-                # B3: use stored class ref — no per-iteration import overhead
-                bio_features = self._bio_extractor_cls.extract(frames)
+                # Use persistent extractor instance so _fft_ring accumulates across calls.
+                bio_features = self._bio_extractor.extract(frames)
                 self._biometric_classifier.update_fingerprint(bio_features)
                 bio_result = self._biometric_classifier.classify(bio_features)
                 # Phase 36: adaptive policy multiplier feedback from InsightSynthesizer Mode 4
@@ -1586,7 +1586,7 @@ class DualShockTransport:
                 self._store.store_pitl_proof(dev_hex, hex(null), hex(fc), hp_int)
                 if self._chain is not None:
                     asyncio.create_task(
-                        self._chain.submit_pitl_proof(dev_hex, proof, fc, hp_int, null, epoch)
+                        self._chain.submit_pitl_proof(dev_hex, proof, fc, hp_int, infer, null, epoch)
                     )
                 log.info(
                     "Phase 27: PITL session proof stored: device=%s hp_int=%d fc=%s",

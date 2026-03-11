@@ -1,0 +1,20 @@
+---
+geometry: margin=1in
+fontsize: 11pt
+documentclass: article
+colorlinks: true
+linkcolor: blue
+urlcolor: blue
+toccolor: black
+mainfont: "Cambria"
+monofont: "Courier New"
+header-includes:
+  - \usepackage{amssymb}
+  - \usepackage{amsmath}
+  - \usepackage{microtype}
+  - \usepackage{booktabs}
+  - \usepackage{longtable}
+  - \usepackage{array}
+  - \usepackage{multirow}
+  - \usepackage{xcolor}
+---

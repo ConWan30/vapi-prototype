@@ -116,9 +116,9 @@ class TestVAPIRecord(unittest.TestCase):
         self.assertTrue(rec.verify_chain_link(None))
 
     def test_verify_chain_link_valid_continuation(self):
-        """verify_chain_link(prev) returns True when prev_poac_hash == prev.chain_hash."""
+        """verify_chain_link(prev) returns True when prev_poac_hash == prev.record_hash (164B body)."""
         rec1 = VAPIRecord(_make_raw_record(ctr=1))
-        rec2 = VAPIRecord(_make_raw_record(prev_hash=rec1.chain_hash, ctr=2))
+        rec2 = VAPIRecord(_make_raw_record(prev_hash=rec1.record_hash, ctr=2))
         self.assertTrue(rec2.verify_chain_link(rec1))
 
     def test_verify_chain_link_broken(self):
@@ -187,11 +187,11 @@ class TestVAPIVerifier(unittest.TestCase):
         self.assertFalse(v.verify_record(b""))
 
     def test_verify_chain_ordered(self):
-        """verify_chain returns True for a valid 3-record chain."""
+        """verify_chain returns True for a valid 3-record chain (prev_hash = SHA-256 of 164B body)."""
         v  = VAPIVerifier()
         r1 = _make_raw_record(ctr=1, prev_hash=b"\x00" * 32)
-        r2 = _make_raw_record(ctr=2, prev_hash=hashlib.sha256(r1).digest())
-        r3 = _make_raw_record(ctr=3, prev_hash=hashlib.sha256(r2).digest())
+        r2 = _make_raw_record(ctr=2, prev_hash=hashlib.sha256(r1[:POAC_BODY_SIZE]).digest())
+        r3 = _make_raw_record(ctr=3, prev_hash=hashlib.sha256(r2[:POAC_BODY_SIZE]).digest())
         self.assertTrue(v.verify_chain([r1, r2, r3]))
 
     def test_verify_chain_broken(self):
@@ -225,10 +225,10 @@ class TestVAPISession(unittest.TestCase):
         self.assertEqual(detected, [])
 
     def test_chain_integrity_after_ingest(self):
-        """chain_integrity() is True for a properly linked sequence."""
+        """chain_integrity() is True for a properly linked sequence (prev_hash = SHA-256 of 164B body)."""
         session = VAPISession()
         r1 = _make_raw_record(ctr=1, prev_hash=b"\x00" * 32)
-        r2 = _make_raw_record(ctr=2, prev_hash=hashlib.sha256(r1).digest())
+        r2 = _make_raw_record(ctr=2, prev_hash=hashlib.sha256(r1[:POAC_BODY_SIZE]).digest())
         session.ingest_record(r1)
         session.ingest_record(r2)
         self.assertTrue(session.chain_integrity())

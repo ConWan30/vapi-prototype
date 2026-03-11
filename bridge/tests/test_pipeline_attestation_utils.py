@@ -112,7 +112,7 @@ def make_chained_vectors(
     """
     Create multiple VAPITestVectors from a SINGLE PoACEngine (same device, chained).
 
-    The second record's prev_poac_hash = SHA-256(first record's full 228B bytes),
+    The second record's prev_poac_hash = SHA-256(first record's 164-byte body),
     and monotonic_ctr increments. This replicates real PoAC chain genealogy.
 
     Returns

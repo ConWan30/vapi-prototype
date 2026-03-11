@@ -121,22 +121,66 @@ echo "════════════════════════�
 echo " Phase 26: Compiling PitlSessionProof circuit"
 echo "═══════════════════════════════════════════════════════════════"
 echo ""
-echo "[PITL] Compiling PitlSessionProof.circom → R1CS + WASM..."
-circom PitlSessionProof.circom \
+
+PITL_CIRCUIT="PitlSessionProof"
+PITL_VERIFIER_OUT="../contracts/PitlSessionProofVerifier.sol"
+# Re-use the same ptau from TeamProof (pot15 from run-ceremony.js is adequate;
+# PitlSessionProof has ~1820 constraints which fits in 2^11 = 2048)
+PITL_PTAU="${PTAU_FILE}"
+
+echo "[PITL-1/5] Compiling PitlSessionProof.circom → R1CS + WASM..."
+circom ${PITL_CIRCUIT}.circom \
     --r1cs \
     --wasm \
     --sym  \
     -l node_modules
 echo "      Constraint count:"
-npx snarkjs r1cs info PitlSessionProof.r1cs | grep "# of Constraints"
-echo "      PitlSessionProof compiled (est. ~1820 constraints, 2^11 ptau)."
+npx snarkjs r1cs info ${PITL_CIRCUIT}.r1cs | grep "# of Constraints"
+echo "      PitlSessionProof compiled (est. ~1820 constraints, fits 2^11 ptau)."
 echo ""
 
+echo "[PITL-2/5] Running Groth16 Phase 2 setup (PitlSessionProof circuit-specific zkey)..."
+npx snarkjs groth16 setup \
+    ${PITL_CIRCUIT}.r1cs \
+    "$PITL_PTAU" \
+    ${PITL_CIRCUIT}_0000.zkey
+
+echo "[PITL-3/5] Adding Phase 2 contribution..."
+PITL_ENTROPY="vapi_phase26_pitl_$(hostname)_$(date +%s%N)"
+echo "$PITL_ENTROPY" | npx snarkjs zkey contribute \
+    ${PITL_CIRCUIT}_0000.zkey \
+    ${PITL_CIRCUIT}_final.zkey \
+    --name="VAPI-Phase26-PitlAutoContrib" \
+    -v
+echo "      WARNING: Single-contributor setup. Multi-party ceremony required for mainnet."
+
+echo "[PITL-4/5] Exporting PitlSessionProof verification key..."
+npx snarkjs zkey export verificationkey \
+    ${PITL_CIRCUIT}_final.zkey \
+    ${PITL_CIRCUIT}_verification_key.json
+echo "      PitlSessionProof_verification_key.json written."
+
+echo "[PITL-5/5] Generating Solidity Groth16 verifier → $PITL_VERIFIER_OUT"
+npx snarkjs zkey export solidityverifier \
+    ${PITL_CIRCUIT}_final.zkey \
+    "$PITL_VERIFIER_OUT"
+echo "      PitlSessionProofVerifier.sol written."
+
+# Integrity checksums for PITL artifacts
+echo ""
+echo "── PitlSessionProof artifact checksums ─────────────────────────"
+sha256sum ${PITL_CIRCUIT}.r1cs
+sha256sum ${PITL_CIRCUIT}_final.zkey
+sha256sum ${PITL_CIRCUIT}_verification_key.json
+sha256sum "$PITL_VERIFIER_OUT"
+echo "─────────────────────────────────────────────────────────────────"
+
+echo ""
 echo "═══════════════════════════════════════════════════════════════"
 echo " Build complete."
 echo ""
-echo " Phase 14C integration steps:"
-echo "   1. Copy TeamProofVerifier.sol is already at $VERIFIER_OUT"
+echo " Phase 14C (TeamProof) integration steps:"
+echo "   1. TeamProofVerifier.sol is already at $VERIFIER_OUT"
 echo "   2. Run: cd .. && npx hardhat compile"
 echo "   3. Distribute proving artifacts to bridge:"
 echo "        TeamProof_js/TeamProof.wasm   → bridge/zk_artifacts/"
@@ -146,4 +190,14 @@ echo "   4. Set env vars:"
 echo "        VAPI_ZK_WASM_PATH=bridge/zk_artifacts/TeamProof.wasm"
 echo "        VAPI_ZK_ZKEY_PATH=bridge/zk_artifacts/TeamProof_final.zkey"
 echo "        VAPI_ZK_VKEY_PATH=bridge/zk_artifacts/verification_key.json"
+echo ""
+echo " Phase 26 (PitlSessionProof) integration steps:"
+echo "   1. PitlSessionProofVerifier.sol is already at $PITL_VERIFIER_OUT"
+echo "   2. Run: cd .. && npx hardhat compile"
+echo "   3. Deploy verifier: npx hardhat run scripts/deploy-pitl-verifier.js --network iotex_testnet"
+echo "   4. Wire: PITLSessionRegistry.setPITLVerifier(<deployed_address>)"
+echo "   5. Distribute PITL proving artifacts to bridge:"
+echo "        PitlSessionProof_js/PitlSessionProof.wasm → bridge/zk_artifacts/"
+echo "        PitlSessionProof_final.zkey               → bridge/zk_artifacts/ (KEEP SECRET)"
+echo "        PitlSessionProof_verification_key.json    → bridge/zk_artifacts/"
 echo "═══════════════════════════════════════════════════════════════"

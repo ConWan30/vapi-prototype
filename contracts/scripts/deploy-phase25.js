@@ -59,9 +59,7 @@ async function main() {
     "GATE_MIN_CUMULATIVE=" + minCumulative,
     "GATE_MIN_VELOCITY=" + minVelocity,
     "GATE_VELOCITY_WINDOW=" + velocityWindow,
-  ].join("
-") + "
-";
+  ].join("\n") + "\n";
 
   fs.writeFileSync(envPath, envContent);
   console.log("Written:", envPath);

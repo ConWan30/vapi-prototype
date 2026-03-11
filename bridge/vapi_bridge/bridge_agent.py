@@ -24,6 +24,7 @@ import dataclasses
 import io
 import json
 import logging
+import time
 from contextlib import redirect_stdout
 from pathlib import Path
 from typing import Any
@@ -352,6 +353,22 @@ _TOOLS = [
             "required": ["device_id"],
         },
     },
+    {
+        "name": "get_calibration_status",
+        "description": (
+            "Returns the current living calibration state for the PITL L4 biometric layer: "
+            "global thresholds (anomaly + continuity), per-player personal profiles (if any have "
+            "accumulated >=30 NOMINAL records), recent threshold evolution history (last 5 "
+            "calibration_update insights), and when the next Mode 6 cycle will run. "
+            "Use to answer: 'Has the L4 threshold drifted?', 'Does player X have a personal "
+            "calibration profile?', or 'When was the threshold last auto-updated?'"
+        ),
+        "input_schema": {
+            "type": "object",
+            "properties": {},
+            "required": [],
+        },
+    },
 ]
 
 
@@ -670,6 +687,37 @@ class BridgeAgent:
                     "enforcement_enabled": bool(
                         getattr(self._cfg, "phg_credential_enforcement_enabled", True)
                     ),
+                }
+
+            if name == "get_calibration_status":
+                profiles = self._store.get_all_player_calibration_profiles()
+                live: dict = {}
+                try:
+                    import json as _json
+                    with open("calibration_profile_live.json") as _f:
+                        live = _json.load(_f)
+                except (FileNotFoundError, ValueError):
+                    pass
+                # Retrieve recent calibration_update insights (last 5)
+                all_updates = self._store.get_insights_since(
+                    time.time() - 5 * 21600  # last 5 cycles (30h)
+                )
+                recent_evolution = [
+                    {"timestamp": r.get("created_at"), "narrative": r.get("content")}
+                    for r in all_updates
+                    if r.get("insight_type") == "calibration_update"
+                ][:5]
+                return {
+                    "global_thresholds": {
+                        "l4_anomaly":      getattr(self._cfg, "l4_anomaly_threshold", 7.019),
+                        "l4_continuity":   getattr(self._cfg, "l4_continuity_threshold", 5.369),
+                        "last_calibration": live.get("generated_at", "never"),
+                        "source_records":   live.get("total_records", 0),
+                        "confidence":       live.get("confidence", "unknown"),
+                    },
+                    "player_profiles": profiles,
+                    "recent_evolution": recent_evolution,
+                    "next_cycle_in": "up to 6h (aligned with InsightSynthesizer cycle)",
                 }
 
             return {"error": f"Unknown tool: {name}"}

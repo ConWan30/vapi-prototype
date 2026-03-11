@@ -1,10 +1,12 @@
 # VAPI: Verifiable Controller Input Provenance with Physics-Backed Liveness for Competitive Gaming
 
-**Authors:** [Author A]$^{1}$, [Author B]$^{1}$, [Author C]$^{2}$
+**Authors:** Contravious Battle
 
-$^{1}$[Affiliation 1], $^{2}$[Affiliation 2]
+Independent Researcher
 
-**Contact:** {author.a, author.b}@affiliation1.edu, author.c@affiliation2.edu
+**Contact:** kamazi.shotta@icloud.com
+
+**DOI:** https://doi.org/10.5281/zenodo.18966169
 
 ---
 
@@ -60,7 +62,11 @@ integrity) with adaptive behavioral analysis (biometric Mahalanobis fingerprinti
 temporal rhythm analysis, behavioral archaeology, network correlation) and active physical
 challenge-response (randomized adaptive trigger resistance profiling with motor-response
 curve classification). Five of the nine layers exploit signals that cannot be replicated
-by software injection (§7.5.1, §7.5.2).
+by software injection (§7.5.1, §7.5.2). Section §7.5.2.1 derives game genre
+certification requirements: L4 biometric activation depends on controller usage
+patterns specific to game genre, producing four deployment tiers (FULL/STANDARD/LIMITED/NOT
+RECOMMENDED). NCAA Football 26 is classified LIMITED CERTIFICATION (3 active features;
+L4 operates as intra-player anomaly detector only, not inter-player identifier).
 
 **3. PHG Humanity Credential.** A soulbound, non-transferable on-chain credential
 (ERC-5192-inspired, `locked()=true`) whose validity reflects continuous behavioral
@@ -211,9 +217,9 @@ the system.
 | Chain integrity (omission detectable) | Cryptographic (verifiable gaps) | Missing counter values visible to any chain verifier |
 | Physical human operation of controller | Empirical inference | PITL L0–L6 physics-coupled signals |
 | Software injection absence | Empirical inference | IMU noise floor, gravity, causal coupling, temporal rhythm |
-| Player identity across sessions | NOT currently proven | Separation ratio 0.362 — L4 is intra-player anomaly detector |
+| Player identity across sessions | NOT currently proven — game-genre dependent | Separation ratio 0.362 for NCAA CFB 26 (3 active features); FPS/Racing genres expected > 2.0 ratio with 9–10 active features. See §7.5.2.1. |
 | Biometric pipeline correctness (end-to-end) | NOT proven on-chain | ZK proof binds feature commitment and nullifier; raw→feature transformation is trusted |
-| Inference code on-chain | NOT currently enforced | pub[2]=0 in PITLSessionRegistry.sol; inference committed off-chain in bridge SQLite |
+| Inference code on-chain | Enforced via ZK circuit C2 (Phase 41) | `pub[2]=inferenceCode` in PITLSessionRegistry.sol; circuit constraint `inferenceResult ∉ [40,42]` makes cheat-code proofs ungenerable. Inference also committed off-chain in bridge SQLite. |
 | Bridge execution honesty | Trust assumption (constrained) | Withholding detectable via chain gaps; computation constrained by ZK circuit; enforcement mediated |
 
 ---
@@ -539,6 +545,130 @@ Attack G synthetic adversarial validation. Human motor response baseline calibra
 — characterizing real onset/settle/grip-variance distributions from real DualShock
 Edge challenge sessions — has not yet been performed. Section §10.6 describes this
 as the immediate next hardware validation milestone.
+
+### 7.5.2.1 Game Genre Certification Requirements for PITL Biometric Activation
+
+Each of the eleven L4 biometric features is conditional on specific controller
+usage patterns that vary substantially by game genre. A session in which the player
+never moves the right stick, never presses L2, and never triggers simultaneous
+dual-grip produces feature vectors with up to 9 of 11 fields structurally zero —
+not because the human is unusual, but because the game did not elicit the relevant
+motor behavior. This section derives minimum controller-usage requirements for each
+L4 feature, characterizes which game genres satisfy them, and defines VAPI tournament
+deployment certification tiers.
+
+**Empirical basis:** Per-feature symmetric KL divergence computed from N=64 real
+DualShock Edge sessions (3 players, NCAA Football 26) in
+`docs/interperson-separation-analysis-v2.md §Phase 41`. In that dataset, 6 of 11
+features are structurally zero and only `stick_autocorr_lag1/5` provides meaningful
+inter-player information — solely because Player 3 uses the right stick far less than
+Players 1/2, not because of individual physiological differences.
+
+---
+
+#### Minimum Controller-Usage Requirements per Feature
+
+**Table 7.5.2.1-A: L4 Feature Activation Requirements**
+
+| Feature | Required Controller Behavior | Minimum Threshold | Notes |
+|---------|------------------------------|-------------------|-------|
+| `trigger_resistance_change_rate` | Game must send mid-session adaptive trigger effect changes via USB output report 0x02 | ≥ 1 effect-mode transition per session | Requires DualShock Edge firmware + game support. Structurally zero in any game with static trigger profiles. |
+| `trigger_onset_velocity_L2` | L2 trigger must be depressed from rest (ADC ≤ 5) to engagement (ADC > 200) as distinct press events | ≥ 50 rising-edge events per session | NCAA Football 26: ~5–20 formation-select presses. Below threshold for onset statistics. |
+| `trigger_onset_velocity_R2` | R2 trigger must exhibit onset cycles; continuous hold does NOT register new onset events | ≥ 50 rising-edge events per session | Sprint (hold) does not count. Requires repeated fire/brake/throw actions. |
+| `micro_tremor_accel_variance` | Device must have still-frame windows (gyro_mag < 20 LSB) during active session; accel variance computed only during those frames | ≥ 10 still-frame passes per session | Present in most genres during brief pauses, menus, or low-movement moments. Gyro gate is empirically calibrated at 20 LSB (raw HID). |
+| `grip_asymmetry` | L2 and R2 must both exceed 10 ADC simultaneously (dual-press frame) | ≥ 10 dual-press frames per session | Requires mechanical co-activation: ADS+shoot (FPS), brake+accelerate (racing), or parry+strike (action). Any game where L2 and R2 are contextually exclusive yields grip_asymmetry = 1.000 for all sessions. |
+| `stick_autocorr_lag1` | right_stick_x must deviate from dead-zone center (128) with temporal persistence | ≥ 100 non-dead-zone right-stick reports per session | Captures characteristic micro-correction patterns in sustained aim or camera movement. Spiky one-off movements contribute less than smooth persistent input. |
+| `stick_autocorr_lag5` | Same as lag1; lag5 captures longer motor persistence | ≥ 200 non-dead-zone frames | Requires continuous right-stick engagement, not single-frame panning. |
+| `tremor_peak_hz` | right_stick_x must accumulate ≥ 513 non-dead-zone frames in the extractor's ring buffer | ≥ 513 consecutive non-dead-zone reports (ring buffer fills in ~0.5s of continuous aim) | Physiological tremor is 8–12 Hz. Bot scripts that precisely track a target produce near-zero tremor. FFT resolution: 1.95 Hz/bin at 1000 Hz with 512 velocity samples. |
+| `tremor_band_power` | Same as `tremor_peak_hz` | ≥ 513 frames | Collapses to 0 when FFT is inactive. Correlated with `tremor_peak_hz`. |
+| `touchpad_active_fraction` | Session must be captured with Phase 17+ `capture_session.py` (adds `touch_active` field); player's resting thumb must contact touchpad | Post-Phase-17 capture, ≥ 1 touch-active frame | Field did not exist in pre-Phase-17 sessions. Touchpad contact is natural for thumb-resting posture on DualShock Edge; no explicit player action required. |
+| `touch_position_variance` | Same as above; requires ≥ 3 touch-active frames for variance to be non-trivial | Post-Phase-17 capture, ≥ 3 touch-active frames | Captures per-player characteristic thumb resting position (high-value biometric once populated). |
+
+---
+
+#### Game Genre Certification Table
+
+Certification tier is determined by the number of L4 features **active** in typical play
+for that genre. "Active" means the feature is expected to have non-zero variance across
+sessions from the same player — sufficient to inform the Mahalanobis fingerprint.
+Touchpad features (10, 11) are counted only for post-Phase-17 captures.
+
+**Tiers:**
+- **FULL CERTIFICATION (≥ 9/11):** L4 operates as a full inter-player biometric identifier. Intra-player anomaly detection and cross-player transplant detection are both reliable.
+- **STANDARD CERTIFICATION (6–8/11):** L4 inter-player discrimination is partial. Intra-player anomaly detection reliable; transplant detection viable with N ≥ 20 sessions per player.
+- **LIMITED CERTIFICATION (3–5/11):** L4 operates as intra-player anomaly detector only. Zero inter-player discriminability expected. L1, L2, L2B/C, L3, and L5 remain fully active for cheat detection; L4 adds session-consistency evidence but cannot identify the player.
+- **NOT RECOMMENDED (≤ 2/11):** L4 biometric layer is effectively inactive. PITL integrity is provided by L1/L2/L3/L5 only. Not suitable for tournament deployment where biometric identity binding is required.
+
+**Table 7.5.2.1-B: Per-Genre L4 Feature Activation**
+
+| Genre | Rep. Titles | 1 `trg_resist` | 2 `onset_L2` | 3 `onset_R2` | 4 `micro_tremor` | 5 `grip_asym` | 6 `autocorr_lag1` | 7 `autocorr_lag5` | 8 `tremor_hz` | 9 `tremor_power` | 10 `tp_frac` | 11 `tp_var` | **Active** | **Tier** |
+|-------|-------------|:--------------:|:------------:|:------------:|:----------------:|:-------------:|:-----------------:|:-----------------:|:-------------:|:----------------:|:-----------:|:-----------:|:----------:|----------|
+| FPS / Battle Royale | COD Black Ops 6, Halo Infinite, Apex Legends, Fortnite | ⚠️¹ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓² | ✓² | **9–10** | **FULL** |
+| Racing (Simulation) | Gran Turismo 7, Forza Motorsport, F1 24 | ✓³ | ✓ | ✓ | ✓ | ✓ | ⚠️⁴ | ⚠️⁴ | ⚠️⁴ | ⚠️⁴ | ✓² | ✓² | **7–9** | **STANDARD–FULL** |
+| Action-Adventure / RPG | Elden Ring, God of War, Spider-Man 2 | ⚠️⁵ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓² | ✓² | **8–10** | **FULL** |
+| Adaptive-Trigger Native | Returnal, Ratchet & Clank: Rift Apart, Astro's Playroom | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓² | ✓² | **10–11** | **FULL** |
+| Fighting | Street Fighter 6, Mortal Kombat 1, Tekken 8 | ✗ | ⚠️⁶ | ⚠️⁶ | ✓ | ✗ | ✗ | ✗ | ✗ | ✗ | ✓² | ✓² | **3–5** | ⚠️ **LIMITED** |
+| Sports — Real-Time Aim | NBA 2K25, MLB The Show 24 (pitching/hitting) | ✓³ | ✓ | ✓ | ✓ | ✓ | ⚠️ | ⚠️ | ⚠️ | ⚠️ | ✓² | ✓² | **6–8** | **STANDARD** |
+| Sports — Sim Football (NCAA CFB, Madden) | NCAA Football 26, Madden NFL 25 | ✗ | ✗ | ✗⁷ | ✓ | ✗ | ✗⁸ | ✗⁸ | ✗⁸ | ✗⁸ | ✓² | ✓² | **2–3** | ⛔ **NOT REC.** / ⚠️ LIMITED |
+| Platformer / Narrative | Crash Bandicoot, Astro Bot, Death Stranding | ✗ | ⚠️ | ✓ | ✓ | ✗ | ✗ | ✗ | ✗ | ✗ | ✓² | ✓² | **3–5** | ⚠️ **LIMITED** |
+
+¹ FPS games vary: COD on PlayStation uses adaptive trigger support (Haptic Feedback mode); PC-origin ports (Apex, Fortnite) typically do not.<br>
+² Touchpad features require post-Phase-17 session capture. For pre-Phase-17 captures, subtract 2 from active count.<br>
+³ Gran Turismo 7, Forza Motorsport, and NBA 2K use resistance profiles for ABS/grip feedback; feature activates reliably.<br>
+⁴ Racing right-stick (camera) is often held static during race focus. Feature activates in camera-heavy moments (replays, cornering). Autocorr and tremor are partial.<br>
+⁵ Game-dependent; adaptive trigger support varies. God of War: no. Horizon FW: yes (bow draw). Spider-Man 2: yes (web-shooter modulation).<br>
+⁶ L2/R2 are medium/heavy attacks in many fighting games; ≥50 presses per session is achievable in high-level play but not guaranteed at lower engagement.<br>
+⁷ R2 is sprint in NCAA Football 26 and is held continuously, not pressed in repeated onset cycles. Onset velocity requires release-and-re-press events.<br>
+⁸ Right stick is near-stationary (128 dead zone) throughout almost all NCAA Football 26 sessions. From N=64 sessions: only 1/38 P1 sessions had any non-zero `tremor_peak_hz`.
+
+---
+
+#### NCAA Football 26: LIMITED CERTIFICATION
+
+Based on N=64 hardware-validated sessions (Phase 41 post-analysis), NCAA Football 26
+with the DualShock Edge is assigned **LIMITED CERTIFICATION** for VAPI tournament deployment.
+
+**What the protocol proves in this configuration:**
+- L1 PoAC chain integrity — every record cryptographically signed, ordered, and linked. Tampering, reordering, and omission are detectable.
+- L2 injection detection (`0x28`) — IMU noise floor and gravity-absent signal fully active. Software injection is detected regardless of game.
+- L2B/L2C advisory oracles (`0x31`, `0x32`) — IMU-button causal coupling and stick-IMU temporal cross-correlation. Functional for button events; L2C is limited by right-stick dead-zone (68/69 sessions static stick, both confirmed in N=69 Phase 17 and N=64 Phase 41 data).
+- L3 behavioral ML (`0x29`, `0x2A`) — Fully active. Bot macro/aimbot patterns are detectable.
+- L5 temporal rhythm oracle (`0x2B`) — Fully active on Cross, L2_dig, R2, Triangle button inter-press intervals. Multi-button pooled fallback covers low-press-frequency play styles.
+
+**What L4 provides in this configuration:**
+L4 operates as **intra-player session consistency detector only** — not as an inter-player identifier.
+
+| Property | Status in NCAA CFB 26 |
+|----------|----------------------|
+| Intra-player session anomaly detection (is this session consistent with this device's history?) | **ACTIVE** — 3 active features (micro_tremor, stick_autocorr_lag1/5) inform the EMA fingerprint. Unusual play behavior within a single player's session history is detectable. |
+| Cross-player transplant detection (is this a different player using this credential?) | **NOT ACTIVE** — separation ratio 0.362 (threshold > 2.0). P1/P2 are statistically indistinguishable across all 5 active features. L4 cannot detect one player's sessions submitted under another's device ID. |
+| Structural zero-variance features (trigger_resistance_change_rate, trigger_onset_velocity_L2/R2, tremor_peak_hz, tremor_band_power) | **INERT** — auto-excluded by ZERO_VAR_THRESHOLD = 1e-4 in BiometricFusionClassifier. These features do not contribute false-positive 0x30 signals; they simply do not contribute. |
+| Touchpad features (touchpad_active_fraction, touch_position_variance) | **PENDING** — zero in all pre-Phase-17 sessions. Will populate in next capture with Phase 17+ script. Expected to add one stable per-player discriminator once populated. |
+
+**Recommended use:** VAPI-certified NCAA Football 26 tournaments are appropriate where the
+integrity requirements are: (a) verifying that a real controller was physically operated
+(not software-injected), (b) detecting automated bot scripts via L5 timing anomalies, and
+(c) establishing a tamper-evident PoAC evidence chain per session. They are **not** appropriate
+where the requirement is to verify that the same human operated the device across all sessions —
+that guarantee requires FULL or STANDARD CERTIFICATION (FPS, Racing, Action-Adventure genres).
+
+---
+
+#### Upgrade Path to FULL CERTIFICATION for Football Titles
+
+Any future football title that implements the following mechanics will upgrade from LIMITED
+to STANDARD or FULL CERTIFICATION without protocol changes:
+
+1. **Implement adaptive trigger resistance profiles** for kick-power meters, tackle strength, or catch trajectories. This activates `trigger_resistance_change_rate`.
+2. **Require L2 as a non-formation action** (e.g., receiver route adjustments post-snap, secondary defensive commands). This produces ≥50 L2 onset events per session and activates `trigger_onset_velocity_L2`.
+3. **Map right stick to a continuous action** (spin move, juke direction, camera rotation during replays with player control). This fills the 513-frame FFT ring buffer and activates `tremor_peak_hz`, `tremor_band_power`, and strengthens `stick_autocorr_lag1/5`.
+4. **Enable simultaneous L2+R2 mechanics** (e.g., a precision kick charge requiring both triggers). This activates `grip_asymmetry`.
+
+Alternatively, a VAPI-certified multi-genre session structure (one FPS session + one CFB session per hour) would satisfy the feature activation requirements through the FPS session, with the CFB session contributing L1/L2/L3/L5 evidence to the same device's PHG credential stream.
+
+---
+
+*Derived from per-feature KL divergence analysis in `docs/interperson-separation-analysis-v2.md §Phase 41 Post-Analysis`. Separation thresholds based on Gaussian KL divergence ≥ 0.5 = discriminating, Cohen's d ≥ 0.5 = meaningfully separated. Game genre assignments are protocol-author assessments based on published control schemes; individual game configuration may vary.*
 
 ### 7.5.3 Zero-Knowledge PITL Session Proof
 

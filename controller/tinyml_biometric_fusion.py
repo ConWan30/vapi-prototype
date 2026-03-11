@@ -206,14 +206,26 @@ _BIO_FEATURE_DIM = 11
 
 class BiometricFeatureExtractor:
     """
-    Extracts 7 biometric features from a sequence of InputSnapshot objects.
+    Extracts 11 biometric features from a sequence of InputSnapshot objects.
 
-    Designed to be stateless per call — all state (onset tracking, etc.) is
-    maintained in rolling buffers passed by the caller or computed inline.
+    Stateful: maintains a separate 513-frame ring buffer for right-stick X
+    positions so that the tremor FFT (features 8-9) can accumulate across
+    successive live calls even when window_frames=LIVE_WINDOW_FRAMES (120).
+
+    In calibration/offline mode (window_frames>=512), a single call with
+    enough frames activates the FFT immediately — ring-buffer state is still
+    updated but the window slice is already large enough.
     """
 
-    @staticmethod
+    _FFT_RING_MAXLEN: int = 513  # positions; yields up to 512 velocity samples
+
+    def __init__(self) -> None:
+        # Separate ring buffer for right_stick_x positions used by tremor FFT.
+        # Accumulates across calls; maxlen=513 → up to 512 velocity samples.
+        self._fft_ring: deque[float] = deque(maxlen=self._FFT_RING_MAXLEN)
+
     def extract(
+        self,
         snapshots: Sequence[object],
         window_frames: int = LIVE_WINDOW_FRAMES,
     ) -> BiometricFeatureFrame:
@@ -223,12 +235,14 @@ class BiometricFeatureExtractor:
         Args:
             snapshots: Recent InputSnapshot frames (most recent last).
                        Requires at least 10 frames; returns zeros if fewer.
-            window_frames: Maximum frames to use.
-                LIVE_WINDOW_FRAMES (120): default live path — tremor FFT inactive (<512 gate).
-                CALIBRATION_WINDOW_FRAMES (1024): offline analysis — tremor FFT active.
+            window_frames: Maximum frames to use for non-FFT features.
+                LIVE_WINDOW_FRAMES (120): default live path.  After ~513
+                    cumulative frames the tremor FFT activates via ring buffer.
+                CALIBRATION_WINDOW_FRAMES (1024): offline analysis — tremor
+                    FFT activates immediately from the single large window.
 
         Returns:
-            BiometricFeatureFrame with 7 features.
+            BiometricFeatureFrame with 11 features.
         """
         snaps = list(snapshots)[-window_frames:]
         n = len(snaps)
@@ -294,23 +308,34 @@ class BiometricFeatureExtractor:
         autocorr_lag5 = _autocorr(stick_vels, lag=5)
 
         # 6. Right-stick tremor FFT (8-12 Hz physiological tremor)
-        rx_vals = np.array([float(getattr(s, "right_stick_x", 0)) for s in snaps], dtype=np.float32)
-        rx_vels = np.diff(rx_vals) / 32768.0
+        # Estimate sampling frequency from current window timing.
         dt_vals = [max(_g(s, "inter_frame_us", 1000) / 1_000_000.0, 1e-6) for s in snaps[1:]]
-        fs = 1.0 / max(float(np.median(dt_vals)), 1e-6)
-        # Tremor FFT requires >=512 frames for adequate frequency resolution.
-        # At 1000 Hz: 512 frames -> bin width ~1.95 Hz, resolving the 8-12 Hz tremor band.
-        # With <512 frames the band collapses to 1-2 bins and is indistinguishable from noise.
-        # Callers should pass window_frames=1024 when tremor features matter.
-        if len(rx_vels) >= 512:
-            fft_mag = np.abs(np.fft.rfft(rx_vels))
-            freqs   = np.fft.rfftfreq(len(rx_vels), d=1.0 / fs)
+        fs = 1.0 / max(float(np.median(dt_vals)), 1e-6) if dt_vals else 1000.0
+
+        # Update the persistent ring buffer with right_stick_x positions from
+        # this window's snapshots.  Duplicates are harmless: the ring is
+        # capped at _FFT_RING_MAXLEN=513; the caller's window slice already
+        # represents the most-recent frames so we append only those.
+        for s in snaps:
+            self._fft_ring.append(float(getattr(s, "right_stick_x", 0)))
+
+        # Prefer the ring buffer when it has accumulated enough history;
+        # otherwise fall back to the current window (activates immediately for
+        # large calibration windows >= 513 frames).
+        ring_arr = np.array(list(self._fft_ring), dtype=np.float32)
+        rx_vels_src = np.diff(ring_arr) / 32768.0
+
+        if len(rx_vels_src) >= 512:
+            # 512 velocity samples → bin width ≈1.95 Hz at 1000 Hz; resolves 8–12 Hz band.
+            fft_mag = np.abs(np.fft.rfft(rx_vels_src))
+            freqs   = np.fft.rfftfreq(len(rx_vels_src), d=1.0 / fs)
             total_power = float(np.sum(fft_mag ** 2)) or 1e-9
             peak_idx = int(np.argmax(fft_mag))
             tremor_peak_hz  = float(freqs[peak_idx])
             band_mask = (freqs >= 8.0) & (freqs <= 12.0)
             tremor_band_power = float(np.sum(fft_mag[band_mask] ** 2) / total_power)
         else:
+            # Ring not yet full and window too small — tremor FFT inactive.
             tremor_peak_hz = 0.0
             tremor_band_power = 0.0
 
@@ -418,12 +443,40 @@ class BiometricFusionClassifier:
     to the distance computation in classify().
     """
 
+    USE_FULL_COVARIANCE: bool = False
+    """
+    When True, classify() uses a full NxN covariance matrix rather than
+    the diagonal variance approximation.
+
+    Full covariance captures cross-feature correlations (e.g. grip_asymmetry
+    and trigger_onset_velocity_l2 are empirically correlated for the same
+    player).  An adversary must match the full joint distribution of all 11
+    features simultaneously, making transplant / replay attacks harder to
+    score as nominal.
+
+    Requires minimum ~500 NOMINAL sessions per device for a stable covariance
+    estimate.  Leave False (default) until that data is available; the
+    diagonal approximation is safe and well-tested on N=69.
+
+    Toggle per-instance: classifier.USE_FULL_COVARIANCE = True
+    """
+
+    _COV_LAMBDA: float = 0.01
+    """Tikhonov (L2) regularization added to the diagonal of the covariance
+    matrix before inversion to prevent ill-conditioning:
+        Sigma_reg = Sigma + lambda * I
+    Chosen so that condition_number(Sigma_reg) <= 1/lambda = 100 in
+    near-degenerate cases.  Increase if np.linalg.solve raises LinAlgError.
+    """
+
     def __init__(self) -> None:
         self._mean: np.ndarray = np.zeros(_BIO_FEATURE_DIM, dtype=np.float64)
         self._var:  np.ndarray = np.ones(_BIO_FEATURE_DIM,  dtype=np.float64) * 0.1
+        self._cov:  np.ndarray = np.eye(_BIO_FEATURE_DIM, dtype=np.float64) * 0.1
         self._n_sessions: int = 0
         self._stable_mean: np.ndarray = np.zeros(_BIO_FEATURE_DIM, dtype=np.float64)
         self._stable_var:  np.ndarray = np.ones(_BIO_FEATURE_DIM,  dtype=np.float64) * 0.1
+        self._stable_cov:  np.ndarray = np.eye(_BIO_FEATURE_DIM, dtype=np.float64) * 0.1
         self._stable_initialized: bool = False
         self.last_distance: float = 0.0
 
@@ -436,8 +489,8 @@ class BiometricFusionClassifier:
             delta = v - self._mean
             self._mean += self.EMA_ALPHA * delta
             self._var   = (1 - self.EMA_ALPHA) * self._var + self.EMA_ALPHA * delta ** 2
+            self._cov   = (1 - self.EMA_ALPHA) * self._cov + self.EMA_ALPHA * np.outer(delta, delta)
         self._n_sessions += 1
-
 
     def update_stable_fingerprint(self, features: BiometricFeatureFrame) -> None:
         """Update the STABLE (poison-proof) fingerprint — only called on clean NOMINAL sessions."""
@@ -445,11 +498,13 @@ class BiometricFusionClassifier:
         if not self._stable_initialized:
             self._stable_mean = v.copy()
             self._stable_var  = self._var.copy()
+            self._stable_cov  = self._cov.copy()
             self._stable_initialized = True
         else:
             delta = v - self._stable_mean
             self._stable_mean += self.EMA_ALPHA * delta
             self._stable_var   = (1 - self.EMA_ALPHA) * self._stable_var + self.EMA_ALPHA * delta ** 2
+            self._stable_cov   = (1 - self.EMA_ALPHA) * self._stable_cov + self.EMA_ALPHA * np.outer(delta, delta)
 
     @property
     def fingerprint_drift_velocity(self) -> float:
@@ -477,41 +532,6 @@ class BiometricFusionClassifier:
         ref_var  = self._stable_var  if self._stable_initialized else self._var
         diff = v - ref_mean
         var_safe = np.maximum(ref_var, self.VAR_FLOOR)
-        # NOTE: DIAGONAL COVARIANCE ASSUMPTION
-        # The current implementation uses a diagonal covariance matrix — each feature's
-        # variance is computed independently, treating all 7 biometric signals as mutually
-        # uncorrelated. The Mahalanobis distance is therefore:
-        #
-        #   d = sqrt( sum_i( (x_i - mu_i)^2 / sigma_i^2 ) )
-        #
-        # which is equivalent to a full Mahalanobis with Sigma = diag(sigma_1^2, ..., sigma_7^2).
-        # Each feature contributes 1/variance_i independently — there is no cross-feature
-        # interaction term in the distance computation.
-        #
-        # WHY THIS UNDERESTIMATES DISTANCE FOR CERTAIN ATTACK VECTORS:
-        # In practice, trigger_onset_velocity_l2 and grip_asymmetry are likely correlated
-        # for a given human player (faster onset correlates with a characteristic grip ratio).
-        # When an adversarial input deviates in BOTH of these correlated features simultaneously
-        # (e.g., an aimbot adjusting both trigger pull speed and grip simulation to mimic a
-        # human), the diagonal formula treats each deviation independently and underestimates
-        # the true statistical distance from the learned fingerprint. A full covariance matrix
-        # would capture the joint deviation and produce a larger, more sensitive distance.
-        #
-        # EXAMPLE: If trigger_onset_velocity and grip_asymmetry have empirical correlation
-        # rho=0.7, the off-diagonal covariance term
-        #   sigma_{onset,grip} = rho * sigma_onset * sigma_grip
-        # is currently ignored. Ignoring a positive correlation when both features deviate
-        # in the same direction causes Mahalanobis distance to be underestimated by a factor
-        # that grows with rho and the magnitude of simultaneous deviation.
-        #
-        # TODO: Add full covariance matrix support via numpy for production calibration.
-        # Replace diagonal var-only EMA with a full 7x7 covariance EMA:
-        #   C <- (1-alpha)*C + alpha * np.outer(delta, delta)
-        # Then: distance = sqrt(diff.T @ np.linalg.solve(C, diff))
-        # Gate behind a BiometricFusionClassifier.USE_FULL_COVARIANCE class flag (default False)
-        # until empirical calibration data from real hardware sessions is available.
-        # Requires minimum ~500 NOMINAL sessions per device for a stable covariance estimate.
-
         # Exclude features with near-zero training variance (structurally inactive features).
         # With VAR_FLOOR = 1e-6, a feature always-zero in training has ref_var ≈ 1e-6.
         # If a post-training sample has value 0.8: contribution = 0.8² / 1e-6 = 640,000 →
@@ -524,7 +544,24 @@ class BiometricFusionClassifier:
             self.last_distance = 0.0
             return None
 
-        distance = float(np.sqrt(np.sum(diff[active_mask] ** 2 / var_safe[active_mask])))
+        if self.USE_FULL_COVARIANCE:
+            # Full NxN Mahalanobis: d = sqrt(diff_active^T @ inv(Sigma_reg) @ diff_active)
+            # Only active features participate; inactive rows/cols are excluded.
+            ref_cov = self._stable_cov if self._stable_initialized else self._cov
+            sub_cov = ref_cov[np.ix_(active_mask, active_mask)]
+            # Tikhonov regularisation to prevent ill-conditioning (lambda * I).
+            sub_cov_reg = sub_cov + self._COV_LAMBDA * np.eye(sub_cov.shape[0])
+            diff_active = diff[active_mask]
+            try:
+                solved = np.linalg.solve(sub_cov_reg, diff_active)
+                distance = float(np.sqrt(max(float(np.dot(diff_active, solved)), 0.0)))
+            except np.linalg.LinAlgError:
+                # Singular matrix despite regularisation — fall back to diagonal.
+                distance = float(np.sqrt(np.sum(diff[active_mask] ** 2 / var_safe[active_mask])))
+        else:
+            # Diagonal covariance (default): fast, well-tested on N=69 sessions.
+            # Each feature contributes independently; no cross-feature interaction.
+            distance = float(np.sqrt(np.sum(diff[active_mask] ** 2 / var_safe[active_mask])))
         self.last_distance = distance
 
         if distance <= self.ANOMALY_THRESHOLD:
@@ -537,10 +574,16 @@ class BiometricFusionClassifier:
 
     def fingerprint_hash(self) -> bytes:
         """
-        SHA-256 of fingerprint state (mean + variance arrays).
+        SHA-256 of fingerprint state.
+        Diagonal mode: mean + variance arrays.
+        Full-covariance mode: mean + variance + lower-triangle of cov matrix.
         Contributed to sensor_commitment for on-chain verification.
         """
         buf = self._mean.astype(np.float32).tobytes() + self._var.astype(np.float32).tobytes()
+        if self.USE_FULL_COVARIANCE:
+            # Include lower-triangle of covariance matrix for stronger binding.
+            tril_indices = np.tril_indices(_BIO_FEATURE_DIM)
+            buf += self._cov[tril_indices].astype(np.float32).tobytes()
         return hashlib.sha256(buf).digest()
 
     def is_warmed_up(self) -> bool:

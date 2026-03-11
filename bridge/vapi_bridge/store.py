@@ -316,6 +316,18 @@ class Store:
                     last_updated        REAL NOT NULL
                 )
             """)
+            # Phase 38: Per-player living calibration profiles
+            conn.execute("""
+                CREATE TABLE IF NOT EXISTS player_calibration_profiles (
+                    device_id             TEXT PRIMARY KEY,
+                    anomaly_threshold     REAL NOT NULL,
+                    continuity_threshold  REAL NOT NULL,
+                    baseline_mean         REAL NOT NULL,
+                    baseline_std          REAL NOT NULL,
+                    session_count         INTEGER NOT NULL,
+                    updated_at            TEXT NOT NULL
+                )
+            """)
             # Bootstrap schema version history (idempotent INSERT OR IGNORE)
             for _ph, _nm in [
                 (21, "pitl_sidecar"), (22, "phg_checkpoints"),
@@ -326,6 +338,7 @@ class Store:
                 (31, "session_persistence"), (32, "proactive_monitor"),
                 (34, "federation_bus"), (35, "insight_synthesizer"),
                 (36, "adaptive_feedback"), (37, "credential_enforcement"),
+                (38, "living_calibration"),
             ]:
                 conn.execute(
                     "INSERT OR IGNORE INTO schema_versions (phase, migration_name, applied_at)"
@@ -1413,5 +1426,71 @@ class Store:
             rows = conn.execute(
                 "SELECT * FROM credential_enforcement WHERE suspended=1"
                 " ORDER BY suspended_since DESC"
+            ).fetchall()
+        return [dict(r) for r in rows]
+
+    # --- Phase 38: Living calibration (Mode 6) ---
+
+    def get_nominal_records_for_calibration(self, limit: int = 200) -> list[dict]:
+        """Fetch warmed NOMINAL records for living calibration (Phase 38).
+
+        Only includes records where inference=32 (NOMINAL) and the L4 classifier
+        had warmed up (pitl_l4_warmed=1), ensuring threshold quality.
+        Returns newest-first so exponential decay weights index 0 = most recent.
+        """
+        with self._conn() as conn:
+            rows = conn.execute(
+                """
+                SELECT device_id, pitl_l4_distance, pitl_l5_cv,
+                       pitl_humanity_prob, timestamp_ms
+                FROM records
+                WHERE inference = 32
+                  AND pitl_l4_distance IS NOT NULL
+                  AND pitl_l4_warmed = 1
+                ORDER BY timestamp_ms DESC
+                LIMIT ?
+                """,
+                (limit,),
+            ).fetchall()
+        return [dict(r) for r in rows]
+
+    def upsert_player_calibration_profile(
+        self,
+        device_id: str,
+        anomaly_threshold: float,
+        continuity_threshold: float,
+        baseline_mean: float,
+        baseline_std: float,
+        session_count: int,
+    ) -> None:
+        """Insert or replace a per-player calibration profile (Phase 38)."""
+        import datetime as _dt
+        updated_at = _dt.datetime.utcnow().isoformat() + "Z"
+        with self._conn() as conn:
+            conn.execute(
+                """
+                INSERT OR REPLACE INTO player_calibration_profiles
+                    (device_id, anomaly_threshold, continuity_threshold,
+                     baseline_mean, baseline_std, session_count, updated_at)
+                VALUES (?, ?, ?, ?, ?, ?, ?)
+                """,
+                (device_id, anomaly_threshold, continuity_threshold,
+                 baseline_mean, baseline_std, session_count, updated_at),
+            )
+
+    def get_player_calibration_profile(self, device_id: str) -> dict | None:
+        """Return the per-player calibration profile for a device, or None (Phase 38)."""
+        with self._conn() as conn:
+            row = conn.execute(
+                "SELECT * FROM player_calibration_profiles WHERE device_id = ?",
+                (device_id,),
+            ).fetchone()
+        return dict(row) if row else None
+
+    def get_all_player_calibration_profiles(self) -> list[dict]:
+        """Return all per-player calibration profiles (Phase 38)."""
+        with self._conn() as conn:
+            rows = conn.execute(
+                "SELECT * FROM player_calibration_profiles ORDER BY updated_at DESC"
             ).fetchall()
         return [dict(r) for r in rows]

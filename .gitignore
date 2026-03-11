@@ -81,6 +81,9 @@ device_key.json
 identity.json
 .env.local
 .env.*.local
+bridge_config.json
+bridge/.env.core
+bridge/.env.phase*
 
 # OS
 .DS_Store

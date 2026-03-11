@@ -3,7 +3,7 @@ Phase 13 — tinyml_biometric_fusion.py tests.
 
 Tests cover:
 - BiometricFeatureFrame.to_vector() shape and values
-- BiometricFeatureExtractor.extract() with synthetic snapshots
+- BiometricFeatureExtractor().extract() with synthetic snapshots
 - BiometricFusionClassifier: warmup period, fingerprint update, anomaly detection
 - Inference code 0x30 (BIOMETRIC_ANOMALY) is outside cheat range [0x28, 0x2A]
 - compute_sensor_commitment_v2_bio() produces 32 bytes
@@ -98,13 +98,13 @@ class TestBiometricFeatureFrame(unittest.TestCase):
 class TestBiometricFeatureExtractor(unittest.TestCase):
 
     def test_extract_returns_zeros_for_too_few_frames(self):
-        frame = BiometricFeatureExtractor.extract([_Snap() for _ in range(5)])
+        frame = BiometricFeatureExtractor().extract([_Snap() for _ in range(5)])
         v = frame.to_vector()
         self.assertTrue(all(x == 0.0 for x in v))
 
     def test_extract_returns_7_dim_feature_frame(self):
         snaps = _make_snaps(60, vary_trigger=True)
-        frame = BiometricFeatureExtractor.extract(snaps)
+        frame = BiometricFeatureExtractor().extract(snaps)
         v = frame.to_vector()
         self.assertEqual(v.shape, (11,))
 
@@ -119,12 +119,12 @@ class TestBiometricFeatureExtractor(unittest.TestCase):
                 accel_y=0.005 * math.cos(i * 0.3),
                 accel_z=1.0,
             ))
-        frame = BiometricFeatureExtractor.extract(snaps)
+        frame = BiometricFeatureExtractor().extract(snaps)
         self.assertGreater(frame.micro_tremor_accel_variance, 0.0)
 
     def test_trigger_onset_velocity_nonzero_with_trigger_press(self):
         snaps = _make_snaps(60, vary_trigger=True)
-        frame = BiometricFeatureExtractor.extract(snaps)
+        frame = BiometricFeatureExtractor().extract(snaps)
         # At least one of l2/r2 onset velocity should be nonzero
         self.assertGreaterEqual(
             frame.trigger_onset_velocity_l2 + frame.trigger_onset_velocity_r2, 0.0
@@ -137,20 +137,20 @@ class TestBiometricFusionClassifier(unittest.TestCase):
         clf = BiometricFusionClassifier()
         snaps = _make_snaps(60, vary_trigger=True)
         for _ in range(n):
-            frame = BiometricFeatureExtractor.extract(snaps)
+            frame = BiometricFeatureExtractor().extract(snaps)
             clf.update_fingerprint(frame)
         return clf
 
     def test_not_warmed_up_returns_none(self):
         clf = BiometricFusionClassifier()
-        frame = BiometricFeatureExtractor.extract(_make_snaps(60))
+        frame = BiometricFeatureExtractor().extract(_make_snaps(60))
         result = clf.classify(frame)
         self.assertIsNone(result)
 
     def test_normal_session_returns_none_after_warmup(self):
         # Same snaps for warmup and test — should be within normal range
         clf = self._make_classifier_warmed(n=7)
-        frame = BiometricFeatureExtractor.extract(_make_snaps(60, vary_trigger=True))
+        frame = BiometricFeatureExtractor().extract(_make_snaps(60, vary_trigger=True))
         # May or may not return None depending on exact distance; just check type
         result = clf.classify(frame)
         self.assertIsNone(result)  # identical inputs should be within range
@@ -178,7 +178,7 @@ class TestBiometricFusionClassifier(unittest.TestCase):
         clf = BiometricFusionClassifier()
         h1 = clf.fingerprint_hash()
         snaps = _make_snaps(60, vary_trigger=True)
-        clf.update_fingerprint(BiometricFeatureExtractor.extract(snaps))
+        clf.update_fingerprint(BiometricFeatureExtractor().extract(snaps))
         h2 = clf.fingerprint_hash()
         self.assertNotEqual(h1, h2)
 
@@ -280,7 +280,7 @@ class TestTremorFFT(unittest.TestCase):
     def test_tremor_peak_hz_detects_8hz(self):
         """8 Hz oscillation → tremor_peak_hz ∈ [6, 10]. Needs >=512 frames for FFT."""
         snaps = self._snaps_with_tremor(8.0, n=600)  # 600 snaps, 599 velocity samples >= 512
-        feats = BiometricFeatureExtractor.extract(snaps, window_frames=600)
+        feats = BiometricFeatureExtractor().extract(snaps, window_frames=600)
         self.assertGreater(feats.tremor_peak_hz, 0.0)
         self.assertGreaterEqual(feats.tremor_peak_hz, 6.0)
         self.assertLessEqual(feats.tremor_peak_hz, 10.0,
@@ -289,7 +289,7 @@ class TestTremorFFT(unittest.TestCase):
     def test_tremor_peak_hz_detects_10hz(self):
         """10 Hz oscillation → tremor_peak_hz ∈ [8, 12]. Needs >=512 frames for FFT."""
         snaps = self._snaps_with_tremor(10.0, n=600)  # 600 snaps, 599 velocity samples >= 512
-        feats = BiometricFeatureExtractor.extract(snaps, window_frames=600)
+        feats = BiometricFeatureExtractor().extract(snaps, window_frames=600)
         self.assertGreaterEqual(feats.tremor_peak_hz, 8.0)
         self.assertLessEqual(feats.tremor_peak_hz, 12.0,
                              msg=f"Expected ~10 Hz, got {feats.tremor_peak_hz:.2f}")
@@ -300,7 +300,7 @@ class TestTremorFFT(unittest.TestCase):
         A perfectly static bot has no tremor.
         """
         snaps = [_make_snap(i, rx=5000) for i in range(120)]
-        feats = BiometricFeatureExtractor.extract(snaps)
+        feats = BiometricFeatureExtractor().extract(snaps)
         # tremor_peak_hz at DC (0 Hz) or close; band_power should be very low
         self.assertLess(feats.tremor_band_power, 0.10,
                         msg="Static bot should have near-zero 8-12 Hz band power")
@@ -308,7 +308,7 @@ class TestTremorFFT(unittest.TestCase):
     def test_tremor_insufficient_data(self):
         """Fewer than 512 frames → tremor FFT fields = 0.0 (insufficient frequency resolution)."""
         snaps = [_make_snap(i, rx=int(1000 * math.sin(i))) for i in range(20)]
-        feats = BiometricFeatureExtractor.extract(snaps)
+        feats = BiometricFeatureExtractor().extract(snaps)
         # With < 10 frames extract returns zeros; with 20 frames no FFT (< 512 threshold)
         self.assertEqual(feats.tremor_peak_hz, 0.0)
         self.assertEqual(feats.tremor_band_power, 0.0)
@@ -316,7 +316,7 @@ class TestTremorFFT(unittest.TestCase):
     def test_tremor_band_power_is_fraction(self):
         """tremor_band_power ∈ [0, 1] for any input."""
         snaps = self._snaps_with_tremor(10.0, n=120)
-        feats = BiometricFeatureExtractor.extract(snaps)
+        feats = BiometricFeatureExtractor().extract(snaps)
         self.assertGreaterEqual(feats.tremor_band_power, 0.0)
         self.assertLessEqual(feats.tremor_band_power, 1.0)
 
@@ -328,20 +328,20 @@ class TestTouchpadBiometric(unittest.TestCase):
         """50% active frames → touchpad_active_fraction ≈ 0.5."""
         snaps = [_make_snap(i, touch_active=(i % 2 == 0), touch0_x=960)
                  for i in range(120)]
-        feats = BiometricFeatureExtractor.extract(snaps)
+        feats = BiometricFeatureExtractor().extract(snaps)
         self.assertAlmostEqual(feats.touchpad_active_fraction, 0.5, delta=0.05)
 
     def test_no_touch_zero_fraction(self):
         """No touch → fraction = 0, variance = 0."""
         snaps = [_make_snap(i, touch_active=False) for i in range(120)]
-        feats = BiometricFeatureExtractor.extract(snaps)
+        feats = BiometricFeatureExtractor().extract(snaps)
         self.assertAlmostEqual(feats.touchpad_active_fraction, 0.0)
         self.assertAlmostEqual(feats.touch_position_variance, 0.0)
 
     def test_touch_position_variance_consistent(self):
         """Consistent touch position → variance ≈ 0."""
         snaps = [_make_snap(i, touch_active=True, touch0_x=960) for i in range(120)]
-        feats = BiometricFeatureExtractor.extract(snaps)
+        feats = BiometricFeatureExtractor().extract(snaps)
         self.assertAlmostEqual(feats.touch_position_variance, 0.0, places=4)
 
     def test_touch_position_variance_spread(self):
@@ -349,13 +349,13 @@ class TestTouchpadBiometric(unittest.TestCase):
         rng = np.random.default_rng(42)
         xs = rng.integers(0, 1920, size=120)
         snaps = [_make_snap(i, touch_active=True, touch0_x=int(xs[i])) for i in range(120)]
-        feats = BiometricFeatureExtractor.extract(snaps)
+        feats = BiometricFeatureExtractor().extract(snaps)
         self.assertGreater(feats.touch_position_variance, 0.0)
 
     def test_touch_variance_below_min_frames(self):
         """Fewer than 3 active touch frames → touch_position_variance = 0.0."""
         snaps = [_make_snap(i, touch_active=(i < 2), touch0_x=500) for i in range(120)]
-        feats = BiometricFeatureExtractor.extract(snaps)
+        feats = BiometricFeatureExtractor().extract(snaps)
         self.assertAlmostEqual(feats.touch_position_variance, 0.0)
 
 
@@ -412,7 +412,7 @@ class TestFeatureVectorDimension(unittest.TestCase):
             )
             snaps.append(snap)
 
-        feats = BiometricFeatureExtractor.extract(snaps)
+        feats = BiometricFeatureExtractor().extract(snaps)
         self.assertEqual(len(feats.to_vector()), 11)
         # Tremor peak should be > 0 from real stick data (not static)
         # (if stick is active enough to have a non-DC peak)
@@ -530,6 +530,161 @@ class TestZeroVarianceExclusion(unittest.TestCase):
             after_distance, 1000.0,
             f"trigger_resistance_change_rate (zero-var in training) was NOT excluded — "
             f"distance={after_distance:.3f}",
+        )
+
+
+class TestFFTRingBuffer(unittest.TestCase):
+    """Phase 41: BiometricFeatureExtractor stateful ring-buffer tests."""
+
+    def _snap(self, rx: float = 0.0, ift_us: int = 1000) -> object:
+        class S:
+            right_stick_x = rx; inter_frame_us = ift_us
+            left_stick_x = 0; left_stick_y = 0; right_stick_y = 0
+            l2_trigger = 0; r2_trigger = 0
+            gyro_x = 0.0; gyro_y = 0.0; gyro_z = 0.0
+            accel_x = 0.0; accel_y = 0.0; accel_z = 1.0
+            l2_effect_mode = 0; r2_effect_mode = 0
+            touch_active = False; touch0_x = 0
+        return S()
+
+    def test_ring_buffer_activates_tremor_after_accumulation(self):
+        """After 513+ cumulative frames, tremor FFT activates even in live mode."""
+        import math
+        extractor = BiometricFeatureExtractor()
+        fs = 1000.0
+        # First call: 120 frames of 8 Hz oscillation (ring buffer has 120 entries → inactive)
+        snaps_a = [self._snap(rx=1000 * math.sin(2 * math.pi * 8.0 * i / fs))
+                   for i in range(120)]
+        feats_a = extractor.extract(snaps_a)
+        self.assertEqual(feats_a.tremor_peak_hz, 0.0, "ring < 513, FFT should be inactive")
+
+        # Continue with 4 more calls of 120 frames (total 600 → ring capped at 513)
+        for k in range(4):
+            snaps_k = [self._snap(rx=1000 * math.sin(2 * math.pi * 8.0 * (120 * (k + 1) + i) / fs))
+                       for i in range(120)]
+            extractor.extract(snaps_k)
+
+        # Now ring has 513 entries; tremor should be detectable
+        snaps_final = [self._snap(rx=1000 * math.sin(2 * math.pi * 8.0 * (600 + i) / fs))
+                       for i in range(120)]
+        feats_final = extractor.extract(snaps_final)
+        self.assertGreater(feats_final.tremor_peak_hz, 0.0,
+                           "ring >= 513, tremor FFT should activate")
+        self.assertGreaterEqual(feats_final.tremor_peak_hz, 5.0,
+                                f"Expected ~8 Hz, got {feats_final.tremor_peak_hz:.2f}")
+
+    def test_fresh_instance_has_no_ring_state(self):
+        """Each BiometricFeatureExtractor instance starts with an empty ring."""
+        extractor = BiometricFeatureExtractor()
+        # Exactly 120 frames → ring < 513 → FFT inactive
+        snaps = [self._snap(rx=1000.0) for _ in range(120)]
+        feats = extractor.extract(snaps)
+        self.assertEqual(feats.tremor_peak_hz, 0.0)
+        self.assertEqual(feats.tremor_band_power, 0.0)
+
+    def test_large_window_activates_fft_immediately(self):
+        """Calibration window (>= 513 snaps) fills ring in one call → FFT active."""
+        import math
+        extractor = BiometricFeatureExtractor()
+        fs = 1000.0
+        n = 600  # > 513
+        snaps = [self._snap(rx=1000 * math.sin(2 * math.pi * 10.0 * i / fs)) for i in range(n)]
+        feats = extractor.extract(snaps, window_frames=600)
+        self.assertGreater(feats.tremor_peak_hz, 0.0,
+                           "Single large-window call should activate FFT")
+
+
+class TestFullCovariance(unittest.TestCase):
+    """Phase 41: BiometricFusionClassifier full covariance tests."""
+
+    def _make_frame(self, **kwargs) -> BiometricFeatureFrame:
+        defaults = dict(
+            trigger_resistance_change_rate=0.0,
+            trigger_onset_velocity_l2=0.3,
+            trigger_onset_velocity_r2=0.4,
+            micro_tremor_accel_variance=1000.0,
+            grip_asymmetry=1.2,
+            stick_autocorr_lag1=0.5,
+            stick_autocorr_lag5=0.2,
+            tremor_peak_hz=9.0,
+            tremor_band_power=0.25,
+            touchpad_active_fraction=0.0,
+            touch_position_variance=0.0,
+        )
+        defaults.update(kwargs)
+        return BiometricFeatureFrame(**defaults)
+
+    def test_full_cov_disabled_by_default(self):
+        """USE_FULL_COVARIANCE is False by default."""
+        clf = BiometricFusionClassifier()
+        self.assertFalse(clf.USE_FULL_COVARIANCE)
+
+    def test_full_cov_enabled_changes_distance(self):
+        """With correlated features, full covariance yields a different distance than diagonal."""
+        import numpy as np
+
+        # Two classifiers, same training, different mode
+        clf_diag = BiometricFusionClassifier()
+        clf_full = BiometricFusionClassifier()
+        clf_full.USE_FULL_COVARIANCE = True
+
+        base = self._make_frame()
+        # Train both with identical nominal sessions + deliberate correlation:
+        # session alternates between two off-mean variants to create covariance
+        alt_a = self._make_frame(grip_asymmetry=1.6, trigger_onset_velocity_l2=0.6)
+        alt_b = self._make_frame(grip_asymmetry=0.8, trigger_onset_velocity_l2=0.1)
+        for i in range(clf_diag.N_WARMUP_SESSIONS + 20):
+            f = alt_a if i % 2 == 0 else alt_b
+            clf_diag.update_fingerprint(f)
+            clf_full.update_fingerprint(f)
+
+        # Query with an off-nominal frame that deviates in the correlated direction
+        query = self._make_frame(grip_asymmetry=3.0, trigger_onset_velocity_l2=1.5)
+        clf_diag.classify(query)
+        clf_full.classify(query)
+
+        # Distances need not be equal — full cov captures joint deviation
+        # (they can go either way depending on correlation sign, but must differ)
+        self.assertIsInstance(clf_diag.last_distance, float)
+        self.assertIsInstance(clf_full.last_distance, float)
+        self.assertNotAlmostEqual(
+            clf_diag.last_distance, clf_full.last_distance, places=3,
+            msg="Full covariance distance should differ from diagonal distance",
+        )
+
+    def test_full_cov_fallback_on_singular_matrix(self):
+        """Singular covariance matrix falls back to diagonal distance without raising."""
+        clf = BiometricFusionClassifier()
+        clf.USE_FULL_COVARIANCE = True
+
+        # Train with constant features → covariance is singular (zero off-diagonals, zero diag too)
+        const_frame = self._make_frame(grip_asymmetry=1.0, trigger_onset_velocity_l2=0.3,
+                                       trigger_onset_velocity_r2=0.4)
+        for _ in range(clf.N_WARMUP_SESSIONS + 5):
+            clf.update_fingerprint(const_frame)
+
+        query = self._make_frame(grip_asymmetry=2.5)
+        # Should not raise, should return a float distance
+        try:
+            clf.classify(query)
+        except Exception as e:
+            self.fail(f"classify() raised unexpectedly with singular cov: {e}")
+        self.assertIsInstance(clf.last_distance, float)
+
+    def test_fingerprint_hash_differs_in_full_cov_mode(self):
+        """fingerprint_hash() includes covariance data when USE_FULL_COVARIANCE=True."""
+        clf_diag = BiometricFusionClassifier()
+        clf_full = BiometricFusionClassifier()
+        clf_full.USE_FULL_COVARIANCE = True
+
+        frame = self._make_frame(grip_asymmetry=1.5)
+        for _ in range(3):
+            clf_diag.update_fingerprint(frame)
+            clf_full.update_fingerprint(frame)
+
+        self.assertNotEqual(
+            clf_diag.fingerprint_hash(), clf_full.fingerprint_hash(),
+            "Full-cov mode fingerprint hash should differ (includes cov matrix)",
         )
 
 

@@ -1,7 +1,7 @@
 /**
  * PHGCredentialEnforcement Tests — Phase 37
  *
- * 8 tests covering:
+ * 10 tests covering:
  *   1. suspend() sets isSuspended=true + emits CredentialSuspended
  *   2. reinstate() sets isSuspended=false + emits CredentialReinstated
  *   3. isActive() returns false when suspended
@@ -10,6 +10,8 @@
  *   6. reinstate() reverts NotSuspended when not suspended
  *   7. suspend() reverts CredentialNotMinted when no credential
  *   8. Non-bridge address reverts OnlyBridge
+ *   9. isActive() returns true after suspendedUntil has elapsed (auto-expiry)
+ *  10. suspend() allows re-suspension after auto-expiry without reinstate()
  */
 
 const { expect } = require("chai");
@@ -130,5 +132,39 @@ describe("PHGCredentialEnforcement (Phase 37)", function () {
     await expect(
       cred.connect(other).suspend(DEVICE_A, EVIDENCE, 86400n)
     ).to.be.revertedWithCustomError(cred, "OnlyBridge");
+  });
+
+  // 9 — auto-expiry: isActive() must return true once suspendedUntil has elapsed
+  it("9. isActive() returns true after suspendedUntil has elapsed (auto-expiry)", async function () {
+    const duration = 3600; // 1 hour
+    await cred.connect(bridge).suspend(DEVICE_A, EVIDENCE, duration);
+    expect(await cred.isActive(DEVICE_A)).to.equal(false); // suspended now
+
+    // Advance EVM clock past the suspension window
+    await ethers.provider.send("evm_increaseTime", [duration + 1]);
+    await ethers.provider.send("evm_mine", []);
+
+    // isSuspended flag is still true (not cleared), but isActive() auto-expires
+    expect(await cred.isSuspended(DEVICE_A)).to.equal(true);
+    expect(await cred.isActive(DEVICE_A)).to.equal(true);
+  });
+
+  // 10 — re-suspension: bridge can re-suspend after auto-expiry without reinstate()
+  it("10. suspend() allows re-suspension after auto-expiry without calling reinstate()", async function () {
+    const duration = 3600; // 1 hour
+    await cred.connect(bridge).suspend(DEVICE_A, EVIDENCE, duration);
+
+    // Advance past the first suspension window
+    await ethers.provider.send("evm_increaseTime", [duration + 1]);
+    await ethers.provider.send("evm_mine", []);
+
+    // Re-suspend with a new duration — must NOT revert AlreadySuspended
+    const newEvidence = ethers.zeroPadBytes("0xff", 32);
+    await expect(
+      cred.connect(bridge).suspend(DEVICE_A, newEvidence, 86400)
+    ).to.not.be.reverted;
+
+    expect(await cred.isSuspended(DEVICE_A)).to.equal(true);
+    expect(await cred.isActive(DEVICE_A)).to.equal(false);
   });
 });

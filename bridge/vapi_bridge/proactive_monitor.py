@@ -40,7 +40,7 @@ class ProactiveMonitor:
     """
 
     def __init__(self, store, behavioral_arch, network_detector, agent, cfg,
-                 poll_interval: float = 60.0):
+                 poll_interval: float = 60.0, calibration_agent=None):
         self._store = store
         self._behavioral_arch = behavioral_arch
         self._network_detector = network_detector
@@ -51,6 +51,8 @@ class ProactiveMonitor:
         # Phase 36: time-bounded dedup dict (frozenset → monotonic timestamp)
         # Replaced unbounded set to prevent memory growth on long-running bridges.
         self._known_flagged_clusters: dict[frozenset, float] = {}
+        # Phase 17: autonomous calibration agent (4th surveillance check)
+        self._calibration_agent = calibration_agent
 
     async def run(self) -> None:
         """Main loop — poll every _poll_interval seconds."""
@@ -65,10 +67,29 @@ class ProactiveMonitor:
                 log.warning("ProactiveMonitor cycle error (non-fatal): %s", exc)
 
     async def _monitor_cycle(self) -> None:
-        """Run all three surveillance checks."""
+        """Run all surveillance checks (4 in Phase 17)."""
         await self._check_anomaly_clusters()
         await self._check_high_risk_trajectories()
         await self._check_eligibility_horizons()
+        await self._check_auto_calibration()
+
+    async def _check_auto_calibration(self) -> None:
+        """Phase 17: Run autonomous L4 threshold recalibration check."""
+        if self._calibration_agent is None:
+            return
+        try:
+            result = await self._calibration_agent.check_and_recalibrate()
+            if result:
+                severity = "critical" if ("REJECTED" in result or "Error" in result) else "info"
+                await self._dispatch_alert(
+                    insight_type="calibration_auto",
+                    device_id="",
+                    content=result,
+                    severity=severity,
+                    extra={"auto_calibration": True},
+                )
+        except Exception as exc:
+            log.warning("_check_auto_calibration error (non-fatal): %s", exc)
 
     def _evict_stale_clusters(self) -> int:
         """Remove cluster dedup entries older than 24h. Returns eviction count (Phase 36)."""

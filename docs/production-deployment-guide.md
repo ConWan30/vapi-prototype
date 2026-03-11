@@ -264,6 +264,91 @@ python bridge/scripts/generate_bridge_keystore.py
 
 ---
 
+## Auto-Calibration Agent (Phase 17)
+
+The `CalibrationAgent` runs as the ProactiveMonitor's 4th surveillance check and
+automatically recalibrates L4 biometric thresholds as new human sessions accumulate —
+replacing the manual `python scripts/threshold_calibrator.py sessions/human/hw_*.json` step.
+
+### Activation Requirements
+
+The agent activates automatically when **both** conditions hold at bridge startup:
+
+1. `OPERATOR_API_KEY` is set in the bridge environment (enables the ProactiveMonitor)
+2. The `BridgeAgent` (Claude tool-use) is initialised (requires `ANTHROPIC_API_KEY`)
+
+```bash
+# Minimum env to activate auto-calibration
+OPERATOR_API_KEY=your-operator-key-here
+ANTHROPIC_API_KEY=sk-ant-...
+```
+
+If either is absent, the bridge logs `CalibrationAgent unavailable` and continues
+without auto-calibration. No sessions or detection are affected.
+
+### What It Does
+
+| Parameter | Value | Description |
+|-----------|-------|-------------|
+| `RECALIB_SESSION_DELTA` | 5 | New sessions before recalibration triggers |
+| `MAX_THRESHOLD_DELTA` | 10% | Maximum fractional threshold change allowed |
+| `MIN_INTERVAL_SECS` | 6 h | Minimum time between calibration runs |
+| Sessions dir | `sessions/human/` | Watches `hw_*.json` files |
+| Polling rate filter | 800–1100 Hz | Excludes anomalous sessions (USB issues) |
+
+On each ProactiveMonitor cycle (~60 s default):
+
+1. Counts `hw_*.json` files in `sessions/human/` with valid polling rate (800–1100 Hz)
+2. Skips if delta from last calibration run < 5 sessions or < 6 hours since last run
+3. Runs `threshold_calibrator.py` as a subprocess (timeout 180 s)
+4. Parses new `L4 anomaly_threshold` and `L4 continuity_threshold` from stdout
+5. **Safety guard:** rejects if either threshold changes > 10% from current value
+6. Applies new thresholds live to `cfg.l4_anomaly_threshold` / `cfg.l4_continuity_threshold`
+7. Logs result and writes a `calibration_auto` insight to `protocol_insights`
+
+### Verifying the Agent is Running
+
+```bash
+# Bridge logs on startup (INFO level)
+# "Phase 17: CalibrationAgent attached to ProactiveMonitor"
+
+# Check for calibration events in insights
+curl -s http://localhost:8080/insights | jq '.[] | select(.type=="calibration_auto")'
+
+# Or check session quality flags (excluded sessions)
+curl -s http://localhost:8080/insights | jq '.[] | select(.type=="session_quality_flag")'
+```
+
+### Manual Override
+
+To force a calibration run outside the normal cycle:
+
+```bash
+# Run calibrator directly against all valid sessions
+python scripts/threshold_calibrator.py sessions/human/hw_*.json
+
+# Output format (parsed by CalibrationAgent):
+# L4 anomaly_threshold: 7.019
+# L4 continuity_threshold: 5.369
+
+# Then restart the bridge to load new defaults from calibration_profile.json
+```
+
+The manual script writes updated thresholds to `calibration_profile.json`. The bridge
+reads defaults from env vars `L4_ANOMALY_THRESHOLD` / `L4_CONTINUITY_THRESHOLD`
+(overrides `calibration_profile.json`) or directly from the file on import.
+
+### Troubleshooting
+
+| Symptom | Cause | Fix |
+|---------|-------|-----|
+| `CalibrationAgent unavailable` in logs | `OPERATOR_API_KEY` or `ANTHROPIC_API_KEY` not set | Set both env vars |
+| `REJECTED: delta X.X% exceeds 10% limit` | New threshold deviates > 10% from current | Review sessions for outliers; run manual calibration after inspection |
+| `Calibration subprocess failed` | `threshold_calibrator.py` error | Run manually to see full error output |
+| Agent never fires | < 5 new sessions or < 6 h since last run | Add sessions or lower `RECALIB_SESSION_DELTA` via subclass |
+
+---
+
 ## Security Checklist
 
 - [ ] All contract addresses saved to a secure location
@@ -275,6 +360,8 @@ python bridge/scripts/generate_bridge_keystore.py
 - [ ] Bridge wallet balance monitored (set up an alert at < 0.1 IOTX)
 - [ ] `/monitor/health` endpoint accessible to your monitoring stack
 - [ ] iotexscan.io contract verification complete for all contracts
+- [ ] Auto-calibration agent logs `CalibrationAgent attached to ProactiveMonitor` at startup (if operator key configured)
+- [ ] `sessions/human/` directory writable and contains ≥ 5 `hw_*.json` sessions for first calibration cycle
 
 ---
 

@@ -59,8 +59,8 @@ class TestL6Integration(unittest.TestCase):
         _stub_hardware_modules()
         from vapi_bridge import dualshock_integration
         src = inspect.getsource(dualshock_integration.DualShockTransport._session_loop)
-        # L6-active branch
-        self.assertIn("0.35 * _p_l4", src)
+        # L6-active branch (Phase 17 reweighted: +L2B/L2C oracles)
+        self.assertIn("0.23 * _p_l4", src)
         self.assertIn("0.15 * self._l6_p_human", src)
 
     def test_4_humanity_formula_contains_fallback_branch(self):
@@ -68,9 +68,9 @@ class TestL6Integration(unittest.TestCase):
         _stub_hardware_modules()
         from vapi_bridge import dualshock_integration
         src = inspect.getsource(dualshock_integration.DualShockTransport._session_loop)
-        # L6-disabled fallback (original formula)
-        self.assertIn("0.4 * _p_l4", src)
-        self.assertIn("0.2 * _p_e4", src)
+        # L6-disabled fallback (Phase 17 reweighted: +L2B/L2C oracles)
+        self.assertIn("0.28 * _p_l4", src)
+        self.assertIn("0.20 * _p_e4", src)
 
     def test_5_sensor_commitment_52_bytes_when_l6_pending(self):
         """Sensor commitment extends to 52 bytes when L6 is active with a pending challenge."""

@@ -197,12 +197,11 @@ class CalibrationAgent:
                 content = (
                     f"Session quality excluded: {flag['session']} — {flag['reason']}"
                 )
-                self._store.store_insight(
-                    insight_type="session_quality_flag",
+                self._store.store_protocol_insight(
+                    "session_quality_flag",
+                    content,
                     device_id="",
-                    content=content,
                     severity="warning",
-                    extra=flag,
                 )
         except Exception as exc:
             log.debug("Could not persist session quality flags: %s", exc)

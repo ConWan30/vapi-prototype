@@ -229,14 +229,14 @@ class TestSessionQuality(unittest.TestCase):
         self.assertIn("hw_001.json", str(valid[0]))
 
     def test_quality_flags_persisted(self):
-        """_persist_quality_flags() calls store.store_insight for each flag."""
+        """_persist_quality_flags() calls store.store_protocol_insight for each flag."""
         agent = _make_agent()
         flags = [
             {"session": "hw_043.json", "polling_rate_hz": 203.0,
              "reason": "polling_rate 203 Hz outside [800, 1100] Hz"},
         ]
         agent._persist_quality_flags(flags)
-        agent._store.store_insight.assert_called_once()
+        agent._store.store_protocol_insight.assert_called_once()
 
 
 # ---------------------------------------------------------------------------

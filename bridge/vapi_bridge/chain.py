@@ -1471,6 +1471,7 @@ class ChainClient:
         proof_bytes: bytes,
         feature_commitment: int,
         humanity_prob_int: int,
+        inference_code: int,
         nullifier_hash: int,
         epoch: int,
     ) -> str:
@@ -1483,6 +1484,9 @@ class ChainClient:
             proof_bytes:        256-byte Groth16 proof wire format.
             feature_commitment: Poseidon(scaledFeatures[0..6]) as integer.
             humanity_prob_int:  l5_humanity × 1000 ∈ [0, 1000].
+            inference_code:     8-bit VAPI inference result (e.g. 0x00 CLEAN, 0x30 L4 anomaly).
+                                Circuit C2 enforces this ∉ [40, 42] — a proof with a hard
+                                cheat code is ungenerable, so submission would never reach here.
             nullifier_hash:     Poseidon(deviceIdHash, epoch) as integer.
             epoch:              Block epoch (block.number / EPOCH_BLOCKS).
 
@@ -1499,12 +1503,13 @@ class ChainClient:
             proof_bytes,
             feature_commitment,
             humanity_prob_int,
+            inference_code,
             nullifier_hash,
             epoch,
         )
         log.info(
-            "PITLSessionProof submitted: device=%s hp=%d tx=%s",
-            device_id[:16], humanity_prob_int, tx_hash[:16],
+            "PITLSessionProof submitted: device=%s hp=%d inference=0x%02x tx=%s",
+            device_id[:16], humanity_prob_int, inference_code, tx_hash[:16],
         )
         return tx_hash
 

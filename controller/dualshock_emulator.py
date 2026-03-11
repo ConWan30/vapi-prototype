@@ -263,8 +263,9 @@ class PoACRecord:
         return self.serialize_body() + self.signature
 
     def record_hash(self) -> bytes:
-        """SHA-256 of the full 228-byte record (for chain linkage)."""
-        return hashlib.sha256(self.serialize_full()).digest()
+        """SHA-256 of the 164-byte body — matches PoACVerifier.sol chain tracking.
+        Contract: recordHash = sha256(_rawBody). Stored as lastRecordHash / chain head."""
+        return hashlib.sha256(self.serialize_body()).digest()
 
     def to_dict(self) -> dict:
         return {
@@ -396,8 +397,9 @@ class PoACEngine:
         full = record.serialize_full()
         assert len(full) == POAC_RECORD_SIZE, f"Record size mismatch: {len(full)}"
 
-        # Update chain head
-        self.chain_head = hashlib.sha256(full).digest()
+        # Update chain head — SHA-256 of body only, matching PoACVerifier.sol:
+        # `recordHash = sha256(_rawBody)` → stored as `chain.lastRecordHash`
+        self.chain_head = hashlib.sha256(record.serialize_body()).digest()
 
         return record
 

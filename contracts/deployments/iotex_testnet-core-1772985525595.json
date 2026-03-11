@@ -1,0 +1,14 @@
+{
+  "network": "iotex_testnet",
+  "chainId": 4690,
+  "deployer": "0xfCF4681e57C8de9650c3Eb4dA8e26dC9441A5EF1",
+  "timestamp": "2026-03-08T15:58:45.595Z",
+  "contracts": {
+    "TieredDeviceRegistry": "0x73753E916eEE0DAfEc1f6a16d98d4E4aFf9E8230",
+    "PoACVerifier": "0x26178AD95DB507f0D298fAAFC19752fC86166c6C",
+    "BountyMarket": "0x6B288EfbC26cDBd02d1e3735299274597242315E",
+    "SkillOracle": "0xABA74481066bAdC72c6f51Fb1af3E0eD6BfbCe50",
+    "ProgressAttestation": "0x822be18aC92520A7fdb4887f10BfB340edEb8AB1",
+    "TeamProofAggregator": "0x0b4227CE704Ca780a9CeDD3Ab0F277E81e0008F4"
+  }
+}

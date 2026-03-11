@@ -399,7 +399,10 @@ contract PoACVerifier is Ownable, ReentrancyGuard {
         verifiedRecords[recordHash] = true;  // Attestation registry: body fully verified
         totalVerifiedCount++;
 
-        // 11. Update device reputation
+        // 11. Update device reputation (Checks-Effects-Interactions: external call
+        //     is intentionally AFTER all state updates above so on-chain state is
+        //     fully committed before any external read.  The nonReentrant guard on
+        //     entry points prevents reentrant calls back into this contract.)
         try deviceRegistry.updateReputation(_deviceId, 1, 0, 0) {} catch {}
 
         // 12. Emit event

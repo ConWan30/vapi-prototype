@@ -285,19 +285,22 @@ class Config:
     )
 
     # --- L4 Calibration: Hardware-derived Mahalanobis thresholds ---
-    # Default: design-time magic numbers. Set from calibration_profile.json after N>=50 sessions.
-    # Use scripts/threshold_calibrator.py to derive production values.
+    # Calibrated from N=69 sessions (2 players, DualShock Edge USB, 2026-03-07).
+    # anomaly  = mean+3sigma (99.7th pct) = 6.905  [converging — delta vs N=54 was +0.124]
+    # continuity = mean+2sigma (95th pct) = 5.190
+    # Use scripts/threshold_calibrator.py to recalibrate after new sessions.
     l4_anomaly_threshold: float = field(
-        default_factory=lambda: float(_env("L4_ANOMALY_THRESHOLD", "5.869"))
+        default_factory=lambda: float(_env("L4_ANOMALY_THRESHOLD", "6.905"))
     )
     l4_continuity_threshold: float = field(
-        default_factory=lambda: float(_env("L4_CONTINUITY_THRESHOLD", "4.617"))
+        default_factory=lambda: float(_env("L4_CONTINUITY_THRESHOLD", "5.190"))
     )
 
     # --- L5 Calibration: TemporalRhythmOracle thresholds ---
-    # CV threshold: bot timing CV < 0.08 (human baseline N=50: ~0.34 -- 4x margin)
-    # Entropy threshold: bot entropy < 1.0 bits (human baseline N=50: ~1.38 bits)
-    # Use scripts/threshold_calibrator.py to derive production values.
+    # CV threshold: bot timing CV < 0.08 (adversarially calibrated; human 10th pct N=54: 0.789 -- 10x margin)
+    # Entropy threshold: bot entropy < 1.0 bits (human 10th pct N=54: 1.259 -- safe margin)
+    # NOTE: DO NOT raise CV/entropy thresholds to human percentiles -- that creates FP rate.
+    # These thresholds are adversarially set far below the human floor, not from human data.
     l5_cv_threshold: float = field(
         default_factory=lambda: float(_env("L5_CV_THRESHOLD", "0.08"))
     )
@@ -311,7 +314,7 @@ class Config:
     # Recalibrate: python scripts/threshold_calibrator.py sessions/bt/*.json
     bt_l4_anomaly_threshold: float = field(
         default_factory=lambda: float(
-            _env("BT_L4_ANOMALY_THRESHOLD", _env("L4_ANOMALY_THRESHOLD", "5.869"))
+            _env("BT_L4_ANOMALY_THRESHOLD", _env("L4_ANOMALY_THRESHOLD", "6.905"))
         )
     )
     bt_l5_cv_threshold: float = field(

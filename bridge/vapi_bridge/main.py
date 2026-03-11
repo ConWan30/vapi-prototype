@@ -331,9 +331,18 @@ class Bridge:
         # Phase 32: Start ProactiveMonitor — autonomous protocol surveillance
         if getattr(self.cfg, "operator_api_key", "") and _agent_instance is not None:
             from .proactive_monitor import ProactiveMonitor
+            # Phase 17: Auto-calibration agent (4th ProactiveMonitor surveillance check)
+            _calibration_agent = None
+            try:
+                from .calibration_agent import CalibrationAgent
+                _calibration_agent = CalibrationAgent(store=self.store, cfg=self.cfg)
+                log.info("Phase 17: CalibrationAgent attached to ProactiveMonitor")
+            except Exception as _cal_exc:
+                log.warning("CalibrationAgent unavailable: %s", _cal_exc)
             monitor = ProactiveMonitor(
                 self.store, _arch, _net_det, _agent_instance, self.cfg,
                 poll_interval=getattr(self.cfg, "monitor_poll_interval", 60.0),
+                calibration_agent=_calibration_agent,
             )
             self._tasks.append(asyncio.create_task(monitor.run()))
             log.info(

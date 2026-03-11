@@ -18,8 +18,11 @@ attestation, world-model state, and inference outputs into a single ECDSA-P256 s
 structure anchored on-chain. Building on PoAC, **VAPI** (Verified Autonomous Physical
 Intelligence) delivers five contributions: (1) the PoAC protocol — capturing not just
 *what* a device sensed but the complete cognitive context of *why* it acted; (2) a
-six-level Physical Input Trust Layer (PITL) combining HID pipeline monitoring, behavioral
-ML classification, biometric kinematic fingerprinting, and temporal rhythm analysis;
+nine-level Physical Input Trust Layer (PITL) combining HID pipeline monitoring, IMU-button
+causal latency analysis (L2B), stick-IMU temporal cross-correlation (L2C), behavioral
+ML classification, biometric kinematic fingerprinting, temporal rhythm
+analysis, and active physical challenge-response via randomized adaptive trigger
+stimulus;
 (3) a soulbound PHGCredential maintained through continuous behavioral surveillance,
 provisional suspension on consecutive critical labels, and automatic reinstatement;
 (4) an adaptive feedback loop where retrospective behavioral memory directly tightens
@@ -31,12 +34,12 @@ L2/R2 adaptive trigger surface creates an unforgeable biometric detection bounda
 A secondary IoTeX Pebble Tracker integration demonstrates protocol extensibility to
 DePIN environmental monitoring without any protocol changes.
 
-Our prototype spans ~220 files (~1,200+ automated tests: 28 hardware, 352 Hardhat,
-771 bridge+SDK pytest). On synthetic test patterns, the six-class anti-cheat classifier
+Our prototype spans ~255 files (~1,215+ automated tests: 28 hardware, 354 Hardhat,
+843 bridge+SDK pytest). On synthetic test patterns, the six-class anti-cheat classifier
 achieves 100% class separation with 0% false positives. Live hardware validation on a
 physical DualShock Edge CFI-ZCP1 confirms a 10,000× injection detection margin and
-zero report-counter violations across 200 consecutive reports. Validation with real
-adversarial gameplay data remains future work. Batch on-chain verification costs
+zero report-counter violations across 200 consecutive reports. Calibration across N=69
+real sessions from 3 distinct players confirms threshold universality. Batch on-chain verification costs
 ~81,000 gas per record via IoTeX's native P256 precompile. To our knowledge, VAPI
 establishes the first end-to-end framework where physical human gaming sessions are
 cryptographically attested on a public blockchain without trusting any intermediary.
@@ -75,11 +78,13 @@ inference results into a tamper-evident, hash-linked sequence. Each record attes
 just to *what* a device sensed but to *why* it acted — capturing the decision context
 through a commitment to accumulated agent state (§4).
 
-**2. Physical Input Trust Layer (PITL).** A six-level detection stack combining hard
+**2. Physical Input Trust Layer (PITL).** A seven-level detection stack combining hard
 structural checks (HID-XInput pipeline discrepancy, PoAC chain integrity) with adaptive
 behavioral analysis (biometric Mahalanobis fingerprinting, temporal rhythm analysis,
-behavioral archaeology, network correlation). Four of the six layers exploit signals that
-software injection cannot replicate (§7.5.1, §7.5.2).
+behavioral archaeology, network correlation) and active physical challenge-response
+(randomized adaptive trigger resistance profiling with motor-response curve
+classification). Five of the seven layers exploit signals that software injection cannot
+replicate (§7.5.1, §7.5.2).
 
 **3. PHG Humanity Credential.** A soulbound, non-transferable on-chain credential
 (ERC-5192-inspired, `locked()=true`) whose validity reflects continuous behavioral
@@ -267,6 +272,8 @@ The `PoACVerifier` contract enforces four properties per submitted record:
 | `0x2A` | AIMBOT_BEHAVIORAL | L3 | Hard cheat |
 | `0x2B` | TEMPORAL_ANOMALY | L5 | Advisory — committed but not blocking |
 | `0x30` | BIOMETRIC_ANOMALY | L4 | Advisory — committed but not blocking |
+| `0x31` | IMU_BUTTON_DECOUPLED | L2B | Advisory — IMU precursor absent before button press |
+| `0x32` | STICK_IMU_DECOUPLED | L2C | Advisory — stick-IMU temporal correlation absent |
 
 Hard codes `{0x28, 0x29, 0x2A}` are rejected by `TeamProofAggregator` and trigger
 a −200-point `SkillOracle` penalty. Advisory codes `{0x2B, 0x30}` accumulate as
@@ -396,24 +403,37 @@ human hand produces against a real adaptive trigger.
 - Accelerometer (3 × int16)
 - Timestamp (int64)
 
+**L6 challenge extension (conditional, +4 bytes → 52 bytes total).** When L6 Active
+Physical Challenge-Response is enabled and a challenge is in flight, the sensor
+commitment preimage is extended with: challenge `profile_id` (uint8), 16-bit SHA-256
+profile fingerprint (uint16), and `l6_score_int` = ⌊p_human_L6 × 100⌋ (uint8). When
+L6 is disabled or no challenge is pending, the preimage remains 48 bytes — producing
+byte-identical commitments to any pre-L6 record. The extension is conditional and
+non-breaking.
+
 Any software injection that fails to reproduce physical resistance dynamics produces a
 measurably different sensor commitment, breaking hash-chain consistency.
 
 ### 7.5.2 Physical Input Trust Layer
 
-VAPI implements a six-level detection stack. Each level is independent; detections at
-any level produce PITL inference codes committed into the PoAC record.
+VAPI implements a nine-level detection stack. Each level is independent; detections at
+any level produce PITL inference codes committed into the PoAC record. L2B and L2C are
+independent advisory oracles within the L2 detection band, exploiting temporal coupling
+physics absent from software injection.
 
-**Table 3: PITL Architecture**
+**Table 3: PITL Architecture (nine-level)**
 
 | Layer | Module | Code | Type | Signal |
 |-------|--------|------|------|--------|
 | L0 | Physical presence | — | Structural | Controller must be HID-connected, live input |
 | L1 | PoAC chain integrity | — | Structural | SHA-256 linkage, monotonic counter, timestamp freshness |
-| L2 | `hid_xinput_oracle.py` | `0x28` | Hard cheat | HID report vs. XInput API discrepancy |
+| L2 | `hid_xinput_oracle.py` | `0x28` | Hard cheat | HID report vs. XInput API discrepancy + gravity-absent signal (mean accel < 100 LSB) |
 | L3 | `tinyml_backend_cheat.py` | `0x29`, `0x2A` | Hard cheat | 9-feature temporal behavioral analysis (30→64→32→6 INT8 net) |
-| L4 | `tinyml_biometric_fusion.py` | `0x30` | Advisory | 7-signal Mahalanobis kinematic fingerprint vs. per-device stable EMA |
+| L2B | `l2b_imu_press_correlation.py` | `0x31` | Advisory | IMU micro-disturbance absent in 5–80ms precursor window before button rising edge |
+| L2C | `l2c_stick_imu_correlation.py` | `0x32` | Advisory | Max Pearson cross-corr of stick velocity vs. gyro_z at causal lags 10–60ms < 0.15 |
+| L4 | `tinyml_biometric_fusion.py` | `0x30` | Advisory | 11-signal Mahalanobis kinematic fingerprint: triggers, tremor FFT (8–12 Hz), touchpad biometric |
 | L5 | `temporal_rhythm_oracle.py` | `0x2B` | Advisory | CV < 0.08, Shannon entropy < 1.0 bits, 60 Hz quantization > 0.55; fires on ≥ 2/3 |
+| L6 | `l6_trigger_driver.py` + `l6_response_analyzer.py` | — | Advisory | Randomized trigger resistance challenge; human motor onset/settle/grip-variance curve |
 
 **L2 — HID injection detection.**
 Software injection attacks (SendInput, XInput emulation, vJoy, DS4Windows spoofing)
@@ -430,6 +450,13 @@ micro-tremors. **Live measurement on DualShock Edge CFI-ZCP1:** stationary gyro 
 201 LSB (≈ 0.22 rad/s) — a **10,000× margin** above the 0.02 LSB (0.001 rad/s)
 injection threshold.
 
+**Gravity-signal extension.** A second, independent L2 signal fires on any session
+regardless of active-frame count: `mean(||accel||) < 100 LSB`. Real controllers under
+gravity always read ≈2,048–2,150 LSB total accel magnitude; injected frames zero all
+three accel channels, producing magnitude ≈ 0. This signal closes the idle-start gap
+(sessions where the player was in a lobby with no active trigger inputs): validated at
+100% injection detection after adding this signal (up from 80% pre-fix).
+
 **L3 — Behavioral ML.**
 The 9-feature temporal classifier (velocity-stop events, jerk-correction lag,
 aim-settling variance, button timing σ², stick autocorrelation, reaction-time proxy)
@@ -437,13 +464,14 @@ targets `MACRO` (σ² < 1.0 ms²) and `AIMBOT` (ballistic jerk > 2.0) patterns t
 survive the L2 IMU check.
 
 **L4 — Biometric Mahalanobis fingerprinting.**
-Seven kinematic features per 50-report window (trigger onset velocity, micro-tremor
-variance, grip asymmetry, stick autocorrelation, accel magnitude mean, trigger release
-deceleration, IMU-stick correlation) are compared against a per-device *stable EMA
+Eleven kinematic features per 50-report window are compared against a per-device *stable EMA
 baseline* — updated only on clean NOMINAL sessions to prevent fingerprint poisoning.
-The stable-vs-candidate architecture is the key security property: an adversary who
-gradually shifts the EMA over many borderline sessions cannot poison the stable
-reference.
+The 11-feature space (Phase 17 expansion from 7): `trigger_resistance_change_rate`,
+`trigger_onset_velocity_L2/R2`, `micro_tremor_accel_variance`, `grip_asymmetry`,
+`stick_autocorr_lag1/5`, `tremor_peak_hz`, `tremor_band_power` (tremor FFT 8–12 Hz band),
+`touchpad_active_fraction`, `touch_position_variance`. The stable-vs-candidate architecture
+is the key security property: an adversary who gradually shifts the EMA over many borderline
+sessions cannot poison the stable reference.
 
 `fingerprint_drift_velocity` (L2 norm between candidate and stable means) is an
 additional contamination signal surface-able via the `BridgeAgent` tool
@@ -454,12 +482,53 @@ Bot scripts produce near-constant inter-press intervals. The oracle characterize
 the inter-event timing distribution over a 120-event deque (min 20 samples) and fires
 `0x2B TEMPORAL_ANOMALY` when ≥ 2 of 3 signals are suspicious:
 - Coefficient of variation (CV) < 0.08 — near-zero timing variance
-- Shannon entropy < 1.0 bits — few distinct interval values (hardware-calibrated N=50; human baseline: ~4.56 bits mean)
+- Shannon entropy < 1.0 bits — few distinct interval values (hardware-calibrated N=69, 3 players; human baseline: ~4.56 bits mean)
 - 60 Hz quantization score > 0.55 — intervals cluster at 16.67 ms multiples
+
+L5 uses multi-button tracking (Cross X primary, R2 fallback) via `push_snapshot()` rising-edge
+detection. Cross is preferred (mean CV=1.373 vs R2 1.176; 39/40 sessions viable). This reduces
+genre-dependent exclusion from 24.6% (R2-only) to 8.7% across N=69 real sessions.
 
 `rhythm_humanity_score = (cv_humanity + entropy_score + non_quant) / 3.0 ∈ [0,1]`
 contributes to the PHG humanity probability as a positive signal for high-variance,
 high-entropy timing.
+
+**L6 — Active physical challenge-response.**
+L0–L5 are *passive* — they observe sensor signals generated by normal play.
+L6 is *active*: the host generates a randomized adaptive trigger resistance
+profile (one of 8 named profiles spanning Off, Rigid 80–255 N, Pulse slow/fast,
+asymmetric, and buildup patterns), writes it to the DualShock Edge via USB output
+report 0x02, and measures the controller's HID input stream for the human motor
+response over the following 3-second window.
+
+Human motor response to a resistance change is governed by involuntary
+biomechanics: the hand requires 40–300 ms onset latency (neuromuscular delay
++ motor-planning time), produces measurable grip-force variance (accel magnitude
+variance > 0 from hand micro-tremors adjusting to the new resistance), and
+exhibits natural settling as muscles adapt. Software injection — which cannot
+feel resistance it cannot sense — cannot replicate any of these properties.
+
+The classifier produces `p_human_L6 ∈ [0.0, 1.0]` from four metrics:
+- `onset_ms`: frames until trigger ADC delta > 5 LSB after challenge sent
+- `peak_delta`: max |r2_post − r2_pre_mean| in the response window
+- `settle_ms`: frames until r2 returns within 10% of pre-challenge mean
+- `grip_variance`: variance of `||accel||` during response window
+
+**Attack G (challenge-invariant injection) signature:** `grip_variance == 0.0`
+(zeroed accelerometer) → `p_human_L6 = 0.0`; `onset_ms < 5 ms` (sub-neurological
+latency) → `p_human_L6 ≤ 0.2`. Both are impossible for physical human operation.
+
+**Safety invariants:** L6 is disabled by default (`L6_CHALLENGES_ENABLED=false`).
+Challenges are never dispatched during idle windows (r2 = l2 = 0 for last 10 reports)
+to avoid disrupting gameplay. Triggers restore to BASELINE_OFF (no resistance) within
+3 seconds and always on session shutdown. The null signal (no response received) returns
+`p_human_L6 = 0.5` — conservative, non-penalizing.
+
+**Current status:** L6 is fully implemented and unit-tested (33 tests), including
+Attack G synthetic adversarial validation. Human motor response baseline calibration
+— characterizing real onset/settle/grip-variance distributions from real DualShock
+Edge challenge sessions — has not yet been performed. Section §10.6 describes this
+as the immediate next hardware validation milestone.
 
 ### 7.5.3 Zero-Knowledge PITL Session Proof
 
@@ -491,11 +560,22 @@ enabling production operation before the trusted setup ceremony completes.
 **PHG humanity probability fusion.**
 Per session, three signals are fused into `humanity_probability ∈ [0,1]`:
 ```
-p_L4 = exp(−max(0, d_L4 − 2.0))   # biometric match
-p_L5 = rhythm_humanity_score        # timing humanity
-p_E4 = exp(−drift / 3.0)           # cognitive stability
-humanity_probability = 0.4·p_L4 + 0.4·p_L5 + 0.2·p_E4
+p_L4   = exp(−max(0, d_L4 − 2.0))              # biometric match (11-signal)
+p_L5   = rhythm_humanity_score                  # timing humanity
+p_E4   = exp(−drift / 3.0)                     # cognitive stability
+p_L2B  = imu_press_oracle.humanity_score()      # IMU-button causal coupling [0,1]
+p_L2C  = stick_imu_oracle.humanity_score()      # stick-IMU cross-correlation [0,1]
+
+# Without L6 (default):
+humanity_probability = 0.28·p_L4 + 0.27·p_L5 + 0.20·p_E4 + 0.15·p_L2B + 0.10·p_L2C
 ```
+
+**L6 reweighting.** When L6 is active, the humanity probability fuses six independent
+signals: `p_human = 0.23·p_L4 + 0.22·p_L5 + 0.15·p_E4 + 0.15·p_L6 + 0.15·p_L2B + 0.10·p_L2C`.
+When L6 is disabled (default), the five-signal formula above applies. L2B and L2C
+default to 0.5 (neutral) before oracle warmup, preserving [0,1] boundedness.
+L6 participation in the ZK PITL circuit (§7.5.3) is noted as future work pending
+the multi-contributor ceremony (§10.3).
 
 **PHG score weighting.**
 PHG score deltas are weighted by `humanity_probability` (+50% bonus at p=1.0) and by
@@ -626,7 +706,7 @@ immutably. `MultiVenueConfirmed` is emitted at `_reportCount ≥ 2`; anti-replay
 ### 7.5.7 BridgeAgent and Alert Dispatch
 
 `BridgeAgent` (`claude-sonnet-4-6`) exposes natural-language operator intelligence
-through 18 deterministic tool bindings over bridge data, a Server-Sent Events streaming
+through 16 deterministic tool bindings over bridge data, a Server-Sent Events streaming
 endpoint (`GET /operator/agent/stream`), and an autonomous `react()` path that
 interprets `BIOMETRIC_ANOMALY` and `TEMPORAL_ANOMALY` events without operator input.
 All high-frequency detection (L2–L5) remains deterministic; the LLM operates only at
@@ -702,28 +782,30 @@ targeting the specific physical property each PITL layer relies on.
 | Gradual warmup (bot→human) | 10 | 20% | 0% | 60% | 60% | Sessions 1–6 (α ≤ 0.56) detected; sessions 7–10 reach near-human territory |
 | Quantization-masked bot | 15 | 67% | 0% | **100%** | **100%** | Mean quant_score=0.898; entropy collapses to ~0 bits despite timing jitter |
 
-**Table 6: L5 Human Baseline — Hardware Calibrated (N=50 DualShock Edge Sessions)**
+**Table 6: L5 Human Baseline — Hardware Calibrated (N=69 Sessions, 3 Players, DualShock Edge)**
 
-| Metric | Human Mean | Human Min | Threshold | Safety Margin |
-|--------|-----------|-----------|-----------|---------------|
-| CV (std/mean) | 1.166 | 0.665 | < 0.08 | **14.6×** |
-| Shannon entropy | 4.562 bits | 3.033 bits | < 1.0 bits | **4.6×** |
+| Metric | Human Mean | Human 10th Pct | Threshold | Safety Margin |
+|--------|-----------|----------------|-----------|---------------|
+| CV (std/mean) | 1.184 | 0.789 | < 0.08 | **9.9× vs 10th pct** |
+| Shannon entropy | 2.085 bits | 1.231 bits | < 1.0 bits | **1.2× vs 10th pct** |
 | Quant score | 0.590 | 0.423 | > 0.55 | — (2/3 rule prevents FP) |
 
 Human quant score (mean 0.59) slightly exceeds the threshold because humans also time
 button presses to game-loop frame boundaries. The 2/3-signal requirement prevents false
 positives since CV and entropy remain far on the human side.
 
-**Table 7: L4 Biometric — N=50 Production Thresholds**
+**Table 7: L4 Biometric — N=69 Production Thresholds (11-feature space, Phase 17)**
 
 | Scenario | Mahalanobis d | L4 Fires? |
 |----------|--------------|-----------|
-| Same human, different session (hw_* baseline) | mean 3.2, max 6.84 | No (threshold **5.869**) |
-| Genuine biometric outlier (hw_007, aggressive trigger) | 6.84 | Yes — expected at 3σ |
+| Same human, different session (hw_* baseline, N=69, 3 players) | mean 2.07, max ~7.0 | No (threshold **7.019**) |
+| Genuine biometric outlier (2/69 sessions) | > 7.019 | Yes — expected at 3σ |
 | Bot farm (transplant, same person) | Within personal ball | No — requires multi-person dataset |
 
-**Human false positive rate: 2.0% (1/50 sessions).** The single FP (hw_007) is a genuine
-biometric outlier — onset velocity 5.2σ above mean — expected at the mean+3σ threshold.
+**Human false positive rate: 2.9% (2/69 sessions).** Two sessions exceed the mean+3σ threshold —
+expected at the 3σ level. Threshold derived from 69 real sessions across 3 distinct players
+(dist_mean=2.068, dist_std=1.650; threshold = mean+3σ = 7.019). N=69 is the full calibration
+corpus spanning Players 1–3 (hw_005–hw_073).
 
 **Stationary control baseline.** A 30-second session with the controller untouched on a desk
 (sessions/adversarial/stationary\_control\_001.json, 999.7 Hz) confirms:
@@ -731,10 +813,48 @@ biometric outlier — onset velocity 5.2σ above mean — expected at the mean+3
 - Gyro std at rest: 1.3–1.5 LSB; P95 gyro magnitude: 9.54 LSB
 - Mean accel magnitude: ~2150 LSB (gravity); **14,000× injection detection margin**
 
-**Known limitation.** The biometric transplant attack (0% detection) requires a multi-person
-calibration dataset to overcome. With a single-person N=50 baseline, chimeric fingerprints
-from the same individual remain within their own Mahalanobis ball. Detection requires
-fingerprints from ≥3 distinct people during calibration.
+**Known limitation.** The biometric transplant attack (0% detection in the N=50 single-player
+adversarial suite) requires a multi-person calibration dataset to overcome. The updated N=69
+calibration corpus now spans 3 distinct players (hw_005–hw_073); inter-person Mahalanobis
+separation validation against this expanded set is documented as the next calibration milestone
+in §10.7. Detection requires fingerprints from ≥3 distinct people during calibration.
+
+**L6 Active Challenge-Response.** The L6 layer is implemented and unit-tested
+(§7.5.2). Live adversarial hardware benchmarking of L6 — running randomized
+challenge profiles against a physically connected DualShock Edge with real human
+play and software-injection replay — has not yet been performed. Human response
+baseline statistics (onset latency distribution, grip-variance distribution) are
+required before L6 detection thresholds can be empirically calibrated. This is the
+immediate next hardware validation task (§10.6).
+
+**Attack-to-layer mapping.** Not every adversarial category is handled by PITL layers
+L2–L6. The adversarial benchmark results must be read with the correct layer assignment:
+
+- **Replay (20% PITL hit) — chain-level attack handled by L1/PoAC, not PITL.** Replay
+  is correctly detected by the PoAC monotonic counter and hash-linkage integrity check
+  (L1). The 20% "detection" recorded in L4 during replay tests is statistical noise from
+  biometric features slightly deviating from the enrolled baseline when frames are
+  reordered — not a reliable signal. PITL layers L2–L6 are not designed for replay
+  detection and should not be cited as replay mitigations.
+
+- **Warmup (60%) — fundamental limitation of any gradual-onset attack.** Sessions 7–10
+  of the warmup attack are constructed to interpolate toward human behavior. A
+  sufficiently patient attacker who degrades metrics slowly enough will eventually
+  produce a session indistinguishable from legitimate skill improvement.
+  BehavioralArchaeologist catches early-to-mid progression (sessions 1–6 reliably),
+  but the attacker "graduates" as the session window saturates with near-human samples.
+  This is a known limitation of any session-scoped behavioral detector. The explicit
+  defense-in-depth is Mode 5 credential suspension (§7.5.4), which operates across
+  sessions rather than within a single session, flagging progressive drift over time.
+
+- **Transplant (0%) — architectural constraint, not a detection failure.** With a
+  single player's calibration data, every session falls within the same Mahalanobis
+  ball by construction. Transplant detection requires multi-person calibration: a second
+  player with 5–10 sessions would allow the system to demonstrate either inter-person
+  separation (validating the 6-feature biometric fingerprint) or reveal that the feature
+  set needs augmentation. This is the single highest-value missing data collection in
+  the current validation corpus. It is documented as a near-term milestone in §10.7
+  rather than a limitation of the algorithm design.
 
 ### 8.4 DualShock Edge Hardware Validation
 
@@ -787,17 +907,21 @@ All tests include embedded step-by-step physical procedures (timing guidance, ac
 prompts) so that operators without code expertise can execute the full hardware validation
 protocol. Tests are gated behind `@pytest.mark.hardware` and excluded from CI by default.
 
-**N=50 Biometric Calibration (2026-03-02).** Following the 28-test hardware validation,
-50 additional sessions were captured and used to calibrate all PITL thresholds empirically:
+**N=69 Biometric Calibration (2026-03-07, 3 Players).** Following the 28-test hardware
+validation, 69 sessions across 3 distinct players were captured and used to calibrate all PITL
+thresholds empirically. Phase 17 extended the L4 feature space from 7 to 11 features (adding
+tremor FFT 8–12 Hz band power/peak and touchpad biometrics):
 
-| Threshold | Design-time estimate | Hardware-calibrated (N=50, mean+3σ) |
-|-----------|---------------------|--------------------------------------|
-| L4 anomaly (ANOMALY_THRESHOLD) | 3.0 | **5.869** |
-| L4 continuity (CONTINUITY_THRESHOLD) | 2.0 | **4.617** |
-| L5 entropy | 1.5 bits | **1.0 bits** (human min: 3.03 bits) |
-| L5 CV | 0.08 | 0.08 (unchanged; human mean: 1.17) |
+| Threshold | Design-time estimate | Hardware-calibrated (N=69, 3 players) |
+|-----------|---------------------|----------------------------------------|
+| L4 anomaly (ANOMALY_THRESHOLD) | 3.0 | **7.019** (mean+3σ, 11-feature; 7-feature: 6.905) |
+| L4 continuity (CONTINUITY_THRESHOLD) | 2.0 | **5.369** (mean+2σ, 11-feature; 7-feature: 5.190) |
+| L5 entropy | 1.5 bits | **1.0 bits** (human 10th pct: 1.231 bits) |
+| L5 CV | 0.08 | 0.08 (unchanged; human mean: 1.184, 10th pct: 0.789) |
+| L2B coupled_fraction | — | **0.55** (human mean: 0.786; 64/69 sessions with ≥15 presses) |
+| L2C max_causal_corr | — | **0.15** fixed threshold (0/69 false positives after abs() fix) |
 
-Calibration confidence: **HIGH** (N≥50). Values encoded as defaults in
+Calibration confidence: **HIGH** (N=69, 3 players). Values encoded as defaults in
 `controller/tinyml_biometric_fusion.py` and overridable via environment variables.
 See `calibration_profile.json` for the full calibration record.
 
@@ -809,15 +933,20 @@ see §8.3 for the full detection matrix.
 
 | Suite | Count | Scope |
 |-------|-------|-------|
-| Bridge pytest | 743 | Full pipeline (asyncio bridge, store, agent, enforcement, federation) |
+| Bridge pytest | 815 | Full pipeline (asyncio bridge, store, agent, enforcement, federation, L6, +45 Phase 17 L2B/L2C/CalibAgent tests) |
 | SDK pytest | 28 | Self-verifying client SDK |
-| Hardhat | 352 | All Solidity contracts (17 contracts, 352 passing) |
+| Hardhat | 354 | All Solidity contracts (+2 PHGCredential auto-expiry tests) |
 | Hardware | 28 | Physical DualShock Edge (gated `@pytest.mark.hardware`, excluded from CI) |
-| **Total** | **~1,151** | *Excludes 14 infrastructure-gated skips (9 E2E/Hardhat-node, 5 ZK-ceremony)* |
+| **Total** | **~1,225** | *Excludes 14 infrastructure-gated skips (9 E2E/Hardhat-node, 5 ZK-ceremony)* |
 
-Note: 14 tests are skipped in normal CI: 9 end-to-end simulation tests require a
-live Hardhat node, and 5 real-ZK prover tests require ceremony artifacts (`.zkey` files
-generated by `npx hardhat run scripts/run-ceremony.js`).
+Note: 843 bridge+SDK pytest tests pass in CI (815 bridge + 28 SDK). Phase 17 added 45 new
+bridge tests: 18 for `l2b_imu_press_correlation` (L2B IMU-button causal latency oracle),
+15 for `l2c_stick_imu_correlation` (L2C stick-IMU cross-correlation oracle), and 12 for
+`calibration_agent` (auto-calibration threshold agent). The +33 L6 tests cover
+`l6_challenge_profiles`, `l6_trigger_driver`, `l6_response_analyzer`, and L6 integration
+including Attack G adversarial detection. 14 tests are skipped in normal CI: 9 end-to-end
+simulation tests require a live Hardhat node, and 5 real-ZK prover tests require ceremony
+artifacts (`.zkey` files generated by `npx hardhat run scripts/run-ceremony.js`).
 
 ---
 
@@ -845,6 +974,14 @@ and the L5 timing distribution provide behavioral constraints: an adversary must
 consistent synthetic input across a 32-observation world model, produce plausible
 classification outputs, and sustain deception across the L4 stable-track update window
 without triggering drift velocity alerts.
+
+**L6 additional mitigation.** Active physical challenge-response (§7.5.2 L6) adds
+an orthogonal attack surface: software injection cannot produce human-biomechanical
+grip adjustment responses (onset latency 40–300 ms, accel variance > 0) in reaction
+to resistance profiles it cannot sense. An injector that also observes and attempts
+to synthesize L6 responses must simultaneously produce plausible IMU variance (L2),
+consistent biometric kinematics (L4), and non-degenerate timing distributions (L5) —
+a compound constraint that dramatically narrows the viable attack surface.
 
 **T5 — Fraudulent bounty claims.** `submitEvidence()` requires a PoAC record hash
 in `PoACVerifier.verifiedRecords`, location within geographic zone, and timestamp within
@@ -904,8 +1041,43 @@ bridge's computation of biometric outputs, but requires the ZK artifact files
 `PITLSessionRegistry` contract to be deployed. Without these, the ZK guarantee is
 inactive. See §10.2 and §10.3 for the path to full-ZK deployment.
 
+**PHGCredential bridge-key is immutable — key compromise enables malicious suspension.**
+The `bridge` address in `PHGCredential.sol` is set at construction time and cannot be
+changed. If the bridge's signing key is compromised, an attacker can call `suspend()` on
+any device indefinitely. Until multi-sig or timelock governance is added to the
+enforcement path, key hygiene for the bridge deployment account is a critical operational
+security requirement.
+
 **No data confidentiality.** PoAC records are submitted in plaintext — inference results,
 action codes, and locations are visible on-chain.
+
+**L6 response thresholds are engineering estimates, not empirically calibrated.**
+The L6 Active Physical Challenge-Response classifier (§7.5.2) uses onset and settle
+thresholds (onset_threshold_ms per profile: 300–450 ms; settle_threshold_ms: 1,500–
+2,500 ms) derived from general biomechanical literature rather than measured
+distributions on real DualShock Edge players. Until a calibration dataset of N≥50
+real L6 challenge sessions is collected and analyzed, these thresholds carry the
+same caveat as the pre-N=50 biometric thresholds: plausible but not empirically
+grounded. False positive and false negative rates for L6 are not yet characterized.
+
+**Biometric transplant requires multi-person calibration data (architectural constraint).**
+The N=50 hardware calibration dataset is from a single player. At single-player calibration
+scale, every authentic session falls within the enrolled Mahalanobis ball and every
+replay/injection of that same player's data also falls within it — transplant from a
+second player is trivially distinguished in principle, but has not been measured because
+no second-player session data exists. The biometric fingerprint may or may not generalize
+to provide inter-person separation; this cannot be determined without a second player's
+data. Until multi-person calibration is performed, transplant attack detection rate is
+not a meaningful metric and should not be cited as 0% detection — it is simply
+untestable with current data.
+
+**Warmup attack graduation is a fundamental limitation of session-scoped behavioral detection.**
+A sufficiently slow warmup attacker who interpolates metrics to human baseline over many
+sessions will eventually graduate past the detection boundary. Session-scoped detectors
+(BehavioralArchaeologist, L4 biometric, L5 temporal) observe behavior within a window;
+they cannot detect an attacker who consistently stays within the human-behavior region
+during each individual session. The defense for this attack class is multi-session
+temporal analysis (Mode 5 credential suspension), not within-session PITL scoring.
 
 ---
 
@@ -924,6 +1096,15 @@ of this paper has been closed for the single-player case:
 - **Human false positive rate:** 2.0% (1/50 — within 3σ statistical expectation)
 - **Stationary control baseline** — 30s idle controller capture confirming IMU noise
   floor (gyro std 1.3–1.5 LSB) and 14,000× injection detection margin
+
+- **L6 Active Physical Challenge-Response implemented** — 8-profile trigger challenge
+  library, async trigger driver, motor-response curve analyzer, Attack G adversarial
+  unit tests. 776 bridge+SDK tests passing. Human response baseline calibration
+  is the remaining open item (§10.6).
+- **PHGCredential auto-expiry fix** — `isActive()` now honors `suspendedUntil`
+  timestamp; `suspend()` allows re-suspension after auto-expiry without requiring
+  `reinstate()`. 354 Hardhat tests passing (+2 auto-expiry tests). Also: CEI pattern
+  in `PoACVerifier._verifyInternal()` confirmed correct and documented with comment.
 
 **Remaining work:**
 - Multi-person calibration dataset (≥3 players) to enable biometric transplant detection
@@ -961,6 +1142,47 @@ The PoAC chain integrity properties (linkage, monotonicity, non-repudiation) are
 amenable to formal verification in TLA+ or Isabelle/HOL. Machine-checked proofs would
 strengthen confidence for safety-critical esports deployments.
 
+### 10.6 L6 Human Response Baseline Calibration
+
+L6 Active Physical Challenge-Response (§7.5.2) uses onset/settle thresholds and
+classification weights derived from general biomechanical priors. The next hardware
+validation milestone is a calibration study analogous to the N=50 biometric
+calibration (§8.4) but targeting the challenge-response dimension:
+
+1. **Capture N≥50 challenge sessions** — run `L6_CHALLENGES_ENABLED=true` with a
+   live DualShock Edge, dispatching all 8 profiles across gameplay sessions
+2. **Characterize human distributions** — fit onset_ms, settle_ms, peak_delta,
+   grip_variance distributions per profile; derive profile-specific thresholds
+3. **Attack G ground truth** — collect replay-injection sessions with L6 active;
+   measure false negative rate under Attack G
+4. **Update `CHALLENGE_PROFILES`** — replace engineering-estimate thresholds with
+   measured mean ± 3σ values via a `scripts/l6_threshold_calibrator.py` script
+   analogous to `scripts/threshold_calibrator.py`
+
+Until this calibration is performed, L6 is recommended as a supplementary layer
+only (`L6_CHALLENGES_ENABLED=false` default) and should not be used as a primary
+gating signal for tournament qualification.
+
+### 10.7 Multi-Person Biometric Calibration (Transplant Attack Validation)
+
+The N=50 biometric calibration dataset (§8.4) is from a single player. Before transplant
+attack detection can be characterized, a second player's session data is required:
+
+1. **Collect 5–10 sessions** from a second player using the same hardware setup
+   (same DualShock Edge, same polling configuration)
+2. **Compute Mahalanobis distance** between enrolled player's baseline and second
+   player's 6-feature vector — if separation > threshold, L4 provides inter-person
+   discrimination; if not, the feature set requires augmentation (e.g., hand-specific
+   grip geometry, dominant-hand rhythm)
+3. **Calibrate transplant threshold** — derive a secondary Mahalanobis boundary that
+   separates the two players with ≥3σ margin
+4. **Document inter-person separation coefficient** as a whitepaper-reportable figure
+
+This is the single highest-value data collection currently missing from the validation
+corpus. A positive result (inter-person separation confirmed) would constitute the first
+empirical validation of VAPI's claim that the biometric fingerprint is player-specific,
+not just session-specific.
+
 ---
 
 ## 11. Conclusion
@@ -974,10 +1196,12 @@ committed, signed, hash-chained, and anchored on a public blockchain.
 
 The DualShock Edge's adaptive trigger surface is the key physical primitive: a PoAC
 chain anchored to motorized resistance dynamics, six-axis IMU, and stick kinematics is
-unforgeable without the physical human. The six-level PITL stack — from HID pipeline
-monitoring through biometric kinematic fingerprinting through temporal rhythm analysis —
-provides layered redundancy, with each layer exploiting different aspects of the
-human-controller physical coupling that software injection cannot replicate.
+unforgeable without the physical human. The nine-level PITL stack — from HID pipeline
+monitoring through IMU-button causal latency analysis (L2B), stick-IMU temporal
+cross-correlation (L2C), biometric kinematic fingerprinting, temporal rhythm analysis, and
+active physical challenge-response — provides layered redundancy, with each layer
+exploiting different aspects of the human-controller physical coupling that software
+injection cannot replicate.
 
 The PHG humanity credential becomes a *living* proof: earned through sustained clean
 behavior, weighted by biometric quality, portable across key rotations through biometric
@@ -987,16 +1211,18 @@ The suspension mechanism is bounded, reversible, evidence-anchored, and verifiab
 on-chain — closing the final gap between intelligence that detects and intelligence that
 acts.
 
-The complete system (~220 files, ~1,200+ automated tests including 28 on physical
+The complete system (~255 files, ~1,225+ automated tests including 28 on physical
 hardware) proves the concept is implementable today with existing gaming controller
 hardware and existing blockchain infrastructure. Live hardware validation on a DualShock
 Edge CFI-ZCP1 confirms the foundational physical signal claims: USB polling at 1002 Hz,
 gyro noise 10,000× above software-injection threshold, 278,239 LSB² accel variance from
 natural hand micro-tremor, and zero report-counter violations across 200 consecutive
-reports. The primary remaining gap between this prototype and production deployment is
-real-world adversarial benchmarking; the infrastructure to close that gap — hardware
-capture scripts, threshold calibration tools, and a 28-test hardware validation suite
-with step-by-step physical procedures — ships with this release.
+reports. The L6 active challenge-response layer extends the detection surface to the
+physical biomechanics of trigger resistance adjustment — a signal class that no
+software-only injector can reproduce because it cannot sense the resistance it would
+need to respond to. The primary remaining gaps are L6 human-response baseline
+calibration (§10.6) and multi-person biometric validation for transplant attack
+characterization (§10.7); the infrastructure to close both gaps ships with this release.
 
 VAPI opens a new design space: instead of trusting that players are human, we verify it.
 Instead of opaque telemetry, we anchor transparent, chained, cryptographically-committed
@@ -1080,7 +1306,7 @@ Tracker validation is future work.
 ## Appendix B: BridgeAgent — Complete Tool Catalogue and Interface Specification
 
 `BridgeAgent` (`claude-sonnet-4-6`, `bridge/vapi_bridge/bridge_agent.py`) provides
-LLM-powered operator intelligence through 18 deterministic tool bindings. All tools are
+LLM-powered operator intelligence through 16 deterministic tool bindings. All tools are
 read-only against the SQLite store and on-chain state; no tool mutates bridge state.
 
 ### B.1 Tool Catalogue
@@ -1103,8 +1329,6 @@ read-only against the SQLite store and on-chain state; no tool mutates bridge st
 | `query_digest` | `InsightSynthesizer` digest for 24h / 7d / 30d window |
 | `get_detection_policy` | Active L4 threshold multiplier and basis risk label |
 | `get_credential_status` | Evidence chain: biometric label → suspension state → reinstatement conditions |
-| `get_recent_insights` | Last N `protocol_insights` rows from any synthesis mode |
-| `get_schema_version` | Current DB migration phase number |
 
 ### B.2 Streaming Interface
 

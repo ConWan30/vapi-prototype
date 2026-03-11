@@ -78,7 +78,7 @@ async def _run_proof_block(pitl_prover, pending_meta, store, chain,
             store.store_pitl_proof(dev_hex, hex(null), hex(fc), hp_int)
             if chain is not None:
                 asyncio.create_task(
-                    chain.submit_pitl_proof(dev_hex, proof, fc, hp_int, null, epoch)
+                    chain.submit_pitl_proof(dev_hex, proof, fc, hp_int, infer, null, epoch)
                 )
         except Exception as exc:
             pass  # non-fatal

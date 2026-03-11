@@ -181,7 +181,11 @@ contract PHGCredential {
         uint256 durationSeconds
     ) external onlyBridge {
         if (credentialOf[deviceId] == 0) revert CredentialNotMinted(deviceId);
-        if (isSuspended[deviceId])       revert AlreadySuspended(deviceId);
+        // Revert only if the current suspension has not yet elapsed.
+        // An auto-expired suspension (isSuspended=true but block.timestamp >= suspendedUntil)
+        // is treated as not-suspended so the bridge can re-suspend without calling reinstate().
+        if (isSuspended[deviceId] && block.timestamp < suspendedUntil[deviceId])
+            revert AlreadySuspended(deviceId);
         isSuspended[deviceId]         = true;
         suspendedUntil[deviceId]      = block.timestamp + durationSeconds;
         suspensionEvidence[deviceId]  = evidenceHash;
@@ -205,9 +209,17 @@ contract PHGCredential {
     /**
      * @notice Returns true if the device has a minted, non-suspended credential.
      * @dev    TournamentGateV3 calls this to gate tournament access.
+     *
+     *         Auto-expiry: if isSuspended is true but block.timestamp has passed
+     *         suspendedUntil, the credential is treated as active.  The bridge
+     *         should call reinstate() to clear the stale flag, but gameplay is
+     *         never blocked past the intended suspension window even if the bridge
+     *         is temporarily unavailable.
      */
     function isActive(bytes32 deviceId) external view returns (bool) {
-        return credentialOf[deviceId] != 0 && !isSuspended[deviceId];
+        if (credentialOf[deviceId] == 0) return false;
+        if (!isSuspended[deviceId]) return true;
+        return block.timestamp >= suspendedUntil[deviceId];
     }
 
     // -------------------------------------------------------------------------

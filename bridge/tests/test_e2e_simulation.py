@@ -124,6 +124,15 @@ class TestE2ESimulation(unittest.IsolatedAsyncioTestCase):
     async def asyncSetUp(self):
         self.harness = await ContractHarness.create(HARDHAT_RPC_URL)
 
+    async def asyncTearDown(self):
+        # Close the aiohttp session held by AsyncHTTPProvider to prevent
+        # "Unclosed client session" leakage across IsolatedAsyncioTestCase
+        # event loops (Python 3.13 + aiohttp).
+        try:
+            await self.harness.w3.provider.disconnect()
+        except Exception:
+            pass
+
     # ── Test 1 ────────────────────────────────────────────────────────────────
 
     async def test_e2e_standard_device_can_submit_bounty_evidence(self):
@@ -263,7 +272,7 @@ class TestE2ESimulation(unittest.IsolatedAsyncioTestCase):
         """
         h = self.harness
         v_baseline = make_test_vector(inference=0x20, schema_version=1)
-        v_current  = make_test_vector(inference=0x20, schema_version=2)
+        v_current  = make_test_vector(inference=0x21, schema_version=2)  # 0x21 != 0x20 avoids body-hash collision when both vectors land in the same millisecond
 
         d1 = await h.register_device(v_baseline.pubkey, tier=1)
         await h.register_device(v_current.pubkey, tier=1)
@@ -334,6 +343,12 @@ class TestSelfVerifyingPipelineAttestation(unittest.IsolatedAsyncioTestCase):
 
     async def asyncSetUp(self):
         self.harness = await ContractHarness.create(HARDHAT_RPC_URL)
+
+    async def asyncTearDown(self):
+        try:
+            await self.harness.w3.provider.disconnect()
+        except Exception:
+            pass
 
     # ── Test 7 ────────────────────────────────────────────────────────────────
 
@@ -414,7 +429,7 @@ class TestSelfVerifyingPipelineAttestation(unittest.IsolatedAsyncioTestCase):
         h = self.harness
         v1 = make_test_vector(inference=0x20)
         v2 = make_test_vector(inference=0x21)
-        v3 = make_test_vector(inference=0x20)
+        v3 = make_test_vector(inference=0x22)  # unique inference avoids body-hash collision
 
         for v in (v1, v2, v3):
             await h.register_device(v.pubkey, tier=1)
@@ -451,7 +466,8 @@ class TestSelfVerifyingPipelineAttestation(unittest.IsolatedAsyncioTestCase):
         on-chain, permanently sealing the temporal ordering.
 
         A PoACEngine generates record_1 then record_2.  record_2.prev_poac_hash
-        = SHA-256(record_1.serialize_full()) — the engine's chain head.
+        = SHA-256(record_1.raw_body) — the engine's chain head (164B body only,
+        matching PoACVerifier.sol: chain.lastRecordHash = sha256(_rawBody)).
 
         After both records are accepted by the verifier:
           (a) recordInferences[hash_1] and recordInferences[hash_2] are both set
@@ -487,16 +503,16 @@ class TestSelfVerifyingPipelineAttestation(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(ctr2, ctr1 + 1,
             f"Monotonic counter did not increment: ctr1={ctr1}, ctr2={ctr2}")
 
-        # (c) Chain genealogy: v2.prev_poac_hash == SHA-256(full 228-byte record_1)
-        #     The engine stores chain_head = SHA-256(body + signature) after each record.
+        # (c) Chain genealogy: v2.prev_poac_hash == SHA-256(v1.raw_body) [164B body only]
+        #     The engine stores chain_head = SHA-256(body) after each record.
+        #     PoACVerifier.sol: chain.lastRecordHash = sha256(_rawBody) (164B).
         #     record_2.prev_poac_hash (bytes[0:32] of raw_body_2) must equal that value.
-        full_record_1 = v1.raw_body + v1.signature
-        expected_prev = hashlib.sha256(full_record_1).digest()
+        expected_prev = hashlib.sha256(v1.raw_body).digest()
         actual_prev   = v2.raw_body[0:32]
 
         self.assertEqual(actual_prev, expected_prev,
             "PoAC chain genealogy broken: v2.prev_poac_hash does not match "
-            "SHA-256(record_1.full_bytes)")
+            "SHA-256(record_1.raw_body) [164B body only]")
 
         # (d) Both records verified — counted for the device
         verified_count = await h.verifier.functions.getVerifiedCount(

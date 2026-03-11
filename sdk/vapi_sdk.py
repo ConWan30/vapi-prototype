@@ -108,7 +108,7 @@ class VAPIRecord:
     Parse and interrogate a 228-byte PoAC record.
 
     The record layout (immutable per VAPI spec):
-        [0:32]    prev_poac_hash      — SHA-256 of the previous record's full 228B
+        [0:32]    prev_poac_hash      — SHA-256 of the previous record's 164-byte body (NOT the full 228B)
         [32:64]   sensor_commitment   — SHA-256 of the sensor preimage (48B or 56B)
         [64:96]   model_manifest_hash — SHA-256 identifying the TinyML model
         [96:128]  world_model_hash    — SHA-256 of EWC world model + preference weights
@@ -190,7 +190,12 @@ class VAPIRecord:
 
     @property
     def chain_hash(self) -> bytes:
-        """SHA-256 of the full 228-byte record. Used as prev_poac_hash in the next record."""
+        """SHA-256 of the full 228-byte record (body + signature).
+
+        Off-chain convenience hash for indexing and de-duplication.
+        NOT used for PoAC chain linkage — do not use as prev_poac_hash.
+        Chain linkage uses record_hash (SHA-256 of 164-byte body only).
+        """
         return hashlib.sha256(self._raw).digest()
 
     # --- Chain integrity ---
@@ -212,7 +217,10 @@ class VAPIRecord:
         if prev is None:
             # Genesis record: prev_poac_hash must be all-zero sentinel
             return self.prev_poac_hash == b"\x00" * 32
-        return self.prev_poac_hash == prev.chain_hash
+        # Canonical chain linkage: prev_poac_hash = SHA-256(previous_record_body_164B)
+        # This matches PoACVerifier.sol on-chain. The signature bytes (164-227) are NOT
+        # included in the chain link hash. See whitepaper §4.1.
+        return self.prev_poac_hash == prev.record_hash
 
     @classmethod
     def from_bytes(cls, raw: bytes) -> "VAPIRecord":

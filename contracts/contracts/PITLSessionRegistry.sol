@@ -127,6 +127,11 @@ contract PITLSessionRegistry {
      * @param proof             256-byte ABI-packed Groth16 proof.
      * @param featureCommitment Poseidon(scaledFeatures[0..6]).
      * @param humanityProbInt   l5_humanity x 1000 in [0, 1000].
+     * @param inferenceCode     8-bit VAPI inference code committed by the bridge.
+     *                          Must be in [0, 255]. The circuit C2 constraint enforces
+     *                          inferenceCode ∉ [40, 42] (cheat codes 0x28–0x2A), so a
+     *                          proof generated with a cheat-code result will fail
+     *                          verification here. Passing 0 is valid for CLEAN sessions.
      * @param nullifierHash     Poseidon(deviceIdHash, epoch) -- anti-replay.
      * @param epoch             block.number / EPOCH_BLOCKS at proof time.
      */
@@ -135,6 +140,7 @@ contract PITLSessionRegistry {
         bytes calldata proof,
         uint256 featureCommitment,
         uint256 humanityProbInt,
+        uint256 inferenceCode,
         uint256 nullifierHash,
         uint256 epoch
     ) external onlyBridge {
@@ -162,7 +168,12 @@ contract PITLSessionRegistry {
             uint256[5] memory pub;
             pub[0] = featureCommitment;
             pub[1] = humanityProbInt;
-            pub[2] = 0;             // inferenceResult not checked here -- stored off-chain
+            // inferenceCode is the 8-bit VAPI inference result committed by the bridge.
+            // Circuit C2 constraint (IsNotCheatCode) enforces inferenceCode ∉ [40, 42],
+            // so any proof generated when a hard cheat code (0x28–0x2A) was detected
+            // will fail verifyProof() here — the Groth16 proof is ungenerable for
+            // inference ∈ {40, 41, 42} due to the constraint violation at proof time.
+            pub[2] = inferenceCode;
             pub[3] = nullifierHash;
             pub[4] = epoch;
 

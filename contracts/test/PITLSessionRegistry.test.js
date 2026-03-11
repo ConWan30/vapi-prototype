@@ -68,7 +68,7 @@ describe("PITLSessionRegistry", function () {
       registry.connect(other).submitPITLProof(
         DEVICE_A, MOCK_PROOF_256,
         1n, 800n,
-        ethers.toBigInt(makeNullifier(1)),
+         0n, ethers.toBigInt(makeNullifier(1)),
         1n
       )
     ).to.be.revertedWithCustomError(registry, "OnlyBridge");
@@ -80,7 +80,7 @@ describe("PITLSessionRegistry", function () {
       registry.connect(bridge).submitPITLProof(
         DEVICE_A, MOCK_PROOF_256,
         12345n, 700n,
-        ethers.toBigInt(makeNullifier(10)),
+         0n, ethers.toBigInt(makeNullifier(10)),
         42n
       )
     ).to.not.be.reverted;
@@ -95,7 +95,7 @@ describe("PITLSessionRegistry", function () {
 
     await expect(
       registry.connect(bridge).submitPITLProof(
-        DEVICE_A, MOCK_PROOF_256, fc, hp, null1, epoch
+        DEVICE_A, MOCK_PROOF_256, fc, hp,  0n, null1, epoch
       )
     )
       .to.emit(registry, "PITLSessionProofSubmitted")
@@ -108,7 +108,7 @@ describe("PITLSessionRegistry", function () {
     await registry.connect(bridge).submitPITLProof(
       DEVICE_A, MOCK_PROOF_256,
       1n, hp,
-      ethers.toBigInt(makeNullifier(30)),
+       0n, ethers.toBigInt(makeNullifier(30)),
       5n
     );
     expect(await registry.latestHumanityProb(DEVICE_A)).to.equal(hp);
@@ -121,7 +121,7 @@ describe("PITLSessionRegistry", function () {
     await registry.connect(bridge).submitPITLProof(
       DEVICE_A, MOCK_PROOF_256,
       1n, 500n,
-      ethers.toBigInt(makeNullifier(40)),
+       0n, ethers.toBigInt(makeNullifier(40)),
       1n
     );
     expect(await registry.sessionCount(DEVICE_A)).to.equal(1n);
@@ -129,7 +129,7 @@ describe("PITLSessionRegistry", function () {
     await registry.connect(bridge).submitPITLProof(
       DEVICE_A, MOCK_PROOF_256,
       1n, 600n,
-      ethers.toBigInt(makeNullifier(41)),
+       0n, ethers.toBigInt(makeNullifier(41)),
       2n
     );
     expect(await registry.sessionCount(DEVICE_A)).to.equal(2n);
@@ -139,11 +139,11 @@ describe("PITLSessionRegistry", function () {
   it("7. same nullifier on second call reverts NullifierUsed", async function () {
     const null1 = ethers.toBigInt(makeNullifier(50));
     await registry.connect(bridge).submitPITLProof(
-      DEVICE_A, MOCK_PROOF_256, 1n, 500n, null1, 1n
+      DEVICE_A, MOCK_PROOF_256, 1n, 500n,  0n, null1, 1n
     );
     await expect(
       registry.connect(bridge).submitPITLProof(
-        DEVICE_A, MOCK_PROOF_256, 1n, 500n, null1, 2n
+        DEVICE_A, MOCK_PROOF_256, 1n, 500n,  0n, null1, 2n
       )
     ).to.be.revertedWithCustomError(registry, "NullifierUsed");
   });
@@ -154,7 +154,7 @@ describe("PITLSessionRegistry", function () {
       registry.connect(bridge).submitPITLProof(
         DEVICE_A, MOCK_PROOF_256,
         1n, 1001n,
-        ethers.toBigInt(makeNullifier(60)),
+         0n, ethers.toBigInt(makeNullifier(60)),
         1n
       )
     ).to.be.revertedWithCustomError(registry, "HumanityProbOutOfRange");
@@ -166,7 +166,7 @@ describe("PITLSessionRegistry", function () {
       registry.connect(bridge).submitPITLProof(
         DEVICE_A, MOCK_PROOF_255,
         1n, 500n,
-        ethers.toBigInt(makeNullifier(70)),
+         0n, ethers.toBigInt(makeNullifier(70)),
         1n
       )
     ).to.be.reverted;  // "invalid proof length" require
@@ -187,11 +187,11 @@ describe("PITLSessionRegistry", function () {
   it("11. two devices track independent latestHumanityProb", async function () {
     await registry.connect(bridge).submitPITLProof(
       DEVICE_A, MOCK_PROOF_256, 1n, 400n,
-      ethers.toBigInt(makeNullifier(80)), 1n
+       0n, ethers.toBigInt(makeNullifier(80)), 1n
     );
     await registry.connect(bridge).submitPITLProof(
       DEVICE_B, MOCK_PROOF_256, 1n, 900n,
-      ethers.toBigInt(makeNullifier(81)), 1n
+       0n, ethers.toBigInt(makeNullifier(81)), 1n
     );
     expect(await registry.latestHumanityProb(DEVICE_A)).to.equal(400n);
     expect(await registry.latestHumanityProb(DEVICE_B)).to.equal(900n);
@@ -203,7 +203,7 @@ describe("PITLSessionRegistry", function () {
       registry.connect(bridge).submitPITLProof(
         DEVICE_A, MOCK_PROOF_256,
         1n, 1000n,
-        ethers.toBigInt(makeNullifier(90)),
+         0n, ethers.toBigInt(makeNullifier(90)),
         0n  // epoch=0
       )
     ).to.not.be.reverted;
@@ -214,14 +214,14 @@ describe("PITLSessionRegistry", function () {
     await expect(
       registry.connect(bridge).submitPITLProof(
         DEVICE_A, MOCK_PROOF_256, 1n, 0n,
-        ethers.toBigInt(makeNullifier(100)), 1n
+         0n, ethers.toBigInt(makeNullifier(100)), 1n
       )
     ).to.not.be.reverted;
 
     await expect(
       registry.connect(bridge).submitPITLProof(
         DEVICE_B, MOCK_PROOF_256, 1n, 1000n,
-        ethers.toBigInt(makeNullifier(101)), 1n
+         0n, ethers.toBigInt(makeNullifier(101)), 1n
       )
     ).to.not.be.reverted;
   });

@@ -329,7 +329,7 @@ def load_session(session_name: str) -> dict | None:
     for start in range(0, n_reports - WINDOW_SIZE + 1, WINDOW_SIZE):
         window = proxies[start : start + WINDOW_SIZE]
         if _EXTRACTOR_AVAILABLE:
-            feat = BiometricFeatureExtractor.extract(window, window_frames=WINDOW_SIZE)
+            feat = BiometricFeatureExtractor().extract(window, window_frames=WINDOW_SIZE)
             vec = feat.to_vector().astype(np.float64)
         else:
             vec = _extract_features_inline(window).astype(np.float64)

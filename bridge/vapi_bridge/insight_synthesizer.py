@@ -20,9 +20,12 @@ Three synthesis modes, each isolated in its own try/except:
 No external dependencies (no httpx, no anthropic) — always starts unconditionally.
 """
 import asyncio
+import json
 import logging
 import time
 from collections import defaultdict
+
+import numpy as np
 
 log = logging.getLogger(__name__)
 
@@ -128,6 +131,10 @@ class InsightSynthesizer:
             await self._synthesize_credential_enforcement()
         except Exception as exc:
             log.warning("InsightSynthesizer Mode 5 (credential enforcement) failed: %s", exc)
+        try:
+            await self._synthesize_living_calibration()
+        except Exception as exc:
+            log.warning("InsightSynthesizer Mode 6 (living calibration) failed: %s", exc)
         try:
             await self._run_housekeeping()
         except Exception as exc:
@@ -420,6 +427,156 @@ class InsightSynthesizer:
                 self._store.reset_consecutive_critical(row["device_id"])
 
         log.info("InsightSynthesizer Mode 5: credential enforcement complete")
+
+    # ------------------------------------------------------------------
+    # Mode 6: Living Calibration (Phase 38)
+    # ------------------------------------------------------------------
+
+    async def _synthesize_living_calibration(self) -> None:
+        """Auto-evolve L4 thresholds from verified NOMINAL records (Phase 38).
+
+        Uses exponential decay weighting (alpha=0.95) so recent sessions carry
+        higher weight.  Updates are bounded to 15% per cycle and floored at 3.0.
+        Per-device personal profiles are computed for devices with >=30 records;
+        personal thresholds can only be TIGHTER than the updated global threshold.
+        """
+        _ALPHA = 0.95
+        _MIN_RECORDS = 50
+        _MIN_DEVICE_RECORDS = 30
+        _MAX_SHIFT = 0.15
+        _MIN_FLOOR = 3.0
+        _DATA_STALE_S = 48 * 3600       # 48 h freshness threshold
+        _SHIFT_ALERT_PCT = 0.25          # 25% mean shift = distribution shift alert
+
+        records = self._store.get_nominal_records_for_calibration(limit=200)
+
+        if len(records) < _MIN_RECORDS:
+            log.info(
+                "Mode 6: %d/%d NOMINAL records — insufficient, skipping calibration",
+                len(records), _MIN_RECORDS,
+            )
+            return
+
+        # --- Step 3: Global weighted threshold ---
+        distances = np.array([r["pitl_l4_distance"] for r in records], dtype=float)
+        n = len(distances)
+        weights = np.array([_ALPHA ** i for i in range(n)], dtype=float)
+        weights /= weights.sum()
+
+        w_mean = float(np.sum(distances * weights))
+        w_var  = float(np.sum(weights * (distances - w_mean) ** 2))
+        w_std  = float(np.sqrt(w_var))
+
+        candidate_anomaly    = round(w_mean + 3.0 * w_std, 3)
+        candidate_continuity = round(w_mean + 2.0 * w_std, 3)
+
+        # --- Step 4: Bounded update ---
+        def _clamp(candidate: float, current: float) -> float:
+            if current < 1e-6:
+                return max(candidate, _MIN_FLOOR)
+            delta_pct = abs(candidate - current) / current
+            if delta_pct > _MAX_SHIFT:
+                direction = 1 if candidate > current else -1
+                candidate = current * (1.0 + direction * _MAX_SHIFT)
+            return max(candidate, _MIN_FLOOR)
+
+        prev_anomaly    = float(getattr(self._cfg, "l4_anomaly_threshold",    7.019))
+        prev_continuity = float(getattr(self._cfg, "l4_continuity_threshold", 5.369))
+
+        new_anomaly    = _clamp(candidate_anomaly,    prev_anomaly)
+        new_continuity = _clamp(candidate_continuity, prev_continuity)
+
+        # --- Step 5: Apply to running config (live — no restart needed) ---
+        self._cfg.l4_anomaly_threshold    = new_anomaly
+        self._cfg.l4_continuity_threshold = new_continuity
+
+        # --- Step 6: Per-device profiles ---
+        by_device: dict[str, list[float]] = defaultdict(list)
+        for r in records:
+            by_device[r["device_id"]].append(r["pitl_l4_distance"])
+
+        for device_id, dev_dists in by_device.items():
+            if len(dev_dists) < _MIN_DEVICE_RECORDS:
+                continue
+            d = np.array(dev_dists, dtype=float)
+            m = float(np.mean(d))
+            s = float(np.std(d))
+            personal_anomaly    = min(round(m + 3.0 * s, 3), new_anomaly)
+            personal_continuity = min(round(m + 2.0 * s, 3), new_continuity)
+            self._store.upsert_player_calibration_profile(
+                device_id,
+                personal_anomaly,
+                personal_continuity,
+                round(m, 3),
+                round(s, 3),
+                len(dev_dists),
+            )
+
+        # --- Step 7: Health checks ---
+        # Check 1: Data freshness
+        newest_ts_ms = max(r["timestamp_ms"] for r in records)
+        age_s = (time.time() * 1000 - newest_ts_ms) / 1000.0
+        if age_s > _DATA_STALE_S:
+            self._store.store_protocol_insight(
+                "calibration_health_stale",
+                f"Mode 6: newest NOMINAL record is {age_s/3600:.1f}h old (threshold 48h). "
+                "Device may be offline or not sending NOMINAL records.",
+                device_id="__global__",
+                severity="warning",
+            )
+
+        # Check 2: Distribution shift (recent 20 vs historical 80)
+        if len(records) >= 100:
+            recent_mean    = float(np.mean(distances[:20]))
+            historical_mean = float(np.mean(distances[20:]))
+            if historical_mean > 1e-6:
+                shift = abs(recent_mean - historical_mean) / historical_mean
+                if shift > _SHIFT_ALERT_PCT:
+                    self._store.store_protocol_insight(
+                        "calibration_health_distribution_shift",
+                        f"Mode 6: L4 distance distribution shifted {shift:.1%} "
+                        f"(recent mean {recent_mean:.3f} vs historical {historical_mean:.3f}). "
+                        "Possible population change or sensor drift.",
+                        device_id="__global__",
+                        severity="warning",
+                    )
+
+        # --- Step 8: Write live profile JSON + log calibration_update insight ---
+        delta_pct = (new_anomaly - prev_anomaly) / max(prev_anomaly, 1e-6)
+        profile = {
+            "generated_at": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
+            "source": "mode6_living_calibration",
+            "total_records": len(records),
+            "device_count": len(by_device),
+            "thresholds": {
+                "l4_anomaly":           new_anomaly,
+                "l4_continuity":        new_continuity,
+                "l4_anomaly_previous":  prev_anomaly,
+                "l4_continuity_previous": prev_continuity,
+            },
+            "confidence": "high" if len(records) >= 100 else "medium",
+        }
+        try:
+            with open("calibration_profile_live.json", "w") as _f:
+                json.dump(profile, _f, indent=2)
+        except OSError as exc:
+            log.warning("Mode 6: could not write calibration_profile_live.json: %s", exc)
+
+        self._store.store_protocol_insight(
+            "calibration_update",
+            f"Mode 6: L4 anomaly {prev_anomaly:.3f}\u2192{new_anomaly:.3f} ({delta_pct:+.1%}), "
+            f"continuity {prev_continuity:.3f}\u2192{new_continuity:.3f}. "
+            f"Source: {len(records)} records, {len(by_device)} device(s). "
+            f"Confidence: {profile['confidence']}.",
+            device_id="__global__",
+            severity="info",
+        )
+        log.info(
+            "Mode 6: L4 anomaly %.3f->%.3f, continuity %.3f->%.3f "
+            "(%d records, %d devices)",
+            prev_anomaly, new_anomaly, prev_continuity, new_continuity,
+            len(records), len(by_device),
+        )
 
     # ------------------------------------------------------------------
     # Housekeeping

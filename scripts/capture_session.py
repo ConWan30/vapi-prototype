@@ -80,8 +80,22 @@ def _extract_features(raw: bytes, transport=None) -> dict:
         "report_length": len(raw),
     }
 
+    # Touchpad extraction (DualSense USB report 0x01: bytes 33-36)
+    # touch_active: bit 7 of byte 33 is 0 when finger is present (inverted flag)
+    # touch0_x: 12-bit value, range 0-1919
+    # touch0_y: 12-bit value, range 0-1079
+    def _touch(raw_bytes):
+        if len(raw_bytes) >= 37:
+            active = bool((raw_bytes[33] & 0x80) == 0)
+            x = raw_bytes[34] | ((raw_bytes[35] & 0x0F) << 8)
+            y = (raw_bytes[35] >> 4) | (raw_bytes[36] << 4)
+        else:
+            active, x, y = False, 0, 0
+        return active, x, y
+
     if _HID_PARSER_AVAILABLE and transport is not None:
         parsed = _parse_report(raw, transport)
+        touch_active, touch0_x, touch0_y = _touch(raw)
         return {
             **envelope,
             "left_stick_x":  parsed["lx"],
@@ -98,6 +112,9 @@ def _extract_features(raw: bytes, transport=None) -> dict:
             "accel_x":       parsed["accel_x"],
             "accel_y":       parsed["accel_y"],
             "accel_z":       parsed["accel_z"],
+            "touch_active":  touch_active,
+            "touch0_x":      touch0_x,
+            "touch0_y":      touch0_y,
         }
 
     # Fallback: USB-only offsets (original implementation)
@@ -110,6 +127,7 @@ def _extract_features(raw: bytes, transport=None) -> dict:
                 pass
         return None
 
+    touch_active, touch0_x, touch0_y = _touch(raw)
     return {
         **envelope,
         "left_stick_x":  _u8(1),
@@ -126,6 +144,9 @@ def _extract_features(raw: bytes, transport=None) -> dict:
         "accel_x":       _i16(22),
         "accel_y":       _i16(24),
         "accel_z":       _i16(26),
+        "touch_active":  touch_active,
+        "touch0_x":      touch0_x,
+        "touch0_y":      touch0_y,
     }
 
 
