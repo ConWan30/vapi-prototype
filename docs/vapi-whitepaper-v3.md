@@ -105,6 +105,8 @@ by conceptual layer rather than development chronology. §8 presents evaluation 
 §9 analyzes security and threat models. §10 discusses limitations and future directions.
 §11 concludes.
 
+*VAPI is an independent research project. The DualShock Edge (CFI-ZCP1) is a trademark of Sony Interactive Entertainment. VAPI is not affiliated with, endorsed by, or sponsored by Sony Interactive Entertainment. The DualShock Edge is used as a research platform under fair use.*
+
 ---
 
 ## 2. Background and Related Work
