@@ -328,6 +328,30 @@ class Store:
                     updated_at            TEXT NOT NULL
                 )
             """)
+            # Phase 42: L6 human-response baseline capture
+            conn.execute("""
+                CREATE TABLE IF NOT EXISTS l6_capture_sessions (
+                    session_id       TEXT PRIMARY KEY,
+                    profile_id       INTEGER NOT NULL,
+                    profile_name     TEXT NOT NULL DEFAULT '',
+                    challenge_sent_ts REAL NOT NULL,
+                    onset_ms         REAL NOT NULL DEFAULT 0.0,
+                    settle_ms        REAL NOT NULL DEFAULT 0.0,
+                    peak_delta       REAL NOT NULL DEFAULT 0.0,
+                    grip_variance    REAL NOT NULL DEFAULT 0.0,
+                    r2_pre_mean      REAL NOT NULL DEFAULT 0.0,
+                    accel_variance   REAL NOT NULL DEFAULT 0.0,
+                    player_id        TEXT NOT NULL DEFAULT '',
+                    game_title       TEXT NOT NULL DEFAULT '',
+                    hw_session_ref   TEXT NOT NULL DEFAULT '',
+                    notes            TEXT NOT NULL DEFAULT '',
+                    created_at       REAL NOT NULL
+                )
+            """)
+            conn.execute("""
+                CREATE INDEX IF NOT EXISTS idx_l6_captures_profile
+                ON l6_capture_sessions(profile_id, player_id, created_at)
+            """)
             # Bootstrap schema version history (idempotent INSERT OR IGNORE)
             for _ph, _nm in [
                 (21, "pitl_sidecar"), (22, "phg_checkpoints"),
@@ -338,7 +362,7 @@ class Store:
                 (31, "session_persistence"), (32, "proactive_monitor"),
                 (34, "federation_bus"), (35, "insight_synthesizer"),
                 (36, "adaptive_feedback"), (37, "credential_enforcement"),
-                (38, "living_calibration"),
+                (38, "living_calibration"), (42, "l6_calibration_capture"),
             ]:
                 conn.execute(
                     "INSERT OR IGNORE INTO schema_versions (phase, migration_name, applied_at)"
@@ -1494,3 +1518,80 @@ class Store:
                 "SELECT * FROM player_calibration_profiles ORDER BY updated_at DESC"
             ).fetchall()
         return [dict(r) for r in rows]
+
+    # --- Phase 42: L6 human-response baseline capture ---
+
+    def store_l6_capture(
+        self,
+        session_id: str,
+        profile_id: int,
+        profile_name: str,
+        challenge_sent_ts: float,
+        onset_ms: float,
+        settle_ms: float,
+        peak_delta: float,
+        grip_variance: float,
+        r2_pre_mean: float,
+        accel_variance: float,
+        player_id: str = "",
+        game_title: str = "",
+        hw_session_ref: str = "",
+        notes: str = "",
+    ) -> None:
+        """Insert one L6 challenge-response record into l6_capture_sessions (Phase 42)."""
+        with self._conn() as conn:
+            conn.execute(
+                """
+                INSERT OR IGNORE INTO l6_capture_sessions
+                    (session_id, profile_id, profile_name, challenge_sent_ts,
+                     onset_ms, settle_ms, peak_delta, grip_variance,
+                     r2_pre_mean, accel_variance,
+                     player_id, game_title, hw_session_ref, notes, created_at)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    session_id, profile_id, profile_name, challenge_sent_ts,
+                    onset_ms, settle_ms, peak_delta, grip_variance,
+                    r2_pre_mean, accel_variance,
+                    player_id, game_title, hw_session_ref, notes, time.time(),
+                ),
+            )
+
+    def query_l6_captures(
+        self,
+        player_id: str = "",
+        profile_id: int | None = None,
+        limit: int = 0,
+    ) -> list[dict]:
+        """Return l6_capture_sessions rows, optionally filtered (Phase 42).
+
+        Args:
+            player_id:  Filter to this player ('' = all players).
+            profile_id: Filter to this profile_id (None = all profiles).
+            limit:      Max rows to return (0 = no limit).
+        """
+        clauses, params = [], []
+        if player_id:
+            clauses.append("player_id = ?")
+            params.append(player_id)
+        if profile_id is not None:
+            clauses.append("profile_id = ?")
+            params.append(profile_id)
+        where = ("WHERE " + " AND ".join(clauses)) if clauses else ""
+        limit_clause = f"LIMIT {int(limit)}" if limit > 0 else ""
+        sql = f"SELECT * FROM l6_capture_sessions {where} ORDER BY created_at ASC {limit_clause}"
+        with self._conn() as conn:
+            rows = conn.execute(sql, params).fetchall()
+        return [dict(r) for r in rows]
+
+    def count_l6_captures_by_profile(self, player_id: str = "") -> dict[int, int]:
+        """Return {profile_id: count} for captured L6 sessions (Phase 42)."""
+        params = []
+        where = ""
+        if player_id:
+            where = "WHERE player_id = ?"
+            params.append(player_id)
+        sql = f"SELECT profile_id, COUNT(*) as n FROM l6_capture_sessions {where} GROUP BY profile_id"
+        with self._conn() as conn:
+            rows = conn.execute(sql, params).fetchall()
+        return {r["profile_id"]: r["n"] for r in rows}

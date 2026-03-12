@@ -22,7 +22,7 @@ import json
 from dataclasses import dataclass
 from typing import Tuple
 
-PROFILE_VERSION = 1
+PROFILE_VERSION = 2  # v2: onset/settle thresholds hardware-calibrated (N=43 real responses, 2026-03-11)
 
 # TriggerModes values (from pydualsense.enums.TriggerModes)
 TRIGGER_OFF   = 0x00
@@ -54,13 +54,16 @@ CHALLENGE_PROFILES: dict[int, TriggerChallengeProfile] = {
         settle_threshold_ms=2000.0,
         description="No resistance — baseline / reset state",
     ),
+    # Thresholds: onset = mean+3σ (upper bound for valid human response),
+    #             settle = mean+3σ; both calibrated from N=43 real DualShock Edge responses.
+    # Profile 7 (RIGID_MAX) retains estimated values — only 2 captures, not production-grade.
     1: TriggerChallengeProfile(
         profile_id=1,
         name="RIGID_LIGHT",
         r2_mode=TRIGGER_RIGID, r2_forces=(80,),
         l2_mode=TRIGGER_RIGID, l2_forces=(60,),
-        onset_threshold_ms=300.0,
-        settle_threshold_ms=1500.0,
+        onset_threshold_ms=401.4,   # calibrated: mean=123ms, std=92.7ms, n=6
+        settle_threshold_ms=664.5,  # calibrated: mean=226ms, std=146ms, n=6
         description="Light rigid resistance — both triggers",
     ),
     2: TriggerChallengeProfile(
@@ -68,8 +71,8 @@ CHALLENGE_PROFILES: dict[int, TriggerChallengeProfile] = {
         name="RIGID_HEAVY",
         r2_mode=TRIGGER_RIGID, r2_forces=(200,),
         l2_mode=TRIGGER_RIGID, l2_forces=(180,),
-        onset_threshold_ms=300.0,
-        settle_threshold_ms=1500.0,
+        onset_threshold_ms=293.8,   # calibrated: mean=90.9ms, std=67.6ms, n=9
+        settle_threshold_ms=678.3,  # calibrated: mean=236ms, std=147ms, n=9
         description="Heavy rigid resistance — both triggers",
     ),
     3: TriggerChallengeProfile(
@@ -77,8 +80,8 @@ CHALLENGE_PROFILES: dict[int, TriggerChallengeProfile] = {
         name="PULSE_SLOW",
         r2_mode=TRIGGER_PULSE, r2_forces=(100, 50, 100, 50, 0, 0, 0),
         l2_mode=TRIGGER_PULSE, l2_forces=(80,  40, 80,  40, 0, 0, 0),
-        onset_threshold_ms=400.0,
-        settle_threshold_ms=2000.0,
+        onset_threshold_ms=139.0,   # calibrated: mean=76.8ms, std=20.7ms, n=10; injection_window_confirmed
+        settle_threshold_ms=629.7,  # calibrated: mean=323ms, std=102ms, n=10
         description="Slow alternating pulse — both triggers",
     ),
     4: TriggerChallengeProfile(
@@ -86,8 +89,8 @@ CHALLENGE_PROFILES: dict[int, TriggerChallengeProfile] = {
         name="PULSE_FAST",
         r2_mode=TRIGGER_PULSE, r2_forces=(180, 20, 180, 20, 0, 0, 0),
         l2_mode=TRIGGER_PULSE, l2_forces=(150, 15, 150, 15, 0, 0, 0),
-        onset_threshold_ms=400.0,
-        settle_threshold_ms=2000.0,
+        onset_threshold_ms=312.8,   # calibrated: mean=88.4ms, std=74.8ms, n=5
+        settle_threshold_ms=585.0,  # calibrated: mean=188ms, std=132ms, n=5
         description="Fast alternating pulse — both triggers",
     ),
     5: TriggerChallengeProfile(
@@ -95,8 +98,8 @@ CHALLENGE_PROFILES: dict[int, TriggerChallengeProfile] = {
         name="RIGID_ASYM",
         r2_mode=TRIGGER_RIGID, r2_forces=(150,),
         l2_mode=TRIGGER_RIGID, l2_forces=(30,),
-        onset_threshold_ms=350.0,
-        settle_threshold_ms=1800.0,
+        onset_threshold_ms=92.6,    # calibrated: mean=65.6ms, std=9.0ms, n=8; injection_window_confirmed
+        settle_threshold_ms=535.5,  # calibrated: mean=164ms, std=123ms, n=8
         description="Asymmetric: R2 heavy (150), L2 light (30)",
     ),
     6: TriggerChallengeProfile(
@@ -104,8 +107,8 @@ CHALLENGE_PROFILES: dict[int, TriggerChallengeProfile] = {
         name="PULSE_BUILDUP",
         r2_mode=TRIGGER_PULSE, r2_forces=(20, 60, 120, 180, 220, 0, 0),
         l2_mode=TRIGGER_OFF,   l2_forces=(0,),
-        onset_threshold_ms=450.0,
-        settle_threshold_ms=2500.0,
+        onset_threshold_ms=118.6,   # calibrated: mean=77.0ms, std=13.9ms, n=5; injection_window_confirmed
+        settle_threshold_ms=624.0,  # calibrated: mean=209ms, std=138ms, n=5
         description="Progressive buildup on R2 only; L2 off",
     ),
     7: TriggerChallengeProfile(
@@ -113,8 +116,8 @@ CHALLENGE_PROFILES: dict[int, TriggerChallengeProfile] = {
         name="RIGID_MAX",
         r2_mode=TRIGGER_RIGID, r2_forces=(255,),
         l2_mode=TRIGGER_RIGID, l2_forces=(255,),
-        onset_threshold_ms=300.0,
-        settle_threshold_ms=1500.0,
+        onset_threshold_ms=300.0,   # estimated — only 2 captures, not production-grade
+        settle_threshold_ms=1500.0, # estimated — only 2 captures, not production-grade
         description="Maximum rigid resistance — both triggers",
     ),
 }

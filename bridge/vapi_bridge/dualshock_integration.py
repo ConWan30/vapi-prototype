@@ -419,14 +419,19 @@ class DualShockTransport:
         self._l6_driver = None     # L6TriggerDriver, set below if enabled
         self._l6_analyzer = None   # L6ResponseAnalyzer, set below if enabled
         self._l6_pre_buffer: deque = deque(maxlen=50)  # last 50 feature snapshots
+        self._l6_post_buffer: list = []               # frames collected after challenge sent
         self._l6_pending: dict | None = None  # {profile_id, sent_ts, nonce_bytes} or None
         self._l6_p_human: float = 0.5         # last L6 score (null default)
         self._l6_loop_count: int = 0          # incremented every loop iteration
         if getattr(self._cfg, "l6_challenges_enabled", False):
             try:
-                from bridge.controller.l6_trigger_driver import L6TriggerDriver
+                _proj_root = str(Path(__file__).parents[2])
+                if _proj_root not in sys.path:
+                    sys.path.insert(0, _proj_root)
+                from bridge.controller.l6_trigger_driver import L6TriggerDriver, L6_CAPTURE_MODE
                 from vapi_bridge.l6_response_analyzer import L6ResponseAnalyzer
-                self._l6_driver = L6TriggerDriver()
+                _capture_store = self._store if L6_CAPTURE_MODE else None
+                self._l6_driver = L6TriggerDriver(store=_capture_store)
                 self._l6_analyzer = L6ResponseAnalyzer()
                 log.info("Phase C: L6 Active Challenge-Response enabled")
             except Exception as _l6_exc:
@@ -542,7 +547,7 @@ class DualShockTransport:
     # ------------------------------------------------------------------
     def _init_hardware(self) -> bool:
         """Import emulator module and connect controller. Returns success."""
-        controller_dir = Path(__file__).parents[3] / "controller"
+        controller_dir = Path(__file__).parents[2] / "controller"
         if str(controller_dir) not in sys.path:
             sys.path.insert(0, str(controller_dir))
 
@@ -649,7 +654,7 @@ class DualShockTransport:
 
         # BT L0: Instantiate physical presence verifier (advisory, non-blocking)
         try:
-            _ctrl_dir = str(Path(__file__).parents[3] / "controller")
+            _ctrl_dir = str(Path(__file__).parents[2] / "controller")
             if _ctrl_dir not in sys.path:
                 sys.path.insert(0, _ctrl_dir)
             from l0_bluetooth_presence import BluetoothPresenceVerifier
@@ -686,7 +691,7 @@ class DualShockTransport:
         # Phase 8: Backend behavioral cheat classifier (Layer 3)
         if getattr(self._cfg, "backend_cheat_enabled", False):
             try:
-                controller_dir_str = str(Path(__file__).parents[3] / "controller")
+                controller_dir_str = str(Path(__file__).parents[2] / "controller")
                 if controller_dir_str not in sys.path:
                     sys.path.insert(0, controller_dir_str)
                 from tinyml_backend_cheat import BackendCheatClassifier
@@ -841,6 +846,7 @@ class DualShockTransport:
             # --- Layer 4: Biometric anomaly detection (Phase 13 Enhancement 1) ---
             # Produces BIOMETRIC_ANOMALY (0x30) — intentionally outside [0x28, 0x2A]
             # cheat range; does NOT block team proofs or trigger rating penalty.
+            _e4_cognitive_drift = None  # initialized here; updated by E4 block below (line ~1220)
             _l4_distance = None
             _l4_warmed = None
             _l4_features_json = None
@@ -1155,15 +1161,21 @@ class DualShockTransport:
             self._l6_loop_count += 1
             if self._l6_driver is not None and frames:
                 _snap = frames[-1]
-                self._l6_pre_buffer.append({
-                    "features": {
-                        "r2":      getattr(_snap, "r2_trigger", 0),
-                        "l2":      getattr(_snap, "l2_trigger", 0),
-                        "accel_x": getattr(_snap, "accel_x", 0),
-                        "accel_y": getattr(_snap, "accel_y", 0),
-                        "accel_z": getattr(_snap, "accel_z", 0),
+                # Feed ALL frames (1000 Hz) into pre/post buffers for accurate metrics
+                for _f in frames:
+                    _frame_entry = {
+                        "features": {
+                            "r2":      getattr(_f, "r2_trigger", 0),
+                            "l2":      getattr(_f, "l2_trigger", 0),
+                            "accel_x": getattr(_f, "accel_x", 0),
+                            "accel_y": getattr(_f, "accel_y", 0),
+                            "accel_z": getattr(_f, "accel_z", 0),
+                        }
                     }
-                })
+                    if self._l6_pending is None:
+                        self._l6_pre_buffer.append(_frame_entry)
+                    else:
+                        self._l6_post_buffer.append(_frame_entry)
                 if (self._l6_pending is not None
                         and self._l6_analyzer is not None):
                     _elapsed_s = time.monotonic() - self._l6_pending["sent_ts"]
@@ -1172,7 +1184,7 @@ class DualShockTransport:
                             from bridge.controller.l6_challenge_profiles import CHALLENGE_PROFILES
                             _prof = CHALLENGE_PROFILES[self._l6_pending["profile_id"]]
                             _metrics = self._l6_analyzer.compute_metrics(
-                                list(self._l6_pre_buffer), [], _prof,
+                                list(self._l6_pre_buffer), list(self._l6_post_buffer), _prof,
                                 self._l6_pending["sent_ts"],
                             )
                             self._l6_p_human = self._l6_analyzer.classify(_metrics)
@@ -1180,10 +1192,30 @@ class DualShockTransport:
                                 "Phase C: L6 response scored p_human=%.3f profile=%d",
                                 self._l6_p_human, self._l6_pending["profile_id"],
                             )
+                            # Phase 42: capture logging (no-op unless L6_CAPTURE_MODE=true)
+                            try:
+                                _pre_r2 = [
+                                    float(r.get("features", r).get("r2", 0))
+                                    for r in list(self._l6_pre_buffer)
+                                ]
+                                _r2_mean = sum(_pre_r2) / len(_pre_r2) if _pre_r2 else 0.0
+                                import asyncio as _al6
+                                _al6.create_task(self._l6_driver.log_capture(
+                                    metrics=_metrics,
+                                    challenge_sent_ts=self._l6_pending["sent_ts"] if self._l6_pending else 0.0,
+                                    r2_pre_mean=_r2_mean,
+                                    player_id=getattr(self._cfg, "l6_capture_player_id", ""),
+                                    game_title=getattr(self._cfg, "l6_capture_game_title", ""),
+                                    hw_session_ref=getattr(self._cfg, "l6_capture_hw_session_ref", ""),
+                                    notes=getattr(self._cfg, "l6_capture_notes", ""),
+                                ))
+                            except Exception:
+                                pass
                         except Exception as _exc:
                             log.debug("Phase C: L6 response analysis failed (non-fatal): %s", _exc)
                         finally:
                             self._l6_pending = None
+                            self._l6_post_buffer = []  # reset for next challenge
                             if self._reader and self._reader.ds:
                                 try:
                                     import asyncio as _asyncio
@@ -1239,11 +1271,26 @@ class DualShockTransport:
                     and self._l6_loop_count % getattr(self._cfg, "l6_challenge_interval_ticks", 300) == 0
                     and self._l6_loop_count > 0):
                 _recent = list(self._l6_pre_buffer)[-10:]
-                _player_active = any(
-                    r["features"].get("r2", 0) > 10 or r["features"].get("l2", 0) > 10
+                _r2_at_rest = all(
+                    r["features"].get("r2", 0) < 15
                     for r in _recent
                 )
-                if _player_active and self._reader and self._reader.ds:
+                try:
+                    from bridge.controller.l6_trigger_driver import L6_CAPTURE_MODE as _L6_CAP
+                except Exception:
+                    _L6_CAP = False
+                # In capture mode: fire when R2 is at rest so onset_ms is measurable
+                # In normal mode: fire when player is active
+                _should_challenge = (_r2_at_rest if _L6_CAP else any(
+                    r["features"].get("r2", 0) > 10 or r["features"].get("l2", 0) > 10
+                    for r in _recent
+                )) and len(_recent) > 0
+                log.info(
+                    "Phase C: L6 tick=%d r2_at_rest=%s capture_mode=%s recent=%d reader=%s ds=%s",
+                    self._l6_loop_count, _r2_at_rest, _L6_CAP, len(_recent),
+                    self._reader is not None, self._reader.ds is not None if self._reader else False,
+                )
+                if _should_challenge and self._reader and self._reader.ds:
                     try:
                         _pid = self._l6_driver.sequencer.select_random_profile()
                         _ts  = await self._l6_driver.send_challenge(_pid, self._reader.ds)

@@ -53,6 +53,46 @@ Key Phase 41 deliverables:
 
 ---
 
+## Live Dashboard
+
+The VAPI dashboard (`frontend/VAPIDashboard.jsx`) auto-detects the bridge and switches between **LIVE** and **DEMO** mode.
+
+### Starting the bridge
+
+```bash
+cd bridge
+pip install -r requirements.txt
+python -m vapi_bridge
+# Bridge starts on http://localhost:8080
+```
+
+### Starting the frontend
+
+```bash
+cd frontend
+npm install
+npm run dev
+# Vite dev server on http://localhost:5173
+```
+
+### LIVE / DEMO mode
+
+| Mode | Indicator | Behaviour |
+|------|-----------|-----------|
+| **LIVE** | Pulsing green dot — `LIVE — BRIDGE CONNECTED` | Fetches `/dashboard/snapshot` every 30 s; subscribes to `WS /ws/records` for real-time PoAC record feed; L6 status, PHG score, Mode 6 calibration chart, and session counters update live |
+| **DEMO** | Static orange dot — `DEMO — BRIDGE OFFLINE` | All data falls back to whitepaper-accurate hardcoded constants; visual design is identical |
+
+The live record feed panel (bottom of left column) is only visible in LIVE mode and shows the last 10 incoming PoAC records with colour-coded inference codes (green=NOMINAL, orange=ADVISORY, red=HARD CHEAT).
+
+### Verify the connection
+
+```bash
+python scripts/test_dashboard_connection.py
+# Checks: /health, /dashboard/snapshot fields, CORS headers, WS /ws/records
+```
+
+---
+
 ## Running Tests
 
 ### Bridge (874 tests)

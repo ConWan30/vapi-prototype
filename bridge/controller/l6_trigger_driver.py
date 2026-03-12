@@ -23,8 +23,10 @@ Safety invariants (never bypass):
 from __future__ import annotations
 
 import asyncio
+import os
 import secrets
 import time
+import uuid
 from random import Random
 from typing import TYPE_CHECKING
 
@@ -35,6 +37,10 @@ from bridge.controller.l6_challenge_profiles import (
 
 if TYPE_CHECKING:
     pass  # DualSense is not imported at module level to avoid hardware dependency
+
+# Set L6_CAPTURE_MODE=true (or 1/yes) to log every challenge dispatch+response
+# to the l6_capture_sessions SQLite table for human baseline calibration.
+L6_CAPTURE_MODE: bool = os.getenv("L6_CAPTURE_MODE", "").lower() in ("1", "true", "yes")
 
 
 class ChallengeSequencer:
@@ -65,10 +71,14 @@ class L6TriggerDriver:
 
     Uses asyncio.to_thread() to run pydualsense's synchronous API without
     blocking the main event loop.
+
+    If L6_CAPTURE_MODE env var is set, pass a store instance to enable automatic
+    logging of every challenge+response pair to l6_capture_sessions.
     """
 
-    def __init__(self) -> None:
+    def __init__(self, store=None) -> None:
         self.sequencer = ChallengeSequencer()
+        self._store = store  # VAPIStore reference for capture logging (optional)
 
     async def send_challenge(self, profile_id: int, ds: object) -> float:
         """Send the given profile to the controller. Returns monotonic timestamp."""
@@ -81,6 +91,64 @@ class L6TriggerDriver:
         baseline = CHALLENGE_PROFILES[0]
         await asyncio.to_thread(self._sync_write, ds, baseline)
 
+    async def log_capture(
+        self,
+        metrics,
+        challenge_sent_ts: float,
+        r2_pre_mean: float = 0.0,
+        player_id: str = "",
+        game_title: str = "",
+        hw_session_ref: str = "",
+        notes: str = "",
+    ) -> None:
+        """Log one L6 challenge-response to l6_capture_sessions (Phase 42).
+
+        Only writes when L6_CAPTURE_MODE is True and a store has been provided.
+        Safe to call for both valid and null (window-expired) responses.
+        Never raises — capture failure must not interrupt the main bridge loop.
+
+        Args:
+            metrics:           L6ResponseMetrics from L6ResponseAnalyzer.compute_metrics().
+            challenge_sent_ts: Monotonic timestamp returned by send_challenge().
+            r2_pre_mean:       Mean R2 ADC value during the pre-challenge baseline window.
+            player_id:         Operator-assigned player identifier (e.g. "P1").
+            game_title:        Game title for this session (e.g. "Warzone").
+            hw_session_ref:    Reference to the corresponding hw_*.json session file.
+            notes:             Free-form operator notes.
+        """
+        import logging as _log
+        _logger = _log.getLogger("vapi_bridge.l6_capture")
+        if not L6_CAPTURE_MODE or self._store is None:
+            _logger.debug("log_capture skipped: CAPTURE_MODE=%s store=%s", L6_CAPTURE_MODE, self._store is not None)
+            return
+        try:
+            from bridge.controller.l6_challenge_profiles import CHALLENGE_PROFILES as _CP
+            _profile_name = _CP.get(metrics.profile_id, None)
+            pname = _profile_name.name if _profile_name and hasattr(_profile_name, "name") else str(metrics.profile_id)
+            self._store.store_l6_capture(
+                session_id=str(uuid.uuid4()),
+                profile_id=metrics.profile_id,
+                profile_name=pname,
+                challenge_sent_ts=challenge_sent_ts,
+                onset_ms=metrics.onset_ms,
+                settle_ms=metrics.settle_ms,
+                peak_delta=metrics.peak_delta,
+                grip_variance=metrics.grip_variance,
+                r2_pre_mean=r2_pre_mean,
+                accel_variance=metrics.grip_variance,  # same signal, different column name
+                player_id=player_id,
+                game_title=game_title,
+                hw_session_ref=hw_session_ref,
+                notes=notes,
+            )
+            _logger.info(
+                "L6 capture logged: profile=%d (%s) onset_ms=%.1f peak_delta=%.1f p_human=%.3f player=%s",
+                metrics.profile_id, pname, metrics.onset_ms, metrics.peak_delta,
+                0.0, player_id,
+            )
+        except Exception as _exc:
+            _logger.warning("L6 capture FAILED (silent): %s", _exc)  # was: pass
+
     @staticmethod
     def _sync_write(ds: object, profile: TriggerChallengeProfile) -> None:
         """Synchronous — called inside asyncio.to_thread().
@@ -89,12 +157,13 @@ class L6TriggerDriver:
         pydualsense auto-commits trigger state on its next output report cycle;
         no explicit flush is required. Mirrors dualshock_integration.set_trigger_effect().
         """
+        from pydualsense import TriggerModes
         lt = ds.triggerL
-        lt.setMode(profile.l2_mode)
+        lt.setMode(TriggerModes(profile.l2_mode))
         for i, f in enumerate(profile.l2_forces):
             lt.setForce(i, f)
 
         rt = ds.triggerR
-        rt.setMode(profile.r2_mode)
+        rt.setMode(TriggerModes(profile.r2_mode))
         for i, f in enumerate(profile.r2_forces):
             rt.setForce(i, f)

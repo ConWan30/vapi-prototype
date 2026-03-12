@@ -34,6 +34,17 @@ def _make_mock_ds():
     return ds
 
 
+def _patch_trigger_modes():
+    """Patch pydualsense.TriggerModes so _sync_write works without hardware."""
+    import sys
+    mock_tm = MagicMock()
+    mock_tm.side_effect = lambda x: x  # TriggerModes(int) → passthrough
+    mock_pydualsense = MagicMock()
+    mock_pydualsense.TriggerModes = mock_tm
+    sys.modules["pydualsense"] = mock_pydualsense  # force-set: override bare stub from integration tests
+    return mock_pydualsense
+
+
 class TestL6TriggerDriver(unittest.TestCase):
 
     def test_1_driver_instantiates_without_hardware(self):
@@ -60,6 +71,7 @@ class TestL6TriggerDriver(unittest.TestCase):
 
     def test_4_sync_write_calls_setmode_and_setforce(self):
         """_sync_write() must call setMode and setForce on both trigger objects."""
+        _patch_trigger_modes()
         ds = _make_mock_ds()
         profile = CHALLENGE_PROFILES[1]  # RIGID_LIGHT
         L6TriggerDriver._sync_write(ds, profile)
@@ -73,6 +85,7 @@ class TestL6TriggerDriver(unittest.TestCase):
 
     def test_5_send_challenge_returns_float(self):
         """send_challenge() must return a float (monotonic timestamp)."""
+        _patch_trigger_modes()
         driver = L6TriggerDriver()
         ds = _make_mock_ds()
 
@@ -90,6 +103,7 @@ class TestL6TriggerDriver(unittest.TestCase):
 
     def test_6_clear_triggers_uses_baseline_off(self):
         """clear_triggers() must call _sync_write with BASELINE_OFF (mode=0 for both)."""
+        _patch_trigger_modes()
         driver = L6TriggerDriver()
         ds = _make_mock_ds()
 

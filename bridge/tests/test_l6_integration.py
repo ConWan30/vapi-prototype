@@ -129,8 +129,8 @@ class TestL6Integration(unittest.TestCase):
         _stub_hardware_modules()
         from vapi_bridge import dualshock_integration
         src = inspect.getsource(dualshock_integration.DualShockTransport._session_loop)
-        self.assertIn("_player_active", src,
-                      "_player_active idle gate missing from _session_loop source")
+        self.assertIn("_r2_at_rest", src,
+                      "_r2_at_rest idle gate missing from _session_loop source")
 
 
 if __name__ == "__main__":

@@ -1,0 +1,266 @@
+{
+  "profiles": {
+    "1": {
+      "profile_id": 1,
+      "name": "RIGID_LIGHT",
+      "n_responses": 6,
+      "sufficient_for_production": true,
+      "injection_window_confirmed": false,
+      "onset_ms": {
+        "mean": 123.17,
+        "std": 92.73,
+        "min": 56.0,
+        "max": 307.0,
+        "p10": 61.5,
+        "p90": 211.5,
+        "p95": 259.25,
+        "neg3sigma_floor": 0.0,
+        "recommended_threshold_ms": 401.4
+      },
+      "settle_ms": {
+        "mean": 226.5,
+        "std": 146.01,
+        "min": 34.0,
+        "max": 356.0,
+        "p10": 71.0,
+        "p90": 355.5,
+        "p95": 355.75,
+        "recommended_threshold_ms": 664.5
+      },
+      "grip_variance": {
+        "mean": 0.0013,
+        "std": 0.0028,
+        "min": 0.0001,
+        "max": 0.0069,
+        "p10": 0.0001,
+        "p90": 0.0036,
+        "recommended_floor": 0.0
+      },
+      "peak_delta": {
+        "mean": 255.0,
+        "std": 0.0,
+        "min": 255.0,
+        "max": 255.0
+      }
+    },
+    "2": {
+      "profile_id": 2,
+      "name": "RIGID_HEAVY",
+      "n_responses": 9,
+      "sufficient_for_production": true,
+      "injection_window_confirmed": false,
+      "onset_ms": {
+        "mean": 90.89,
+        "std": 67.64,
+        "min": 51.0,
+        "max": 269.0,
+        "p10": 54.2,
+        "p90": 120.2,
+        "p95": 194.6,
+        "neg3sigma_floor": 0.0,
+        "recommended_threshold_ms": 293.8
+      },
+      "settle_ms": {
+        "mean": 236.11,
+        "std": 147.41,
+        "min": 24.0,
+        "max": 356.0,
+        "p10": 44.8,
+        "p90": 356.0,
+        "p95": 356.0,
+        "recommended_threshold_ms": 678.3
+      },
+      "grip_variance": {
+        "mean": 0.0026,
+        "std": 0.0054,
+        "min": 0.0001,
+        "max": 0.0162,
+        "p10": 0.0001,
+        "p90": 0.0079,
+        "recommended_floor": 0.0
+      },
+      "peak_delta": {
+        "mean": 255.0,
+        "std": 0.0,
+        "min": 255.0,
+        "max": 255.0
+      }
+    },
+    "3": {
+      "profile_id": 3,
+      "name": "PULSE_SLOW",
+      "n_responses": 10,
+      "sufficient_for_production": true,
+      "injection_window_confirmed": true,
+      "onset_ms": {
+        "mean": 76.8,
+        "std": 20.72,
+        "min": 51.0,
+        "max": 105.0,
+        "p10": 51.0,
+        "p90": 102.3,
+        "p95": 103.65,
+        "neg3sigma_floor": 14.63,
+        "recommended_threshold_ms": 139.0
+      },
+      "settle_ms": {
+        "mean": 323.5,
+        "std": 102.07,
+        "min": 33.0,
+        "max": 357.0,
+        "p10": 322.8,
+        "p90": 356.1,
+        "p95": 356.55,
+        "recommended_threshold_ms": 629.7
+      },
+      "grip_variance": {
+        "mean": 0.0019,
+        "std": 0.0036,
+        "min": 0.0,
+        "max": 0.0102,
+        "p10": 0.0001,
+        "p90": 0.0069,
+        "recommended_floor": 0.0
+      },
+      "peak_delta": {
+        "mean": 255.0,
+        "std": 0.0,
+        "min": 255.0,
+        "max": 255.0
+      }
+    },
+    "4": {
+      "profile_id": 4,
+      "name": "PULSE_FAST",
+      "n_responses": 5,
+      "sufficient_for_production": true,
+      "injection_window_confirmed": false,
+      "onset_ms": {
+        "mean": 88.4,
+        "std": 74.8,
+        "min": 36.0,
+        "max": 220.0,
+        "p10": 41.6,
+        "p90": 160.0,
+        "p95": 190.0,
+        "neg3sigma_floor": 0.0,
+        "recommended_threshold_ms": 312.8
+      },
+      "settle_ms": {
+        "mean": 188.4,
+        "std": 132.19,
+        "min": 52.0,
+        "max": 354.0,
+        "p10": 55.6,
+        "p90": 322.4,
+        "p95": 338.2,
+        "recommended_threshold_ms": 585.0
+      },
+      "grip_variance": {
+        "mean": 0.0063,
+        "std": 0.0139,
+        "min": 0.0,
+        "max": 0.0311,
+        "p10": 0.0001,
+        "p90": 0.0188,
+        "recommended_floor": 0.0
+      },
+      "peak_delta": {
+        "mean": 255.0,
+        "std": 0.0,
+        "min": 255.0,
+        "max": 255.0
+      }
+    },
+    "5": {
+      "profile_id": 5,
+      "name": "RIGID_ASYM",
+      "n_responses": 8,
+      "sufficient_for_production": true,
+      "injection_window_confirmed": true,
+      "onset_ms": {
+        "mean": 65.62,
+        "std": 9.01,
+        "min": 56.0,
+        "max": 79.0,
+        "p10": 58.1,
+        "p90": 78.3,
+        "p95": 78.65,
+        "neg3sigma_floor": 38.6,
+        "recommended_threshold_ms": 92.6
+      },
+      "settle_ms": {
+        "mean": 164.75,
+        "std": 123.58,
+        "min": 21.0,
+        "max": 355.0,
+        "p10": 35.7,
+        "p90": 288.5,
+        "p95": 321.75,
+        "recommended_threshold_ms": 535.5
+      },
+      "grip_variance": {
+        "mean": 0.001,
+        "std": 0.0024,
+        "min": 0.0001,
+        "max": 0.007,
+        "p10": 0.0001,
+        "p90": 0.0023,
+        "recommended_floor": 0.0
+      },
+      "peak_delta": {
+        "mean": 255.0,
+        "std": 0.0,
+        "min": 255.0,
+        "max": 255.0
+      }
+    },
+    "6": {
+      "profile_id": 6,
+      "name": "PULSE_BUILDUP",
+      "n_responses": 5,
+      "sufficient_for_production": true,
+      "injection_window_confirmed": true,
+      "onset_ms": {
+        "mean": 77.0,
+        "std": 13.86,
+        "min": 63.0,
+        "max": 96.0,
+        "p10": 64.2,
+        "p90": 92.0,
+        "p95": 94.0,
+        "neg3sigma_floor": 35.43,
+        "recommended_threshold_ms": 118.6
+      },
+      "settle_ms": {
+        "mean": 209.0,
+        "std": 138.33,
+        "min": 71.0,
+        "max": 356.0,
+        "p10": 79.0,
+        "p90": 354.8,
+        "p95": 355.4,
+        "recommended_threshold_ms": 624.0
+      },
+      "grip_variance": {
+        "mean": 0.0002,
+        "std": 0.0,
+        "min": 0.0001,
+        "max": 0.0002,
+        "p10": 0.0001,
+        "p90": 0.0002,
+        "recommended_floor": 0.0
+      },
+      "peak_delta": {
+        "mean": 255.0,
+        "std": 0.0,
+        "min": 255.0,
+        "max": 255.0
+      }
+    }
+  },
+  "total_accepted_responses": 43,
+  "source": "SQLite:C:\\Users\\Contr\\.vapi\\bridge.db (player=all, 50 total rows)",
+  "min_sessions_for_production": 5,
+  "window_size_note": "Thresholds: onset/settle = mean+3*std (upper bound for human responses); grip_variance floor = mean-2*std (lower bound \u2014 injection suspected below). N >= 5 per profile required for production use."
+}

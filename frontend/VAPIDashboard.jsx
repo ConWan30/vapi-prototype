@@ -136,6 +136,62 @@ function usePulse(interval = 2400) {
   return pulse;
 }
 
+/* ─── BRIDGE CONNECTION ──────────────────────────────────────────────────── */
+
+const BRIDGE_URL = "http://localhost:8080";
+
+function useBridgeData() {
+  const [snapshot, setSnapshot] = useState(null);
+  const [mode,     setMode]     = useState("DEMO"); // "LIVE" | "DEMO"
+  const [records,  setRecords]  = useState([]);
+  const wsRef = useRef(null);
+
+  useEffect(() => {
+    let active = true;
+    let pollTimer = null;
+
+    async function fetchSnapshot() {
+      try {
+        const res = await fetch(`${BRIDGE_URL}/dashboard/snapshot`,
+          { signal: AbortSignal.timeout(3000) });
+        if (!res.ok) throw new Error(`HTTP ${res.status}`);
+        const data = await res.json();
+        if (active) { setSnapshot(data); setMode("LIVE"); }
+      } catch {
+        if (active) setMode(prev => prev === "LIVE" ? "LIVE" : "DEMO");
+      }
+    }
+
+    fetchSnapshot();
+    pollTimer = setInterval(fetchSnapshot, 30000);
+
+    function connectWs() {
+      try {
+        const ws = new WebSocket(`ws://localhost:8080/ws/records`);
+        ws.onopen    = () => { if (active) setMode("LIVE"); };
+        ws.onmessage = (e) => {
+          try {
+            const rec = JSON.parse(e.data);
+            if (active) setRecords(prev => [{ ...rec, _ts: Date.now() }, ...prev].slice(0, 10));
+          } catch {}
+        };
+        ws.onerror = () => {};
+        ws.onclose = () => { if (active) setTimeout(connectWs, 5000); };
+        wsRef.current = ws;
+      } catch {}
+    }
+    connectWs();
+
+    return () => {
+      active = false;
+      clearInterval(pollTimer);
+      if (wsRef.current) wsRef.current.close();
+    };
+  }, []);
+
+  return { snapshot, mode, records };
+}
+
 /* ─── SUB-COMPONENTS ─────────────────────────────────────────────────────── */
 
 function ScanLines() {
@@ -246,13 +302,16 @@ function StatBox({ label, value, sub, accent = "#ff6b00", mono = false }) {
 
 /* ─── SECTION: PITL STACK ────────────────────────────────────────────────── */
 
-function PITLStack() {
+function PITLStack({ l6Status }) {
   const [active, setActive] = useState(null);
   return (
     <Panel>
       <SectionLabel>Physical Input Trust Layer — 9-Level Stack</SectionLabel>
       <div style={{ display: "flex", flexDirection: "column", gap: 4 }}>
-        {PITL_LAYERS.map((layer, i) => (
+        {PITL_LAYERS.map((layer, i) => {
+          const liveStatus = (layer.id === "L6" && l6Status !== undefined) ? l6Status : layer.status;
+          const layer_ = { ...layer, status: liveStatus };
+          return (
           <div
             key={layer.id}
             onClick={() => setActive(active === i ? null : i)}
@@ -286,11 +345,12 @@ function PITLStack() {
               <Badge type={layer.type} />
             </div>
             <div style={{ display: "flex", alignItems: "center", gap: 6 }}>
-              <StatusDot status={layer.status} />
-              <span style={{ fontFamily: "'JetBrains Mono', monospace", fontSize: 9, color: layer.status === "PENDING" ? "#ff9500" : "#3d5060" }}>{layer.status}</span>
+              <StatusDot status={layer_.status} />
+              <span style={{ fontFamily: "'JetBrains Mono', monospace", fontSize: 9, color: layer_.status === "PENDING" ? "#ff9500" : layer_.status === "DISABLED" ? "#ff2d55" : "#3d5060" }}>{layer_.status}</span>
             </div>
           </div>
-        ))}
+          );
+        })}
       </div>
       <div style={{ marginTop: 12, fontFamily: "'JetBrains Mono', monospace", fontSize: 9, color: "#3d5060" }}>
         ↑ click any layer to expand · L6 disabled by default (L6_CHALLENGES_ENABLED=false) · inference codes committed to PoAC chain
@@ -436,13 +496,14 @@ function BiometricRadar() {
 
 /* ─── SECTION: MODE 6 LIVING CALIBRATION ────────────────────────────────── */
 
-function LivingCalibration() {
+function LivingCalibration({ chartData }) {
+  const data = (chartData && chartData.length > 0) ? chartData : MODE6_DATA;
   return (
     <Panel>
       <SectionLabel>Mode 6 — Living Calibration (Phase 38) · α=0.95 · ±15%/cycle</SectionLabel>
       <div style={{ height: 140 }}>
         <ResponsiveContainer width="100%" height="100%">
-          <AreaChart data={MODE6_DATA} margin={{ top: 4, right: 4, bottom: 4, left: 0 }}>
+          <AreaChart data={data} margin={{ top: 4, right: 4, bottom: 4, left: 0 }}>
             <defs>
               <linearGradient id="anomalyGrad" x1="0" y1="0" x2="0" y2="1">
                 <stop offset="5%" stopColor="#ff6b00" stopOpacity={0.25} />
@@ -646,8 +707,9 @@ function ZKProofStatus() {
 
 /* ─── SECTION: PHG CREDENTIAL ────────────────────────────────────────────── */
 
-function PHGCredential() {
-  const score = useCounter(847, 2000);
+function PHGCredential({ phgScore }) {
+  const scoreTarget = (phgScore !== undefined && phgScore !== null) ? Math.round(phgScore) : 847;
+  const score = useCounter(scoreTarget, 2000);
   return (
     <Panel>
       <SectionLabel>PHG Humanity Credential — Soulbound ERC-5192</SectionLabel>
@@ -752,13 +814,82 @@ function OpenItems() {
   );
 }
 
+/* ─── SECTION: LIVE RECORD FEED (LIVE mode only) ────────────────────────── */
+
+const _INF_COLORS = {
+  NOMINAL:            "#00ff88",
+  SKILLED:            "#00ff88",
+  DRIVER_INJECT:      "#ff2d55",
+  WALLHACK_PREAIM:    "#ff2d55",
+  AIMBOT_BEHAVIORAL:  "#ff2d55",
+  TEMPORAL_ANOMALY:   "#ff9500",
+  BIOMETRIC_ANOMALY:  "#ff9500",
+};
+
+function LiveRecordFeed({ records }) {
+  return (
+    <Panel>
+      <SectionLabel>Live PoAC Record Feed — WS /ws/records</SectionLabel>
+      {records.length === 0 ? (
+        <div style={{ fontFamily: "'JetBrains Mono', monospace", fontSize: 9, color: "#3d5060", textAlign: "center", padding: "20px 0" }}>
+          Waiting for records…
+        </div>
+      ) : (
+        <div style={{ display: "flex", flexDirection: "column", gap: 3 }}>
+          {records.map((r, i) => {
+            const color = _INF_COLORS[r.inference_name] || "#c4cdd6";
+            return (
+              <div key={i} style={{
+                display: "grid", gridTemplateColumns: "68px 1fr 130px 56px",
+                gap: 8, alignItems: "center",
+                padding: "7px 10px",
+                background: "rgba(255,255,255,0.02)",
+                border: `1px solid ${color}22`,
+                borderRadius: 2,
+                opacity: i === 0 ? 1 : Math.max(0.4, 1 - i * 0.07),
+                transition: "opacity 0.3s",
+              }}>
+                <span style={{ fontFamily: "'JetBrains Mono', monospace", fontSize: 8, color: "#3d5060" }}>
+                  {new Date(r._ts).toTimeString().slice(0, 8)}
+                </span>
+                <span style={{ fontFamily: "'JetBrains Mono', monospace", fontSize: 9, color, fontWeight: i === 0 ? 700 : 400 }}>
+                  {r.inference_name}
+                </span>
+                <span style={{ fontFamily: "'JetBrains Mono', monospace", fontSize: 8, color: "#5a6a74", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
+                  #{r.record_hash || "—"}
+                </span>
+                <span style={{ fontFamily: "'JetBrains Mono', monospace", fontSize: 8, color: "#3d5060", textAlign: "right" }}>
+                  {r.confidence !== undefined ? `${Math.round(r.confidence * 100)}%` : "—"}
+                </span>
+              </div>
+            );
+          })}
+        </div>
+      )}
+      <div style={{ marginTop: 8, fontFamily: "'JetBrains Mono', monospace", fontSize: 8, color: "#3d5060" }}>
+        last 10 records · green=NOMINAL · orange=ADVISORY · red=HARD CHEAT
+      </div>
+    </Panel>
+  );
+}
+
 /* ─── MAIN APP ────────────────────────────────────────────────────────────── */
 
 export default function VAPIDashboard() {
-  const pulse         = usePulse(3000);
-  const sessionCount  = useCounter(69,   1500);
-  const testCount     = useCounter(1289, 1800);
-  const contractCount = useCounter(13,   1200);
+  const pulse                    = usePulse(3000);
+  const { snapshot, mode, records } = useBridgeData();
+
+  const sessionTarget  = snapshot?.session?.total_sessions  ?? 69;
+  const testTarget     = snapshot?.session?.total_tests     ?? 877;
+  const contractTarget = snapshot?.session?.contracts_live  ?? 13;
+
+  const sessionCount  = useCounter(sessionTarget,  1500);
+  const testCount     = useCounter(testTarget,     1800);
+  const contractCount = useCounter(contractTarget, 1200);
+
+  const l6Status  = snapshot ? (snapshot.l6?.enabled ? "ACTIVE" : "DISABLED") : undefined;
+  const calibData = snapshot?.calibration?.threshold_history ?? [];
+  const phgScore  = snapshot?.phg?.score;
 
   return (
     <>
@@ -838,16 +969,29 @@ export default function VAPIDashboard() {
                 <div style={{ fontFamily: "'JetBrains Mono', monospace", fontSize: 8, color: "#3d5060", letterSpacing: "0.15em", marginTop: 2 }}>{label}</div>
               </div>
             ))}
-            <div style={{
-              display: "flex", alignItems: "center", gap: 6,
-              padding: "6px 12px",
-              border: "1px solid rgba(0,255,136,0.3)",
-              borderRadius: 2,
-              background: "rgba(0,255,136,0.06)",
-            }}>
-              <StatusDot status="ACTIVE" />
-              <span style={{ fontFamily: "'JetBrains Mono', monospace", fontSize: 9, color: "#00ff88" }}>TESTNET LIVE</span>
-            </div>
+            {mode === "LIVE" ? (
+              <div style={{
+                display: "flex", alignItems: "center", gap: 6,
+                padding: "6px 12px",
+                border: "1px solid rgba(0,255,136,0.3)",
+                borderRadius: 2,
+                background: "rgba(0,255,136,0.06)",
+              }}>
+                <StatusDot status="ACTIVE" />
+                <span style={{ fontFamily: "'JetBrains Mono', monospace", fontSize: 9, color: "#00ff88" }}>LIVE — BRIDGE CONNECTED</span>
+              </div>
+            ) : (
+              <div style={{
+                display: "flex", alignItems: "center", gap: 6,
+                padding: "6px 12px",
+                border: "1px solid rgba(255,149,0,0.3)",
+                borderRadius: 2,
+                background: "rgba(255,149,0,0.06)",
+              }}>
+                <span style={{ width: 7, height: 7, borderRadius: "50%", background: "#ff9500", flexShrink: 0 }} />
+                <span style={{ fontFamily: "'JetBrains Mono', monospace", fontSize: 9, color: "#ff9500" }}>DEMO — BRIDGE OFFLINE</span>
+              </div>
+            )}
           </div>
         </div>
 
@@ -865,15 +1009,18 @@ export default function VAPIDashboard() {
         <div style={{ padding: "16px 32px", display: "grid", gridTemplateColumns: "1fr 1fr", gap: 16 }}>
           {/* Left column */}
           <div style={{ display: "flex", flexDirection: "column", gap: 16 }}>
-            <div className="panel-fade" style={{ animationDelay: "0.05s" }}><PITLStack /></div>
+            <div className="panel-fade" style={{ animationDelay: "0.05s" }}><PITLStack l6Status={l6Status} /></div>
             <div className="panel-fade" style={{ animationDelay: "0.15s" }}><AdversarialMatrix /></div>
             <div className="panel-fade" style={{ animationDelay: "0.25s" }}><HardwareMetrics /></div>
+            {mode === "LIVE" && (
+              <div className="panel-fade" style={{ animationDelay: "0.32s" }}><LiveRecordFeed records={records} /></div>
+            )}
           </div>
           {/* Right column */}
           <div style={{ display: "flex", flexDirection: "column", gap: 16 }}>
             <div className="panel-fade" style={{ animationDelay: "0.1s" }}><PoACRecord /></div>
             <div className="panel-fade" style={{ animationDelay: "0.2s" }}><BiometricRadar /></div>
-            <div className="panel-fade" style={{ animationDelay: "0.3s" }}><LivingCalibration /></div>
+            <div className="panel-fade" style={{ animationDelay: "0.3s" }}><LivingCalibration chartData={calibData} /></div>
           </div>
         </div>
 
@@ -884,7 +1031,7 @@ export default function VAPIDashboard() {
 
         {/* ── FULL-WIDTH ROW ───────────────────────────────────────────────── */}
         <div style={{ padding: "0 32px", display: "grid", gridTemplateColumns: "1fr 1fr 1fr", gap: 16 }}>
-          <div className="panel-fade" style={{ animationDelay: "0.35s" }}><PHGCredential /></div>
+          <div className="panel-fade" style={{ animationDelay: "0.35s" }}><PHGCredential phgScore={phgScore} /></div>
           <div className="panel-fade" style={{ animationDelay: "0.4s"  }}><ZKProofStatus /></div>
           <div className="panel-fade" style={{ animationDelay: "0.45s" }}><ContractStack /></div>
         </div>

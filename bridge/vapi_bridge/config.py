@@ -385,6 +385,19 @@ class Config:
     l6_challenge_timeout_s: float = field(
         default_factory=lambda: float(_env("L6_CHALLENGE_TIMEOUT_S", "3.0"))
     )
+    # Phase 42: L6 capture session metadata (set by l6_capture_session.py via PATCH /config)
+    l6_capture_player_id: str = field(
+        default_factory=lambda: _env("L6_CAPTURE_PLAYER_ID", "")
+    )
+    l6_capture_game_title: str = field(
+        default_factory=lambda: _env("L6_CAPTURE_GAME_TITLE", "")
+    )
+    l6_capture_hw_session_ref: str = field(
+        default_factory=lambda: _env("L6_CAPTURE_HW_SESSION_REF", "")
+    )
+    l6_capture_notes: str = field(
+        default_factory=lambda: _env("L6_CAPTURE_NOTES", "")
+    )
 
     def validate(self) -> list[str]:
         """Return list of configuration errors (empty = valid)."""

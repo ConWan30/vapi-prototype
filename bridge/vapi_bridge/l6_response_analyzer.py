@@ -181,21 +181,19 @@ class L6ResponseAnalyzer:
 
         score = 0.8  # baseline for a detected press
 
-        # Penalise for onset too slow
-        # Note: profile.onset_threshold_ms is stored in the metrics via profile_id;
-        # here we use a reasonable universal bound since we only have profile_id
-        # (caller may pass profile.onset_threshold_ms via a subclass if needed)
-        # Using 300 ms as a universal human-reaction upper bound for gaming context
-        if metrics.onset_ms > 300.0:
+        # Look up calibrated per-profile thresholds
+        from bridge.controller.l6_challenge_profiles import CHALLENGE_PROFILES
+        _profile = CHALLENGE_PROFILES.get(metrics.profile_id)
+        onset_threshold  = _profile.onset_threshold_ms  if _profile else 300.0
+        settle_threshold = _profile.settle_threshold_ms if _profile else 2000.0
+
+        # Penalise for onset too slow (above calibrated human-response ceiling for this profile)
+        if metrics.onset_ms > onset_threshold:
             score -= 0.3
 
         # Penalise for no natural settling (sustaining full compression throughout window)
-        if metrics.settle_ms > 2000.0:
+        if metrics.settle_ms > settle_threshold:
             score -= 0.2
-
-        # Reward good grip variance (proves real hand movement)
-        if metrics.grip_variance > 100.0:
-            score += 0.1
 
         return max(0.0, min(1.0, score))
 

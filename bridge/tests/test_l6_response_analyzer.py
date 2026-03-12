@@ -128,5 +128,83 @@ class TestL6ResponseAnalyzer(unittest.TestCase):
             self.assertLessEqual(result, 1.0, f"Got {result} > 1.0 for {metrics}")
 
 
+class TestL6Phase42(unittest.TestCase):
+    """Phase 42 — capture schema + attack-G + null response tests."""
+
+    def setUp(self):
+        self.analyzer = L6ResponseAnalyzer()
+
+    def test_attack_g_injection_signature(self):
+        """Attack G: grip_variance==0 -> p_human=0.0; onset_ms<5 -> p_human<=0.2."""
+        # Zeroed accelerometer (injected hardware) — grip_variance exactly 0.0
+        zeroed = L6ResponseMetrics(
+            onset_ms=50.0, peak_delta=100.0, settle_ms=200.0,
+            grip_variance=0.0, profile_id=1, nonce_bytes=b"\x00" * 4, valid=True,
+        )
+        self.assertAlmostEqual(self.analyzer.classify(zeroed), 0.0,
+                               msg="grip_variance==0.0 must yield p_human=0.0")
+
+        # Sub-neurological onset (<5 ms) — software injection latency
+        fast = L6ResponseMetrics(
+            onset_ms=2.0, peak_delta=80.0, settle_ms=150.0,
+            grip_variance=5000.0, profile_id=1, nonce_bytes=b"\x00" * 4, valid=True,
+        )
+        self.assertLessEqual(self.analyzer.classify(fast), 0.2,
+                             msg="onset_ms<5 must yield p_human<=0.2")
+
+    def test_null_response_conservative(self):
+        """valid=False (window expired, no press) -> p_human_L6 == 0.5 exactly."""
+        null_metrics = L6ResponseMetrics(
+            onset_ms=0.0, peak_delta=0.0, settle_ms=0.0,
+            grip_variance=0.0, profile_id=3, nonce_bytes=b"\xde\xad\xbe\xef", valid=False,
+        )
+        result = self.analyzer.classify(null_metrics)
+        self.assertAlmostEqual(result, 0.5,
+                               msg="Null response must return conservative 0.5, not penalise")
+
+    def test_capture_session_schema(self):
+        """l6_capture_sessions table creates correctly and a synthetic record round-trips."""
+        import sqlite3
+        import tempfile
+        import os
+        import sys
+        # Import store via bridge path
+        sys.path.insert(0, str(Path(__file__).parents[1]))
+        from vapi_bridge.store import Store
+
+        tmp = tempfile.mkdtemp()
+        db_path = os.path.join(tmp, "test_l6_capture.db")
+        store = Store(db_path)
+
+        store.store_l6_capture(
+            session_id="test-uuid-001",
+            profile_id=2,
+            profile_name="RIGID_HEAVY",
+            challenge_sent_ts=1234567890.0,
+            onset_ms=82.5,
+            settle_ms=310.0,
+            peak_delta=95.0,
+            grip_variance=14000.0,
+            r2_pre_mean=3.2,
+            accel_variance=14000.0,
+            player_id="P1",
+            game_title="Warzone",
+            hw_session_ref="hw_075.json",
+            notes="Phase 42 unit test",
+        )
+
+        rows = store.query_l6_captures(player_id="P1", profile_id=2)
+        self.assertEqual(len(rows), 1)
+        r = rows[0]
+        self.assertEqual(r["session_id"], "test-uuid-001")
+        self.assertEqual(r["profile_id"], 2)
+        self.assertAlmostEqual(r["onset_ms"], 82.5)
+        self.assertEqual(r["player_id"], "P1")
+        self.assertEqual(r["game_title"], "Warzone")
+
+        counts = store.count_l6_captures_by_profile(player_id="P1")
+        self.assertEqual(counts.get(2), 1)
+
+
 if __name__ == "__main__":
     unittest.main()
