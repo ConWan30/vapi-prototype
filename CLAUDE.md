@@ -14,7 +14,7 @@ per cognition cycle, anchored on IoTeX L1. The certified device is a DualShock E
 ~220 files, ~1,312 automated tests total (~1,284 CI excluding 28 hardware, 14 E2E).
 Bridge: 888 passing. Contract: 354. SDK: 28. Hardware: 28. E2E: 14.
 13 contracts deployed on IoTeX testnet.
-Deployer address: `0xfCF4681e57C8de9650c3Eb4dA8e26dC9441A5EF1`
+Deployer address: `0x0Cf36dB57fc4680bcdfC65D1Aff96993C57a4692`
 Chain ID: 4690 (IoTeX Testnet)
 Current phase: Phase 49
 

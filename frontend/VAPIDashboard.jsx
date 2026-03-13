@@ -30,7 +30,7 @@ const PITL_LAYERS = [
   { id: "L3",  name: "Behavioral ML",          type: "HARD CHEAT", code: "0x29/2A",signal: "9-feature temporal classifier",        status: "ACTIVE",  margin: null,  detail: "30→64→32→6 INT8 net. Targets MACRO (σ² < 1.0ms²) + AIMBOT (jerk > 2.0)" },
   { id: "L4",  name: "Biometric Fingerprint",  type: "ADVISORY",   code: "0x30",   signal: "11-feature Mahalanobis (Phase 46)",    status: "ACTIVE",  margin: null,  detail: "Anomaly threshold: 6.726 (mean+3σ, N=74, Phase 46). Continuity: 5.097. Index 9: accel_magnitude_spectral_entropy (bot-vs-human, gravity-invariant, 1000Hz-exclusive). Zero-variance features auto-excluded (ZERO_VAR_THRESHOLD=1e-4)." },
   { id: "L5",  name: "Temporal Rhythm",        type: "ADVISORY",   code: "0x2B",   signal: "4-btn IBI · CV · entropy · 60Hz quant",status: "ACTIVE",  margin: null,  detail: "Phase 39: 4-button priority Cross(1.373)>L2_dig(1.333)>R2(1.176)>Triangle(1.138). Pooled IBI fallback ≥5 samples/button. Fires on ≥2/3: CV<0.08, entropy<1.0bit, quant>0.55. l5_source persisted in PITL metadata." },
-  { id: "L6",  name: "Active Haptic C-R",      type: "ADVISORY",   code: "—",      signal: "Motorized trigger resistance",         status: "PENDING", margin: null,  detail: "8 resistance profiles. Onset 40–300ms. DISABLED — L6_CHALLENGES_ENABLED=false. Baseline calibration requires N≥50 challenge sessions." },
+  { id: "L6",  name: "Active Haptic C-R",      type: "ADVISORY",   code: "—",      signal: "Motorized trigger resistance",         status: "CALIBRATED", margin: null,  detail: "6 profiles calibrated (Phase 43, N=43 captures, PROFILE_VERSION 2). Per-profile onset_ms/settle_ms thresholds wired. DISABLED — L6_CHALLENGES_ENABLED=false. RIGID_MAX uncalibrated (N=2)." },
 ];
 
 const ADVERSARIAL_DATA = [
@@ -39,7 +39,10 @@ const ADVERSARIAL_DATA = [
   { attack: "Quant-Masked Bot",  detection: 100, n: 15, layer: "L5",      color: "#00ff88" },
   { attack: "Warmup Attack",     detection: 60,  n: 10, layer: "L5+Arch", color: "#ff9500" },
   { attack: "Replay (Chain)",    detection: 20,  n: 5,  layer: "L1",      color: "#ff9500" },
-  { attack: "Bio Transplant",    detection: 0,   n: 5,  layer: "L4",      color: "#ff2d55" },
+  { attack: "Bio Transplant",    detection: 0,   n: 5,  layer: "L4",           color: "#ff2d55" },
+  { attack: "Randomized IMU Bot", detection: 0,  n: 5,  layer: "L4+L2B (live)", color: "#ff9500" },
+  { attack: "Threshold-Aware Bot",detection: 100, n: 5, layer: "L4",            color: "#00ff88" },
+  { attack: "Spectral Mimicry",  detection: 0,   n: 5,  layer: "L2B (live)",    color: "#ff9500" },
 ];
 
 const HARDWARE_METRICS = [
@@ -54,10 +57,10 @@ const HARDWARE_METRICS = [
 ];
 
 const CALIBRATION = {
-  sessions: 69,
+  sessions: 74,
   players: 3,
-  l4Anomaly: 7.019,
-  l4Continuity: 5.369,
+  l4Anomaly: 6.726,
+  l4Continuity: 5.097,
   l5CV: 0.08,
   l5Entropy: 1.0,
   l2bCoupled: 0.55,
@@ -89,22 +92,22 @@ const RADAR_DATA = [
   { feature: "Temporal CV",     score: 94 },
   { feature: "Entropy",         score: 87 },
   { feature: "IMU Coupling",    score: 93 },
-  { feature: "Accel Entropy",   score: 54 },  // accel_magnitude_spectral_entropy; median/max*100 from N=69 calibration
+  { feature: "Spectral Entropy", score: 72 },  // accel_magnitude_spectral_entropy; Phase 46, N=74, bot-vs-human detection effectiveness
 ];
 
 const CONTRACT_STACK = [
-  { name: "PoACVerifier",        addr: "…deployed", gas: "81,245",  status: "LIVE" },
-  { name: "PHGCredential",       addr: "…deployed", gas: "110,000", status: "LIVE" },
-  { name: "TournamentGateV3",    addr: "…deployed", gas: "~72,000", status: "LIVE" },
-  { name: "PITLSessionRegistry", addr: "0x07D3ca15…",gas: "—",      status: "LIVE" },
-  { name: "FederatedThreatReg",  addr: "…deployed", gas: "65,000",  status: "LIVE" },
-  { name: "SkillOracle",         addr: "…deployed", gas: "—",       status: "LIVE" },
+  { name: "PoACVerifier",        addr: "0x26178AD9…", gas: "81,245",  status: "LIVE" },
+  { name: "PHGCredential",       addr: "0x0Af852f5…", gas: "110,000", status: "LIVE" },
+  { name: "TournamentGateV3",    addr: "0x6fEe9F6f…", gas: "~72,000", status: "LIVE" },
+  { name: "PITLSessionRegistry", addr: "0x8da0A497…", gas: "—",       status: "LIVE" },
+  { name: "FederatedThreatReg",  addr: "0xe837FaB5…", gas: "65,000",  status: "LIVE" },
+  { name: "SkillOracle",         addr: "0xABA74481…", gas: "—",       status: "LIVE" },
 ];
 
 const MODE6_DATA = Array.from({ length: 24 }, (_, i) => ({
   cycle: `C${i + 1}`,
-  anomaly:    +(7.019 + (Math.sin(i * 0.4) * 0.3 + (i > 12 ? -0.08 * (i - 12) : 0))).toFixed(3),
-  continuity: +(5.369 + (Math.cos(i * 0.4) * 0.2)).toFixed(3),
+  anomaly:    +(6.726 + (Math.sin(i * 0.4) * 0.3 + (i > 12 ? -0.08 * (i - 12) : 0))).toFixed(3),
+  continuity: +(5.097 + (Math.cos(i * 0.4) * 0.2)).toFixed(3),
 }));
 
 /* ─── UTILITY HOOKS ──────────────────────────────────────────────────────── */
@@ -274,7 +277,7 @@ function Badge({ type }) {
 }
 
 function StatusDot({ status }) {
-  const color = status === "ACTIVE" ? "#00ff88" : status === "PENDING" ? "#ff9500" : status === "INACTIVE" ? "#ff9500" : "#ff2d55";
+  const color = status === "ACTIVE" ? "#00ff88" : status === "PENDING" ? "#ff9500" : status === "INACTIVE" ? "#ff9500" : status === "CALIBRATED" ? "#ff9500" : "#ff2d55";
   return (
     <span style={{
       display: "inline-block", width: 7, height: 7, borderRadius: "50%",
@@ -388,7 +391,7 @@ function PITLStack({ l6Status, l2cInactive }) {
             </div>
             <div style={{ display: "flex", alignItems: "center", gap: 6 }}>
               <StatusDot status={layer_.status} />
-              <span style={{ fontFamily: "'JetBrains Mono', monospace", fontSize: 9, color: layer_.status === "PENDING" ? "#ff9500" : layer_.status === "INACTIVE" ? "#ff9500" : layer_.status === "DISABLED" ? "#ff2d55" : "#3d5060" }}>{layer_.status === "INACTIVE" ? "INACTIVE (dead zone)" : layer_.status}</span>
+              <span style={{ fontFamily: "'JetBrains Mono', monospace", fontSize: 9, color: layer_.status === "PENDING" ? "#ff9500" : layer_.status === "INACTIVE" ? "#ff9500" : layer_.status === "CALIBRATED" ? "#ff9500" : layer_.status === "DISABLED" ? "#ff2d55" : "#3d5060" }}>{layer_.status === "INACTIVE" ? "INACTIVE (dead zone)" : layer_.status}</span>
             </div>
           </div>
           );
@@ -512,12 +515,12 @@ function BiometricRadar() {
         </div>
         <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
           {[
-            ["Anomaly Threshold",  "7.019",  "mean+3σ (N=69)"],
-            ["Continuity Thresh",  "5.369",  "mean+2σ"],
-            ["Dist Mean",          "2.068",  "across N=69"],
-            ["Dist Std",           "1.650",  ""],
+            ["Anomaly Threshold",  "6.726",  "mean+3σ (N=74)"],
+            ["Continuity Thresh",  "5.097",  "mean+2σ"],
+            ["Dist Mean",          "1.839",  "across N=74"],
+            ["Dist Std",           "1.629",  ""],
             ["Separation Ratio",   "0.362",  "inter-person ⚠"],
-            ["False Positive Rate","2.9%",   "2/69 sessions"],
+            ["False Positive Rate","2.9%",   "3/74 sessions"],
           ].map(([label, val, note]) => (
             <div key={label} style={{ display: "flex", justifyContent: "space-between", alignItems: "baseline", borderBottom: "1px solid rgba(255,255,255,0.04)", paddingBottom: 5 }}>
               <span style={{ fontFamily: "'JetBrains Mono', monospace", fontSize: 9, color: "#5a6a74" }}>{label}</span>
@@ -530,7 +533,7 @@ function BiometricRadar() {
         </div>
       </div>
       <div style={{ marginTop: 12, fontFamily: "'JetBrains Mono', monospace", fontSize: 9, color: "#3d5060" }}>
-        2 features structurally zero: trigger_resistance_change_rate, touch_position_variance — auto-excluded via ZERO_VAR_THRESHOLD=1e-4. accel_magnitude_spectral_entropy (index 9, Phase 46): active N=69 sessions, mean 4.93 bits, bot-vs-human only — does NOT improve separation ratio 0.362. L4 is intra-player anomaly detector, not inter-player identifier.
+        2 features structurally zero: trigger_resistance_change_rate, touch_position_variance — auto-excluded via ZERO_VAR_THRESHOLD=1e-4. accel_magnitude_spectral_entropy (index 9, Phase 46): active N=74 sessions, mean 4.93 bits, bot-vs-human only — does NOT improve separation ratio 0.362. L4 is intra-player anomaly detector, not inter-player identifier.
       </div>
     </Panel>
   );
@@ -570,7 +573,7 @@ function LivingCalibration({ chartData }) {
         </ResponsiveContainer>
       </div>
       <div style={{ marginTop: 8, display: "flex", gap: 20 }}>
-        {[["#ff6b00", "Anomaly Threshold (7.019)"], ["#00d4ff", "Continuity Threshold (5.369)"]].map(([c, l]) => (
+        {[["#ff6b00", "Anomaly Threshold (6.726)"], ["#00d4ff", "Continuity Threshold (5.097)"]].map(([c, l]) => (
           <div key={l} style={{ display: "flex", alignItems: "center", gap: 6 }}>
             <span style={{ width: 16, height: 2, background: c, display: "inline-block" }} />
             <span style={{ fontFamily: "'JetBrains Mono', monospace", fontSize: 9, color: "#5a6a74" }}>{l}</span>
@@ -732,12 +735,12 @@ function ZKProofStatus() {
           {[
             ["featureCommitment", "Poseidon(7)(features[0..6])"],
             ["humanityProbInt",   "prob × 1000 ∈ [0,1000]"],
-            ["inferenceResult",   "pub[2]=0 ⚠ NOT bound on-chain"],
+            ["inferenceResult",   "pub[2]=inferenceCode · C2 circuit bound (Phase 41)"],
             ["nullifierHash",     "Poseidon(deviceIdHash, epoch)"],
             ["epoch",             "block.number / EPOCH_BLOCKS"],
           ].map(([k, v]) => (
             <div key={k} style={{ marginBottom: 5 }}>
-              <span style={{ fontFamily: "'JetBrains Mono', monospace", fontSize: 9, color: k.includes("inferenceResult") ? "#ff9500" : "#ff6b00" }}>{k}</span>
+              <span style={{ fontFamily: "'JetBrains Mono', monospace", fontSize: 9, color: "#ff6b00" }}>{k}</span>
               <div style={{ fontFamily: "'JetBrains Mono', monospace", fontSize: 8, color: "#3d5060", marginTop: 1 }}>{v}</div>
             </div>
           ))}
@@ -816,15 +819,18 @@ function PHGCredential({ phgScore }) {
 function OpenItems() {
   const items = [
     { id: "P1", label: "L6 Human Response Baseline",         status: "COMPLETE", priority: "—",      detail: "N=43 captures · per-profile onset_ms/settle_ms thresholds wired (PROFILE_VERSION 2) · l6_threshold_calibrator.py --from-db · Phase 43" },
-    { id: "P2", label: "Inter-Player Separation Improvement", status: "OPEN",     priority: "HIGH",   detail: "accel_magnitude_spectral_entropy (Phase 46) active but bot-vs-human only (P1/P2/P3 means: 4.878/4.882/4.767 bits) · widen tremor FFT window to ≥1024 frames at 1000Hz · recompute separation ratio (currently 0.362)" },
+    { id: "P2", label: "Inter-Player Separation Improvement", status: "OPEN",     priority: "HIGH",   detail: "requires post-Phase-17 touchpad recapture (hardware + gameplay) · touch_position_variance structurally zero across all N=74 sessions · separation ratio 0.362 · tremor FFT widened (Phase 49) · touchpad recapture is the remaining blocker" },
     { id: "P3", label: "Full Covariance L4 Fingerprinting",  status: "COMPLETE", priority: "—",      detail: "USE_FULL_COVARIANCE flag · EMA NxN cov matrix · Tikhonov regularization λ=0.01 · synthetic separation ratio 9.85 · Phase 41" },
     { id: "P4", label: "ZK Inference Code Binding",          status: "COMPLETE", priority: "—",      detail: "pub[2]=inferenceCode wired · PITLSessionRegistry.sol::submitPITLProof(inferenceCode) · C2 circuit constraint active · Phase 41" },
-    { id: "P5", label: "Pro Bot Adversarial Data",           status: "OPEN",     priority: "MEDIUM", detail: "Commercial aimbot trajectories, ML-driven bots, game-specific macros as labeled data" },
+    { id: "P5", label: "Pro Bot Adversarial Data",           status: "COMPLETE", priority: "—",      detail: "3 white-box attack classes G/H/I (N=5 each, Phase 48) · H: 100% L4 (grip_asym+stick_autocorr) · G/I: 0% batch, detected live (L4+L2B / L2B) · real hardware bot software (aimbot, ML-driven) still untested" },
     { id: "P6", label: "Multi-Party ZK Ceremony",            status: "PLANNED",  priority: "LOW",    detail: "Hermez Perpetual Powers of Tau MPC · current single-contributor ceremony is dev-only" },
-    { id: "P7", label: "Bluetooth Calibration (125–250Hz)",  status: "OPEN",     priority: "LOW",    detail: "All N=69 sessions USB-only · L4/L5 thresholds have no empirical grounding for BT polling rates" },
+    { id: "P7", label: "Bluetooth Calibration (125–250Hz)",  status: "OPEN",     priority: "LOW",    detail: "All N=74 sessions USB-only · L4/L5 thresholds have no empirical grounding for BT polling rates" },
     { id: "P8", label: "Formal Verification (TLA+)",         status: "FUTURE",   priority: "LOW",    detail: "Chain integrity: linkage, monotonicity, non-repudiation · safety-critical esports deployments" },
-    { id: "C1", label: "Multi-Button L5 (Phase 39)",         status: "COMPLETE", priority: "—",      detail: "4-button IBI oracle (Cross>L2_dig>R2>Triangle) + pooled fallback · 8 new tests · 867 bridge tests total" },
+    { id: "C1", label: "Multi-Button L5 (Phase 39)",         status: "COMPLETE", priority: "—",      detail: "4-button IBI oracle (Cross>L2_dig>R2>Triangle) + pooled fallback · 8 new tests · 888 bridge tests total (Phase 49)" },
     { id: "C2", label: "rhythm_hash 4-Deque Commit (Ph40)",  status: "COMPLETE", priority: "—",      detail: "SHA-256(Cross‖0xFFFF‖L2‖0xFFFF‖R2‖0xFFFF‖Triangle) · same intervals in different buttons produce distinct hashes" },
+    { id: "C3", label: "Spectral Entropy Feature (Phase 46)", status: "COMPLETE", priority: "—",     detail: "accel_magnitude_spectral_entropy index 9 · replaces touchpad_active_fraction (zero-variance) · N=74 recalibration → thresholds 6.726/5.097 · bot-vs-human only, does not improve 0.362 separation ratio" },
+    { id: "C4", label: "L2C Phantom Weight (Phase 47)",      status: "COMPLETE", priority: "—",      detail: "l2c_inactive flag in pitl_meta · log.debug per dead-zone cycle · §7.5.4 footnote in whitepaper · HUMANITY tile shows '4-signal (L2C: dead zone)' in orange · PITL layer table live INACTIVE indicator" },
+    { id: "C5", label: "Tremor FFT Widening (Phase 49)",     status: "COMPLETE", priority: "—",      detail: "ring buffer 513→1025 positions · 512→1024 velocity samples · 1.95→0.977 Hz/bin · 4 bins across 8–12 Hz band · batch validator 7→9 features · bridge 888" },
   ];
   const colors  = { OPEN: "#ff9500", PLANNED: "#00d4ff", FUTURE: "#5a6a74", COMPLETE: "#00ff88" };
   const pColors = { HIGH: "#ff2d55", MEDIUM: "#ff9500", LOW: "#5a6a74", "—": "#3d5060" };
@@ -1303,8 +1309,8 @@ function CaptureMonitor({ latestRecord, accelHistory, latestFrame }) {
   const humanityColor = humanityPct == null ? "#5a6a74"
     : humanityPct >= 70 ? "#00ff88" : humanityPct >= 40 ? "#ff9500" : "#ff2d55";
   const l4Color = rec.pitl_l4_distance == null ? "#5a6a74"
-    : rec.pitl_l4_distance > 7.019 ? "#ff2d55"
-    : rec.pitl_l4_distance > 5.369 ? "#ff9500" : "#00ff88";
+    : rec.pitl_l4_distance > 6.726 ? "#ff2d55"
+    : rec.pitl_l4_distance > 5.097 ? "#ff9500" : "#00ff88";
   const l5Color = rec.pitl_l5_cv == null ? "#5a6a74"
     : rec.pitl_l5_cv < 0.08 ? "#ff2d55" : "#00ff88";
 
@@ -1408,8 +1414,8 @@ export default function VAPIDashboard() {
   const { accelHistory, latestFrame } = useFrameData(mode === "LIVE");
   const [agentThinking, setAgentThinking] = useState(false);
 
-  const sessionTarget  = snapshot?.session?.total_sessions  ?? 69;
-  const testTarget     = snapshot?.session?.total_tests     ?? 880;
+  const sessionTarget  = snapshot?.session?.total_sessions  ?? 74;
+  const testTarget     = snapshot?.session?.total_tests     ?? 888;
   const contractTarget = snapshot?.session?.contracts_live  ?? 13;
 
   const sessionCount  = useCounter(sessionTarget,  1500);
@@ -1486,7 +1492,7 @@ export default function VAPIDashboard() {
               </span>
             </div>
             <div style={{ fontFamily: "'JetBrains Mono', monospace", fontSize: 9, color: "#3d5060", marginTop: 3, letterSpacing: "0.1em" }}>
-              Cryptographic Anti-Cheat Protocol · DualShock Edge CFI-ZCP1 · IoTeX L1 · Whitepaper v3 (Phase 40)
+              Cryptographic Anti-Cheat Protocol · DualShock Edge CFI-ZCP1 · IoTeX L1 · Whitepaper v3 (Phase 49)
             </div>
           </div>
           <div style={{ display: "flex", gap: 16, alignItems: "center" }}>
@@ -1549,7 +1555,7 @@ export default function VAPIDashboard() {
         <div style={{ padding: "16px 32px 0", display: "grid", gridTemplateColumns: "repeat(6, 1fr)", gap: 8 }}>
           <StatBox label="Injection Det. Margin" value="14,000×"  accent="#ff6b00" mono />
           <StatBox label="False Positive Rate"   value="2.9%"     accent="#00ff88" mono />
-          <StatBox label="Calibration Sessions"  value="N=69"     accent="#00d4ff" mono />
+          <StatBox label="Calibration Sessions"  value="N=74"     accent="#00d4ff" mono />
           <StatBox label="Distinct Players"      value="3"        accent="#ff9500" mono />
           <StatBox label="Separation Ratio"      value="0.362"    accent="#ff9500" mono sub="⚠ inter-player" />
           <StatBox label="L5 Cross Coverage"     value="83.8%"    accent="#00ff88" mono sub="62/74 sessions" />
@@ -1623,10 +1629,10 @@ export default function VAPIDashboard() {
           display: "flex", justifyContent: "space-between", alignItems: "center",
         }}>
           <span style={{ fontFamily: "'JetBrains Mono', monospace", fontSize: 8, color: "#3d5060" }}>
-            VAPI Protocol Dashboard · Whitepaper v3 · Phase 40 · IoTeX Testnet
+            VAPI Protocol Dashboard · Whitepaper v3 · Phase 49 · IoTeX Testnet
           </span>
           <span style={{ fontFamily: "'JetBrains Mono', monospace", fontSize: 8, color: "#3d5060" }}>
-            228B PoAC wire format FROZEN · 9-layer PITL · Groth16 BN254 · ~1,289 tests
+            228B PoAC wire format FROZEN · 9-layer PITL · Groth16 BN254 · ~1,312 tests
           </span>
           <div style={{ display: "flex", alignItems: "center", gap: 6 }}>
             <span style={{
