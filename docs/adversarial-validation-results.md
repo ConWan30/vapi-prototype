@@ -2,10 +2,10 @@
 
 **Generated:** 2026-03-02  
 **Calibration:** N=50 DualShock Edge sessions, high confidence  
-**Human sessions:** 50 (real hw_* + synthetic baselines)  
-**Adversarial sessions:** 57 (6 attack types, real-data transforms)  
-**Detection (excl. replay):** 41/52 (78.8%)  
-**False positive rate:** 1/50 (2.0%)
+**Human sessions:** 84 (real hw_* + synthetic baselines)  
+**Adversarial sessions:** 72 (9 attack types: 6 deterministic + 3 professional/Phase 48)  
+**Detection (excl. replay):** 46/67 (68.7%)  
+**False positive rate:** 3/84 (3.6%)
 
 ## Method
 
@@ -21,12 +21,15 @@ ADVERSARIAL SESSIONS  (detection rate — higher is better)
 ------------------------------------------------------------------------
 Attack Type                    N   L2 Det%  L4 Det%  L5 Det%    Any%  Notes
 ------------------------------------------------------------------------
-Replay (chain-level)           5      0.0%    20.0%     0.0%   20.0%  chain-level attack; 0% PITL is expected/correct
+Replay (chain-level)           5      0.0%     0.0%     0.0%    0.0%  chain-level attack; 0% PITL is expected/correct
 IMU-stripped injection        10    100.0%     0.0%     0.0%  100.0%  
-Perfect-timing macro          10     50.0%    30.0%   100.0%  100.0%  
+Perfect-timing macro          10     50.0%     0.0%   100.0%  100.0%  
 Biometric transplant           5      0.0%     0.0%     0.0%    0.0%  L4 fired 0/5 (single-person dataset limits sensitivity)
 Gradual warmup (E)            10     20.0%     0.0%    60.0%   60.0%  sessions 1-3 bot_score mean=0.914
 Quant-masked bot              15     66.7%     0.0%   100.0%  100.0%  mean quant_score=0.898
+Randomized IMU bot (G)         5      0.0%     0.0%     0.0%    0.0%  L4 fired 0/5 (batch proxy lacks tremor features; mean entropy=8.41 bits; live 9-feat L4 detects via entropy+tremor deviation; L2B independent)
+Threshold-aware synth (H)      5      0.0%   100.0%     0.0%  100.0%  L4 fired 5/5 (grip_asym=1.0 + stick_autocorr=0 deviate; multivariate defense holds)
+Spectral entropy mimicry (I)   5      0.0%     0.0%     0.0%    0.0%  L4 fired 0/5 (mean entropy=4.76 bits in human range; L2B is detection path)
 unknown                        1      0.0%     0.0%     0.0%    0.0%  (unlabelled)
 stationary                     1      0.0%     0.0%     0.0%    0.0%  (unlabelled)
 
@@ -34,9 +37,9 @@ HUMAN SESSIONS  (false positive rate — lower is better)
 ------------------------------------------------------------------------
 Session Type                   N    L2 FP%   L4 FP%   L5 FP%  Any FP%
 ------------------------------------------------------------------------
-Real hardware (hw_*)          40      0.0%     2.5%     0.0%     2.5%
+Real hardware (hw_*)          74      1.4%     2.7%     0.0%     4.1%
 Synthetic baseline            10      0.0%     0.0%     0.0%     0.0%
-All human sessions            50      0.0%     2.0%     0.0%     2.0%
+All human sessions            84      1.2%     2.4%     0.0%     3.6%
 
 WARMUP SEQUENCE  (bot->human progression, Attack E)
 ------------------------------------------------------------------------
@@ -55,15 +58,16 @@ warmup_010    1.00 near_human         -     -     -    0.4138  0.0000   0.0000  
 
 L5 HUMAN BASELINE STATISTICS
 ------------------------------------------------------------------------
-  L5 CV       — mean: 1.1662  min: 0.6649  max: 2.5122  (threshold < 0.08)
-  L5 Entropy  — mean: 4.5616  min: 3.0332  max: 5.3141  (threshold < 1.0 bits)
-  L5 Quant    — mean: 0.5902  min: 0.4231  max: 0.7500  (threshold > 0.55)
+  L5 CV       — mean: 1.1630  min: 0.6649  max: 2.5122  (threshold < 0.08)
+  L5 Entropy  — mean: 4.7683  min: 3.0332  max: 5.5327  (threshold < 1.0 bits)
+  L5 Quant    — mean: 0.5958  min: 0.4231  max: 0.7632  (threshold > 0.55)
 
-CALIBRATED THRESHOLDS  (N=50, high confidence, 2026-03-02)
+CALIBRATED THRESHOLDS  (N=74 hw sessions, Phase 49, auto-calibrated)
 ------------------------------------------------------------------------
   L2 injection gyro std < 20.0 LSB with active input
      OR accel_magnitude mean < 100.0 LSB (gravity absent — works on idle sessions)
-  L4 Mahalanobis distance > 5.869 (mean + 3-sigma, N=50)
+  L4 Mahalanobis distance > 7.0325 (mean+3sigma, auto-calibrated, 9-feature)
+     Features: onset_l2, onset_r2, tremor_var, grip_asym, ac_lag1, ac_lag5, spectral_entropy, tremor_peak_hz, tremor_band_power
   L5 CV < 0.08 | entropy < 1.0 bits | quant > 0.55  (need >=2/3)
 
 ```
@@ -78,6 +82,9 @@ CALIBRATED THRESHOLDS  (N=50, high confidence, 2026-03-02)
 | Biometric transplant | D | L4 | Stick+IMU from session X; trigger timing from Y |
 | Gradual warmup | E | L2+L4+L5 | Linear bot→human interpolation across 10 sessions |
 | Quant-masked bot | F | L5 | 60 Hz-locked presses + 2 ms Gaussian jitter |
+| Randomized IMU bot | G | L4+L2B | Gaussian IMU at human variance + real button timing |
+| Threshold-aware synth | H | L4+L2B | All thresholds tuned; synthetic session |
+| Spectral entropy mimicry | I | L4 | Accel PSD shaped to match human entropy 4.8 bits |
 
 ## Threshold Reference
 

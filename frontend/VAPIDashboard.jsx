@@ -26,9 +26,9 @@ const PITL_LAYERS = [
   { id: "L1",  name: "PoAC Chain Integrity",   type: "STRUCTURAL", code: "—",      signal: "SHA-256 linkage, monotonic counter",    status: "ACTIVE",  margin: null,  detail: "Hash-chain linkage + monotonic counter + timestamp freshness" },
   { id: "L2",  name: "HID Injection Oracle",   type: "HARD CHEAT", code: "0x28",   signal: "IMU gravity + gyro noise floor",        status: "ACTIVE",  margin: 14000, detail: "Gyro std < 0.001 rad/s threshold. Live margin: 10,000× on active play" },
   { id: "L2B", name: "IMU-Button Coupling",    type: "ADVISORY",   code: "0x31",   signal: "5–80ms precursor window",              status: "ACTIVE",  margin: null,  detail: "IMU micro-disturbance absent before button rising edge → decoupled. Threshold: coupled_fraction < 0.55" },
-  { id: "L2C", name: "Stick-IMU Correlation",  type: "ADVISORY",   code: "0x32",   signal: "Pearson cross-corr 10–60ms",           status: "ACTIVE",  margin: null,  detail: "abs(max_causal_corr) of stick velocity vs. gyro_z at causal lags. Threshold < 0.15. abs() mandatory — anti-correlation is physical coupling." },
+  { id: "L2C", name: "Stick-IMU Correlation",  type: "ADVISORY",   code: "0x32",   signal: "Pearson cross-corr 10–60ms",           status: "ACTIVE",  margin: null,  detail: "abs(max_causal_corr) of stick velocity vs. gyro_z at causal lags. Threshold < 0.15. abs() mandatory — anti-correlation is physical coupling. Dead-zone stick games (e.g. NCAA CFB 26): right stick stays at 128 → oracle returns None → p_L2C = 0.5 neutral prior. Formula runs as effective 4-signal; l2c_inactive flag emitted in PITL metadata and visible in HUMANITY tile." },
   { id: "L3",  name: "Behavioral ML",          type: "HARD CHEAT", code: "0x29/2A",signal: "9-feature temporal classifier",        status: "ACTIVE",  margin: null,  detail: "30→64→32→6 INT8 net. Targets MACRO (σ² < 1.0ms²) + AIMBOT (jerk > 2.0)" },
-  { id: "L4",  name: "Biometric Fingerprint",  type: "ADVISORY",   code: "0x30",   signal: "11-feature Mahalanobis (Phase 17)",    status: "ACTIVE",  margin: null,  detail: "Anomaly threshold: 7.019 (mean+3σ). Continuity: 5.369. N=69, 3 players. Zero-variance features auto-excluded (ZERO_VAR_THRESHOLD=1e-4)." },
+  { id: "L4",  name: "Biometric Fingerprint",  type: "ADVISORY",   code: "0x30",   signal: "11-feature Mahalanobis (Phase 46)",    status: "ACTIVE",  margin: null,  detail: "Anomaly threshold: 6.726 (mean+3σ, N=74, Phase 46). Continuity: 5.097. Index 9: accel_magnitude_spectral_entropy (bot-vs-human, gravity-invariant, 1000Hz-exclusive). Zero-variance features auto-excluded (ZERO_VAR_THRESHOLD=1e-4)." },
   { id: "L5",  name: "Temporal Rhythm",        type: "ADVISORY",   code: "0x2B",   signal: "4-btn IBI · CV · entropy · 60Hz quant",status: "ACTIVE",  margin: null,  detail: "Phase 39: 4-button priority Cross(1.373)>L2_dig(1.333)>R2(1.176)>Triangle(1.138). Pooled IBI fallback ≥5 samples/button. Fires on ≥2/3: CV<0.08, entropy<1.0bit, quant>0.55. l5_source persisted in PITL metadata." },
   { id: "L6",  name: "Active Haptic C-R",      type: "ADVISORY",   code: "—",      signal: "Motorized trigger resistance",         status: "PENDING", margin: null,  detail: "8 resistance profiles. Onset 40–300ms. DISABLED — L6_CHALLENGES_ENABLED=false. Baseline calibration requires N≥50 challenge sessions." },
 ];
@@ -89,7 +89,7 @@ const RADAR_DATA = [
   { feature: "Temporal CV",     score: 94 },
   { feature: "Entropy",         score: 87 },
   { feature: "IMU Coupling",    score: 93 },
-  { feature: "Touchpad Frac",   score: 12 },  // structurally zero
+  { feature: "Accel Entropy",   score: 54 },  // accel_magnitude_spectral_entropy; median/max*100 from N=69 calibration
 ];
 
 const CONTRACT_STACK = [
@@ -192,6 +192,46 @@ function useBridgeData() {
   return { snapshot, mode, records };
 }
 
+// Phase 44: raw frame stream hook — connects to /ws/frames (20 Hz batches)
+function useFrameData(enabled) {
+  const [accelHistory, setAccelHistory] = useState([]);
+  const [latestFrame,  setLatestFrame]  = useState(null);
+  const wsRef = useRef(null);
+
+  useEffect(() => {
+    if (!enabled) return;
+    let active = true;
+    function connect() {
+      try {
+        const ws = new WebSocket(`ws://localhost:8080/ws/frames`);
+        ws.onmessage = (e) => {
+          if (!active) return;
+          try {
+            const msg = JSON.parse(e.data);
+            if (msg.type !== "frames" || !msg.frames?.length) return;
+            const last = msg.frames[msg.frames.length - 1];
+            setLatestFrame(last);
+            setAccelHistory(prev => {
+              const next = [...prev, ...msg.frames.map((f, i) => ({
+                t: prev.length + i,
+                v: f.accel_mag ?? 0,
+              }))].slice(-60);
+              return next;
+            });
+          } catch {}
+        };
+        ws.onerror = () => {};
+        ws.onclose = () => { if (active) setTimeout(connect, 5000); };
+        wsRef.current = ws;
+      } catch {}
+    }
+    connect();
+    return () => { active = false; if (wsRef.current) wsRef.current.close(); };
+  }, [enabled]);
+
+  return { accelHistory, latestFrame };
+}
+
 /* ─── SUB-COMPONENTS ─────────────────────────────────────────────────────── */
 
 function ScanLines() {
@@ -234,7 +274,7 @@ function Badge({ type }) {
 }
 
 function StatusDot({ status }) {
-  const color = status === "ACTIVE" ? "#00ff88" : status === "PENDING" ? "#ff9500" : "#ff2d55";
+  const color = status === "ACTIVE" ? "#00ff88" : status === "PENDING" ? "#ff9500" : status === "INACTIVE" ? "#ff9500" : "#ff2d55";
   return (
     <span style={{
       display: "inline-block", width: 7, height: 7, borderRadius: "50%",
@@ -302,14 +342,16 @@ function StatBox({ label, value, sub, accent = "#ff6b00", mono = false }) {
 
 /* ─── SECTION: PITL STACK ────────────────────────────────────────────────── */
 
-function PITLStack({ l6Status }) {
+function PITLStack({ l6Status, l2cInactive }) {
   const [active, setActive] = useState(null);
   return (
     <Panel>
       <SectionLabel>Physical Input Trust Layer — 9-Level Stack</SectionLabel>
       <div style={{ display: "flex", flexDirection: "column", gap: 4 }}>
         {PITL_LAYERS.map((layer, i) => {
-          const liveStatus = (layer.id === "L6" && l6Status !== undefined) ? l6Status : layer.status;
+          let liveStatus = layer.status;
+          if (layer.id === "L6" && l6Status !== undefined) liveStatus = l6Status;
+          if (layer.id === "L2C" && l2cInactive === true) liveStatus = "INACTIVE";
           const layer_ = { ...layer, status: liveStatus };
           return (
           <div
@@ -346,7 +388,7 @@ function PITLStack({ l6Status }) {
             </div>
             <div style={{ display: "flex", alignItems: "center", gap: 6 }}>
               <StatusDot status={layer_.status} />
-              <span style={{ fontFamily: "'JetBrains Mono', monospace", fontSize: 9, color: layer_.status === "PENDING" ? "#ff9500" : layer_.status === "DISABLED" ? "#ff2d55" : "#3d5060" }}>{layer_.status}</span>
+              <span style={{ fontFamily: "'JetBrains Mono', monospace", fontSize: 9, color: layer_.status === "PENDING" ? "#ff9500" : layer_.status === "INACTIVE" ? "#ff9500" : layer_.status === "DISABLED" ? "#ff2d55" : "#3d5060" }}>{layer_.status === "INACTIVE" ? "INACTIVE (dead zone)" : layer_.status}</span>
             </div>
           </div>
           );
@@ -488,7 +530,7 @@ function BiometricRadar() {
         </div>
       </div>
       <div style={{ marginTop: 12, fontFamily: "'JetBrains Mono', monospace", fontSize: 9, color: "#3d5060" }}>
-        ⚠ 3 features structurally zero: trigger_resistance_change_rate, touchpad_active_fraction, touch_position_variance — auto-excluded via ZERO_VAR_THRESHOLD=1e-4. Separation ratio 0.362 &lt; 1.0: L4 is intra-player anomaly detector, not inter-player identifier.
+        2 features structurally zero: trigger_resistance_change_rate, touch_position_variance — auto-excluded via ZERO_VAR_THRESHOLD=1e-4. accel_magnitude_spectral_entropy (index 9, Phase 46): active N=69 sessions, mean 4.93 bits, bot-vs-human only — does NOT improve separation ratio 0.362. L4 is intra-player anomaly detector, not inter-player identifier.
       </div>
     </Panel>
   );
@@ -773,10 +815,10 @@ function PHGCredential({ phgScore }) {
 
 function OpenItems() {
   const items = [
-    { id: "P1", label: "L6 Human Response Baseline",         status: "OPEN",     priority: "HIGH",   detail: "N≥50 challenge sessions · onset_ms/settle_ms/grip_variance distributions · l6_threshold_calibrator.py skeleton ready" },
-    { id: "P2", label: "Post-Phase-17 Session Recapture",    status: "OPEN",     priority: "HIGH",   detail: "Touchpad features now populated · widen tremor FFT window to ≥1024 frames at 1000Hz · recompute separation ratio (currently 0.362)" },
-    { id: "P3", label: "Full Covariance L4 Fingerprinting",  status: "PLANNED",  priority: "MEDIUM", detail: "Diagonal → full 7×7 covariance matrix · captures trigger onset × grip asymmetry correlation · improves inter-player separation" },
-    { id: "P4", label: "ZK Inference Code Binding",          status: "PLANNED",  priority: "MEDIUM", detail: "pub[2]=0 → real inferenceResult on-chain · requires circuit upgrade + multi-party MPC ceremony" },
+    { id: "P1", label: "L6 Human Response Baseline",         status: "COMPLETE", priority: "—",      detail: "N=43 captures · per-profile onset_ms/settle_ms thresholds wired (PROFILE_VERSION 2) · l6_threshold_calibrator.py --from-db · Phase 43" },
+    { id: "P2", label: "Inter-Player Separation Improvement", status: "OPEN",     priority: "HIGH",   detail: "accel_magnitude_spectral_entropy (Phase 46) active but bot-vs-human only (P1/P2/P3 means: 4.878/4.882/4.767 bits) · widen tremor FFT window to ≥1024 frames at 1000Hz · recompute separation ratio (currently 0.362)" },
+    { id: "P3", label: "Full Covariance L4 Fingerprinting",  status: "COMPLETE", priority: "—",      detail: "USE_FULL_COVARIANCE flag · EMA NxN cov matrix · Tikhonov regularization λ=0.01 · synthetic separation ratio 9.85 · Phase 41" },
+    { id: "P4", label: "ZK Inference Code Binding",          status: "COMPLETE", priority: "—",      detail: "pub[2]=inferenceCode wired · PITLSessionRegistry.sol::submitPITLProof(inferenceCode) · C2 circuit constraint active · Phase 41" },
     { id: "P5", label: "Pro Bot Adversarial Data",           status: "OPEN",     priority: "MEDIUM", detail: "Commercial aimbot trajectories, ML-driven bots, game-specific macros as labeled data" },
     { id: "P6", label: "Multi-Party ZK Ceremony",            status: "PLANNED",  priority: "LOW",    detail: "Hermez Perpetual Powers of Tau MPC · current single-contributor ceremony is dev-only" },
     { id: "P7", label: "Bluetooth Calibration (125–250Hz)",  status: "OPEN",     priority: "LOW",    detail: "All N=69 sessions USB-only · L4/L5 thresholds have no empirical grounding for BT polling rates" },
@@ -873,21 +915,510 @@ function LiveRecordFeed({ records }) {
   );
 }
 
+/* ─── BRIDGEAGENT CHAT PANEL ─────────────────────────────────────────────── */
+
+const AGENT_QUICK_QUERIES = [
+  "What is the current PHG score?",
+  "Show PITL layer status",
+  "Are there any active threats?",
+  "What is the calibration health?",
+  "Show recent PoAC records",
+  "Check credential status",
+  "Run startup diagnostics",
+];
+
+const AGENT_TOOLS = [
+  "get_player_profile",      "get_leaderboard",         "get_leaderboard_rank",
+  "run_pitl_calibration",    "get_continuity_chain",    "get_recent_records",
+  "get_startup_diagnostics", "get_phg_checkpoints",     "check_eligibility",
+  "get_pitl_proof",          "get_behavioral_report",   "get_network_clusters",
+  "get_federation_status",   "query_digest",            "get_detection_policy",
+  "get_credential_status",   "get_calibration_status",
+];
+
+function AgentPanel({ apiKey, onThinkingChange }) {
+  const [messages,        setMessages]        = useState([]);
+  const [input,           setInput]           = useState("");
+  const [thinking,        setThinking]        = useState(false);
+  const [toolCatalogOpen, setToolCatalogOpen] = useState(false);
+  const abortRef  = useRef(null);
+  const feedRef   = useRef(null);
+
+  function _setThinking(val) {
+    setThinking(val);
+    if (onThinkingChange) onThinkingChange(val);
+  }
+
+  async function sendMessage(text) {
+    if (!text.trim() || thinking) return;
+    if (abortRef.current) abortRef.current.abort();
+
+    const userMsg = { role: "user", text: text.trim() };
+    setMessages(prev => [...prev, userMsg]);
+    setInput("");
+    _setThinking(true);
+
+    const assistantIdx = { val: -1 };
+    setMessages(prev => {
+      assistantIdx.val = prev.length;
+      return [...prev, { role: "assistant", text: "", badges: [] }];
+    });
+
+    const ctrl = new AbortController();
+    abortRef.current = ctrl;
+
+    const key  = apiKey || "";
+    const url  = `${BRIDGE_URL}/operator/agent/stream?session_id=dashboard&message=${encodeURIComponent(text.trim())}&api_key=${encodeURIComponent(key)}`;
+
+    try {
+      const res = await fetch(url, { signal: ctrl.signal });
+      if (!res.ok) {
+        const errText = res.status === 403 ? "Invalid API key" :
+                        res.status === 429 ? "Rate limit exceeded (60 req/min)" :
+                        res.status === 503 ? "OPERATOR_API_KEY not configured on bridge" :
+                        `HTTP ${res.status}`;
+        setMessages(prev => {
+          const next = [...prev];
+          next[assistantIdx.val] = { role: "assistant", text: `Error: ${errText}`, badges: [] };
+          return next;
+        });
+        _setThinking(false);
+        return;
+      }
+
+      const reader  = res.body.getReader();
+      const decoder = new TextDecoder();
+      let   buf     = "";
+
+      while (true) {
+        const { done, value } = await reader.read();
+        if (done) break;
+        buf += decoder.decode(value, { stream: true });
+        const parts = buf.split("\n\n");
+        buf = parts.pop();
+        for (const part of parts) {
+          const line = part.trim();
+          if (!line.startsWith("data:")) continue;
+          try {
+            const evt = JSON.parse(line.slice(5).trim());
+            if (evt.type === "text_delta") {
+              setMessages(prev => {
+                const next = [...prev];
+                const msg  = next[assistantIdx.val];
+                next[assistantIdx.val] = { ...msg, text: (msg.text || "") + evt.text };
+                return next;
+              });
+            } else if (evt.type === "tool_start") {
+              setMessages(prev => {
+                const next = [...prev];
+                const msg  = next[assistantIdx.val];
+                next[assistantIdx.val] = { ...msg, badges: [...(msg.badges || []), { kind: "start", tool: evt.tool }] };
+                return next;
+              });
+            } else if (evt.type === "tool_result") {
+              setMessages(prev => {
+                const next = [...prev];
+                const msg  = next[assistantIdx.val];
+                next[assistantIdx.val] = { ...msg, badges: [...(msg.badges || []), { kind: "result", tool: evt.tool, preview: evt.preview }] };
+                return next;
+              });
+            } else if (evt.type === "done" || evt.type === "error") {
+              if (evt.type === "error") {
+                setMessages(prev => {
+                  const next = [...prev];
+                  next[assistantIdx.val] = { ...next[assistantIdx.val], text: (next[assistantIdx.val].text || "") + `\n[Error: ${evt.message}]` };
+                  return next;
+                });
+              }
+              _setThinking(false);
+            }
+          } catch {}
+        }
+      }
+    } catch (err) {
+      if (err.name !== "AbortError") {
+        setMessages(prev => {
+          const next = [...prev];
+          next[assistantIdx.val] = { role: "assistant", text: `Connection error: ${err.message}`, badges: [] };
+          return next;
+        });
+      }
+    } finally {
+      _setThinking(false);
+    }
+  }
+
+  // Auto-scroll feed
+  useEffect(() => {
+    if (feedRef.current) feedRef.current.scrollTop = feedRef.current.scrollHeight;
+  }, [messages]);
+
+  // Cleanup on unmount
+  useEffect(() => () => { if (abortRef.current) abortRef.current.abort(); }, []);
+
+  const noKey = !apiKey;
+
+  return (
+    <Panel style={{ animation: "fadeIn 0.4s ease both" }}>
+      {/* Header */}
+      <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", marginBottom: 14 }}>
+        <SectionLabel>BridgeAgent Interface — /operator/agent/stream</SectionLabel>
+        <span style={{
+          fontFamily: "'JetBrains Mono', monospace",
+          fontSize: 9,
+          color: thinking ? "#ff6b00" : "#00ff88",
+          animation: thinking ? "statusPulse 1.2s ease-in-out infinite" : "none",
+          letterSpacing: "0.1em",
+        }}>
+          {thinking ? "◌ AGENT THINKING..." : "● AGENT READY"}
+        </span>
+      </div>
+
+      {/* Tool catalogue toggle */}
+      <div style={{ marginBottom: 12 }}>
+        <button
+          onClick={() => setToolCatalogOpen(o => !o)}
+          style={{
+            background: "none", border: "1px solid rgba(255,107,0,0.25)",
+            color: "#ff6b00", fontFamily: "'JetBrains Mono', monospace",
+            fontSize: 8, letterSpacing: "0.1em", padding: "4px 10px",
+            borderRadius: 2, cursor: "pointer",
+          }}
+        >
+          {toolCatalogOpen ? "▲" : "▼"} {AGENT_TOOLS.length} TOOLS AVAILABLE
+        </button>
+        {toolCatalogOpen && (
+          <div style={{
+            marginTop: 8,
+            display: "grid", gridTemplateColumns: "repeat(3, 1fr)", gap: "4px 12px",
+            padding: "10px 12px",
+            background: "rgba(255,107,0,0.04)",
+            border: "1px solid rgba(255,107,0,0.12)",
+            borderRadius: 2,
+          }}>
+            {AGENT_TOOLS.map(t => (
+              <span key={t} style={{
+                fontFamily: "'JetBrains Mono', monospace",
+                fontSize: 8, color: "#5a7080", letterSpacing: "0.05em",
+              }}>{t}</span>
+            ))}
+          </div>
+        )}
+      </div>
+
+      {/* No API key warning */}
+      {noKey && (
+        <div style={{
+          fontFamily: "'JetBrains Mono', monospace", fontSize: 9,
+          color: "#ff9500", padding: "8px 12px", marginBottom: 12,
+          background: "rgba(255,149,0,0.06)", border: "1px solid rgba(255,149,0,0.2)",
+          borderRadius: 2,
+        }}>
+          Set VITE_BRIDGE_API_KEY in frontend/.env to enable agent queries.
+        </div>
+      )}
+
+      {/* Message feed */}
+      <div
+        ref={feedRef}
+        style={{
+          minHeight: 120, maxHeight: 320, overflowY: "auto",
+          display: "flex", flexDirection: "column", gap: 8,
+          marginBottom: 12, paddingRight: 4,
+        }}
+      >
+        {messages.length === 0 && (
+          <div style={{ fontFamily: "'JetBrains Mono', monospace", fontSize: 9, color: "#3d5060", textAlign: "center", padding: "24px 0" }}>
+            Send a query to analyse the live VAPI session.
+          </div>
+        )}
+        {messages.map((msg, i) => (
+          <div key={i} style={{
+            padding: "8px 12px",
+            background: msg.role === "user" ? "rgba(0,212,255,0.05)" : "rgba(255,107,0,0.04)",
+            border: `1px solid ${msg.role === "user" ? "rgba(0,212,255,0.12)" : "rgba(255,107,0,0.12)"}`,
+            borderRadius: 2,
+          }}>
+            <div style={{ fontFamily: "'JetBrains Mono', monospace", fontSize: 8, color: msg.role === "user" ? "#00d4ff" : "#ff6b00", marginBottom: 4, letterSpacing: "0.1em" }}>
+              {msg.role === "user" ? "USER" : "AGENT"}
+            </div>
+            {msg.text && (
+              <div style={{ fontFamily: "'JetBrains Mono', monospace", fontSize: 9, color: "#c4cdd6", whiteSpace: "pre-wrap", lineHeight: 1.5 }}>
+                {msg.text}
+              </div>
+            )}
+            {msg.badges && msg.badges.length > 0 && (
+              <div style={{ marginTop: 6, display: "flex", flexWrap: "wrap", gap: 4 }}>
+                {msg.badges.map((b, j) => (
+                  <span key={j} style={{
+                    fontFamily: "'JetBrains Mono', monospace",
+                    fontSize: 8, letterSpacing: "0.05em",
+                    padding: "2px 7px",
+                    background: b.kind === "result" ? "rgba(0,255,136,0.08)" : "rgba(255,107,0,0.08)",
+                    border: `1px solid ${b.kind === "result" ? "rgba(0,255,136,0.25)" : "rgba(255,107,0,0.25)"}`,
+                    color: b.kind === "result" ? "#00ff88" : "#ff9500",
+                    borderRadius: 2,
+                  }}>
+                    {b.kind === "result" ? `✓ ${b.tool}${b.preview ? `: ${b.preview}` : ""}` : `⚙ ${b.tool}`}
+                  </span>
+                ))}
+              </div>
+            )}
+          </div>
+        ))}
+      </div>
+
+      {/* Quick queries */}
+      <div style={{ display: "flex", flexWrap: "wrap", gap: 4, marginBottom: 10 }}>
+        {AGENT_QUICK_QUERIES.map(q => (
+          <button
+            key={q}
+            onClick={() => sendMessage(q)}
+            disabled={thinking || noKey}
+            style={{
+              background: "none",
+              border: "1px solid rgba(255,107,0,0.2)",
+              color: (thinking || noKey) ? "#3d5060" : "#c4cdd6",
+              fontFamily: "'JetBrains Mono', monospace",
+              fontSize: 8, letterSpacing: "0.05em",
+              padding: "4px 9px", borderRadius: 2,
+              cursor: (thinking || noKey) ? "default" : "pointer",
+              transition: "border-color 0.15s, color 0.15s",
+            }}
+          >
+            {q}
+          </button>
+        ))}
+      </div>
+
+      {/* Text input + send */}
+      <div style={{ display: "flex", gap: 8 }}>
+        <input
+          type="text"
+          value={input}
+          onChange={e => setInput(e.target.value)}
+          onKeyDown={e => { if (e.key === "Enter") sendMessage(input); }}
+          disabled={thinking || noKey}
+          placeholder="Enter a query for the BridgeAgent…"
+          style={{
+            flex: 1,
+            background: "rgba(255,255,255,0.03)",
+            border: "1px solid rgba(255,107,0,0.2)",
+            color: "#c4cdd6",
+            fontFamily: "'JetBrains Mono', monospace",
+            fontSize: 10, padding: "8px 12px", borderRadius: 2,
+            outline: "none",
+          }}
+        />
+        <button
+          onClick={() => sendMessage(input)}
+          disabled={thinking || noKey || !input.trim()}
+          style={{
+            background: (thinking || noKey || !input.trim()) ? "rgba(255,107,0,0.06)" : "rgba(255,107,0,0.15)",
+            border: "1px solid rgba(255,107,0,0.3)",
+            color: (thinking || noKey || !input.trim()) ? "#3d5060" : "#ff6b00",
+            fontFamily: "'JetBrains Mono', monospace",
+            fontSize: 9, letterSpacing: "0.15em",
+            padding: "8px 18px", borderRadius: 2,
+            cursor: (thinking || noKey || !input.trim()) ? "default" : "pointer",
+            transition: "background 0.15s, color 0.15s",
+          }}
+        >
+          SEND
+        </button>
+      </div>
+    </Panel>
+  );
+}
+
+/* ─── SECTION: CAPTURE MONITOR (Phase 44) ───────────────────────────────── */
+
+function StickPad({ x = 128, y = 128, label }) {
+  const px = ((x - 128) / 128) * 45;
+  const py = ((y - 128) / 128) * 45;
+  return (
+    <div style={{ display: "flex", flexDirection: "column", alignItems: "center", gap: 4 }}>
+      <div style={{
+        width: 64, height: 64, border: "1px solid rgba(0,212,255,0.2)",
+        borderRadius: 2, background: "rgba(0,212,255,0.03)", position: "relative", overflow: "hidden",
+      }}>
+        <div style={{ position: "absolute", left: "50%", top: 0, bottom: 0, width: 1, background: "rgba(0,212,255,0.08)" }} />
+        <div style={{ position: "absolute", top: "50%", left: 0, right: 0, height: 1, background: "rgba(0,212,255,0.08)" }} />
+        <div style={{
+          position: "absolute", width: 8, height: 8, borderRadius: "50%",
+          background: "#00d4ff", boxShadow: "0 0 6px #00d4ff",
+          left: `calc(50% + ${px}% - 4px)`, top: `calc(50% + ${py}% - 4px)`,
+          transition: "left 0.06s, top 0.06s",
+        }} />
+      </div>
+      <span style={{ fontFamily: "'JetBrains Mono', monospace", fontSize: 8, color: "#3d5060" }}>{label}</span>
+    </div>
+  );
+}
+
+function TriggerBar({ value = 0, label, color = "#ff9500" }) {
+  const pct = Math.round((value / 255) * 100);
+  return (
+    <div style={{ display: "flex", flexDirection: "column", alignItems: "center", gap: 4 }}>
+      <div style={{
+        width: 20, height: 64, border: "1px solid rgba(255,107,0,0.2)",
+        borderRadius: 2, background: "rgba(255,107,0,0.04)", position: "relative", overflow: "hidden",
+      }}>
+        <div style={{
+          position: "absolute", bottom: 0, left: 0, right: 0,
+          height: `${pct}%`, background: color, opacity: 0.8,
+          transition: "height 0.06s",
+        }} />
+      </div>
+      <span style={{ fontFamily: "'JetBrains Mono', monospace", fontSize: 8, color: "#3d5060" }}>{label}</span>
+      <span style={{ fontFamily: "'JetBrains Mono', monospace", fontSize: 9, color, fontWeight: 700 }}>{pct}%</span>
+    </div>
+  );
+}
+
+function CaptureMonitor({ latestRecord, accelHistory, latestFrame }) {
+  const [l6Summary, setL6Summary] = useState(null);
+  useEffect(() => {
+    let active = true;
+    async function poll() {
+      try {
+        const res = await fetch(`${BRIDGE_URL}/l6/captures/summary`,
+          { signal: AbortSignal.timeout(3000) });
+        if (res.ok && active) setL6Summary(await res.json());
+      } catch {}
+    }
+    poll();
+    const t = setInterval(poll, 10000);
+    return () => { active = false; clearInterval(t); };
+  }, []);
+
+  const frame = latestFrame ?? {};
+  const rec   = latestRecord ?? {};
+  const l6Total = l6Summary
+    ? Object.values(l6Summary.by_profile ?? {}).reduce((s, v) => s + v, 0)
+    : null;
+  const l6Pct = l6Total !== null ? Math.min(100, Math.round((l6Total / 50) * 100)) : 0;
+
+  const humanityPct   = rec.humanity_prob != null ? Math.round(rec.humanity_prob * 100) : null;
+  const humanityColor = humanityPct == null ? "#5a6a74"
+    : humanityPct >= 70 ? "#00ff88" : humanityPct >= 40 ? "#ff9500" : "#ff2d55";
+  const l4Color = rec.pitl_l4_distance == null ? "#5a6a74"
+    : rec.pitl_l4_distance > 7.019 ? "#ff2d55"
+    : rec.pitl_l4_distance > 5.369 ? "#ff9500" : "#00ff88";
+  const l5Color = rec.pitl_l5_cv == null ? "#5a6a74"
+    : rec.pitl_l5_cv < 0.08 ? "#ff2d55" : "#00ff88";
+
+  // l2c_inactive: true when right stick is in dead zone (e.g. NCAA Football 26, 68/69 sessions).
+  // In that state p_L2C=0.5 neutral → formula is effectively 4-signal, not 5.
+  const l2cInactive = rec.l2c_inactive === true;
+  const humanitySub = l2cInactive ? "4-signal (L2C: dead zone)" : "5-signal";
+  const humanitySubColor = l2cInactive ? "#ff9500" : "#2a3840";
+
+  const scores = [
+    { label: "L4 DIST",  value: rec.pitl_l4_distance != null ? rec.pitl_l4_distance.toFixed(2) : "—",          color: l4Color,       sub: "thresh 6.73",  subColor: "#2a3840" },
+    { label: "L5 CV",    value: rec.pitl_l5_cv != null ? rec.pitl_l5_cv.toFixed(3) : "—",                      color: l5Color,       sub: "thresh 0.08",  subColor: "#2a3840" },
+    { label: "HUMANITY", value: humanityPct != null ? `${humanityPct}%` : "—",                                  color: humanityColor, sub: humanitySub,    subColor: humanitySubColor },
+    { label: "L2B FRAC", value: rec.l2b_coupled_fraction != null ? rec.l2b_coupled_fraction.toFixed(2) : "—",   color: "#ff9500",     sub: "thresh 0.55",  subColor: "#2a3840" },
+    { label: "L5 SRC",   value: rec.l5_source ?? "—",                                                           color: "#00d4ff",     sub: "rhythm btn",   subColor: "#2a3840" },
+  ];
+
+  return (
+    <Panel>
+      <SectionLabel>Capture Monitor — Live Controller Feed · /ws/frames 20Hz · Phase 46</SectionLabel>
+      <div style={{ display: "grid", gridTemplateColumns: "1fr auto", gap: 16 }}>
+
+        {/* Left: accel waveform + PITL scores */}
+        <div style={{ display: "flex", flexDirection: "column", gap: 12 }}>
+          <div>
+            <div style={{ fontFamily: "'JetBrains Mono', monospace", fontSize: 8, color: "#3d5060", marginBottom: 4 }}>
+              ACCEL MAGNITUDE (g) · 3s ROLLING WINDOW
+            </div>
+            <div style={{ height: 80 }}>
+              <ResponsiveContainer width="100%" height="100%">
+                <AreaChart data={accelHistory} margin={{ top: 2, right: 2, bottom: 0, left: 0 }}>
+                  <defs>
+                    <linearGradient id="accelGrad" x1="0" y1="0" x2="0" y2="1">
+                      <stop offset="5%"  stopColor="#00d4ff" stopOpacity={0.25} />
+                      <stop offset="95%" stopColor="#00d4ff" stopOpacity={0} />
+                    </linearGradient>
+                  </defs>
+                  <Area type="monotone" dataKey="v" stroke="#00d4ff" strokeWidth={1.5}
+                        fill="url(#accelGrad)" dot={false} isAnimationActive={false} />
+                  <YAxis domain={[0, "auto"]} hide />
+                  <XAxis dataKey="t" hide />
+                </AreaChart>
+              </ResponsiveContainer>
+            </div>
+          </div>
+          <div style={{ display: "grid", gridTemplateColumns: "repeat(5, 1fr)", gap: 6 }}>
+            {scores.map(({ label, value, color, sub, subColor }) => (
+              <div key={label} style={{
+                padding: "8px 10px", background: "rgba(255,255,255,0.02)",
+                border: "1px solid rgba(255,255,255,0.05)", borderRadius: 2,
+              }}>
+                <div style={{ fontFamily: "'JetBrains Mono', monospace", fontSize: 14, fontWeight: 700, color }}>{value}</div>
+                <div style={{ fontFamily: "'JetBrains Mono', monospace", fontSize: 8, color: "#3d5060", marginTop: 3 }}>{label}</div>
+                <div style={{ fontFamily: "'JetBrains Mono', monospace", fontSize: 7, color: subColor ?? "#2a3840", marginTop: 1 }}>{sub}</div>
+              </div>
+            ))}
+          </div>
+        </div>
+
+        {/* Right: sticks + triggers + L6 progress */}
+        <div style={{ display: "flex", flexDirection: "column", gap: 12, alignItems: "center" }}>
+          <div style={{ display: "flex", gap: 10, alignItems: "flex-end" }}>
+            <StickPad x={frame.left_stick_x}  y={frame.left_stick_y}  label="L-STICK" />
+            <TriggerBar value={frame.l2_trigger} label="L2" color="#ff6b00" />
+            <TriggerBar value={frame.r2_trigger} label="R2" color="#ff9500" />
+            <StickPad x={frame.right_stick_x} y={frame.right_stick_y} label="R-STICK" />
+          </div>
+          <div style={{
+            width: "100%", padding: "10px 12px",
+            background: "rgba(255,107,0,0.04)", border: "1px solid rgba(255,107,0,0.15)", borderRadius: 2,
+          }}>
+            <div style={{ fontFamily: "'JetBrains Mono', monospace", fontSize: 8, color: "#3d5060", marginBottom: 6 }}>
+              L6 CAPTURE · TARGET N≥50
+            </div>
+            <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
+              <div style={{ flex: 1, height: 6, background: "rgba(255,255,255,0.05)", borderRadius: 1, overflow: "hidden" }}>
+                <div style={{
+                  height: "100%", width: `${l6Pct}%`,
+                  background: l6Pct >= 100 ? "#00ff88" : "#ff9500",
+                  transition: "width 0.4s",
+                }} />
+              </div>
+              <span style={{ fontFamily: "'JetBrains Mono', monospace", fontSize: 11, fontWeight: 700,
+                             color: l6Pct >= 100 ? "#00ff88" : "#ff9500", minWidth: 36 }}>
+                {l6Total !== null ? `${l6Total}/50` : "—"}
+              </span>
+            </div>
+          </div>
+        </div>
+
+      </div>
+    </Panel>
+  );
+}
+
 /* ─── MAIN APP ────────────────────────────────────────────────────────────── */
 
 export default function VAPIDashboard() {
   const pulse                    = usePulse(3000);
   const { snapshot, mode, records } = useBridgeData();
+  const { accelHistory, latestFrame } = useFrameData(mode === "LIVE");
+  const [agentThinking, setAgentThinking] = useState(false);
 
   const sessionTarget  = snapshot?.session?.total_sessions  ?? 69;
-  const testTarget     = snapshot?.session?.total_tests     ?? 877;
+  const testTarget     = snapshot?.session?.total_tests     ?? 880;
   const contractTarget = snapshot?.session?.contracts_live  ?? 13;
 
   const sessionCount  = useCounter(sessionTarget,  1500);
   const testCount     = useCounter(testTarget,     1800);
   const contractCount = useCounter(contractTarget, 1200);
 
-  const l6Status  = snapshot ? (snapshot.l6?.enabled ? "ACTIVE" : "DISABLED") : undefined;
+  const l6Status      = snapshot ? (snapshot.l6?.enabled ? "ACTIVE" : "DISABLED") : undefined;
+  // L2C dead-zone: derive from most recent WS record (true in NCAA CFB 26, 68/69 sessions).
+  const l2cInactive   = records.length > 0 ? records[0]?.l2c_inactive === true : undefined;
   const calibData = snapshot?.calibration?.threshold_history ?? [];
   const phgScore  = snapshot?.phg?.score;
 
@@ -992,6 +1523,25 @@ export default function VAPIDashboard() {
                 <span style={{ fontFamily: "'JetBrains Mono', monospace", fontSize: 9, color: "#ff9500" }}>DEMO — BRIDGE OFFLINE</span>
               </div>
             )}
+            {mode === "LIVE" && (
+              <div style={{
+                display: "flex", alignItems: "center", gap: 5,
+                padding: "6px 12px",
+                border: "1px solid rgba(255,107,0,0.2)",
+                borderRadius: 2,
+                background: "rgba(255,107,0,0.04)",
+              }}>
+                <span style={{
+                  fontFamily: "'JetBrains Mono', monospace",
+                  fontSize: 9,
+                  color: agentThinking ? "#ff6b00" : "#4caf50",
+                  animation: agentThinking ? "statusPulse 1.2s ease-in-out infinite" : "none",
+                  letterSpacing: "0.08em",
+                }}>
+                  {agentThinking ? "◌ AGENT THINKING..." : "● AGENT READY"}
+                </span>
+              </div>
+            )}
           </div>
         </div>
 
@@ -1009,7 +1559,7 @@ export default function VAPIDashboard() {
         <div style={{ padding: "16px 32px", display: "grid", gridTemplateColumns: "1fr 1fr", gap: 16 }}>
           {/* Left column */}
           <div style={{ display: "flex", flexDirection: "column", gap: 16 }}>
-            <div className="panel-fade" style={{ animationDelay: "0.05s" }}><PITLStack l6Status={l6Status} /></div>
+            <div className="panel-fade" style={{ animationDelay: "0.05s" }}><PITLStack l6Status={l6Status} l2cInactive={l2cInactive} /></div>
             <div className="panel-fade" style={{ animationDelay: "0.15s" }}><AdversarialMatrix /></div>
             <div className="panel-fade" style={{ animationDelay: "0.25s" }}><HardwareMetrics /></div>
             {mode === "LIVE" && (
@@ -1029,6 +1579,19 @@ export default function VAPIDashboard() {
           <div className="panel-fade" style={{ animationDelay: "0.33s" }}><L5ButtonCoverage /></div>
         </div>
 
+        {/* ── CAPTURE MONITOR (Phase 44, LIVE only) ───────────────────────── */}
+        {mode === "LIVE" && (
+          <div style={{ padding: "0 32px 16px" }}>
+            <div className="panel-fade" style={{ animationDelay: "0.36s" }}>
+              <CaptureMonitor
+                latestRecord={records[0] ?? null}
+                accelHistory={accelHistory}
+                latestFrame={latestFrame}
+              />
+            </div>
+          </div>
+        )}
+
         {/* ── FULL-WIDTH ROW ───────────────────────────────────────────────── */}
         <div style={{ padding: "0 32px", display: "grid", gridTemplateColumns: "1fr 1fr 1fr", gap: 16 }}>
           <div className="panel-fade" style={{ animationDelay: "0.35s" }}><PHGCredential phgScore={phgScore} /></div>
@@ -1037,9 +1600,21 @@ export default function VAPIDashboard() {
         </div>
 
         {/* ── OPEN ITEMS ───────────────────────────────────────────────────── */}
-        <div style={{ padding: "16px 32px 32px" }}>
+        <div style={{ padding: "16px 32px 0" }}>
           <div className="panel-fade" style={{ animationDelay: "0.5s" }}><OpenItems /></div>
         </div>
+
+        {/* ── BRIDGEAGENT CHAT PANEL (LIVE mode only) ───────────────────── */}
+        {mode === "LIVE" && (
+          <div style={{ padding: "16px 32px 32px" }}>
+            <div className="panel-fade" style={{ animationDelay: "0.55s" }}>
+              <AgentPanel
+                apiKey={import.meta.env.VITE_BRIDGE_API_KEY}
+                onThinkingChange={setAgentThinking}
+              />
+            </div>
+          </div>
+        )}
 
         {/* ── FOOTER ──────────────────────────────────────────────────────── */}
         <div style={{

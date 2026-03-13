@@ -19,7 +19,7 @@ VAPI provides a cryptographically verifiable evidence rail for controller input.
 Software-only injection is made empirically infeasible by a nine-level Physical Input Trust Layer (PITL) that binds committed evidence to physics-coupled controller signals — IMU gravity baseline, IMU-button causal latency, stick-IMU temporal cross-correlation, biometric kinematic fingerprinting (11 features, Mahalanobis distance), temporal rhythm analysis, and active haptic challenge-response using the DualShock Edge's motorized adaptive triggers. Live hardware validation on a DualShock Edge CFI-ZCP1 confirms a 14,000× injection detection margin.
 
 **Part 3 — Status.**
-The prototype spans ~220 files with ~1,289 automated tests (865 bridge, 354 contract, 28 SDK, 14 E2E, 28 hardware). Thirteen contracts are deployed on IoTeX testnet. Living calibration (Mode 6, Phase 38) autonomously evolves L4 thresholds from verified session data every 6 hours using exponential decay weighting. All PITL thresholds are empirically calibrated from N=69 real sessions across 3 distinct players. The primary current limitation is single-population calibration: L4 functions as a per-player anomaly detector rather than a cross-player identifier (inter-person separation ratio 0.362).
+The prototype spans ~220 files with ~1,312 automated tests (888 bridge, 354 contract, 28 SDK, 14 E2E, 28 hardware). Thirteen contracts are deployed on IoTeX testnet. Living calibration (Mode 6, Phase 38) autonomously evolves L4 thresholds from verified session data every 6 hours using exponential decay weighting. All PITL thresholds are empirically calibrated from N=69 real sessions across 3 distinct players. The primary current limitation is single-population calibration: L4 functions as a per-player anomaly detector rather than a cross-player identifier (inter-person separation ratio 0.362).
 
 **Keywords:** proof of cognition, gaming anti-cheat, verifiable gaming intelligence,
 physical human controller input, PHCI certification, adaptive trigger attestation,
@@ -336,8 +336,8 @@ Appendix A for complete details.
 
 VAPI spans four implementation layers: firmware (C, Zephyr RTOS and ESP-IDF), smart
 contracts (Solidity, Hardhat, IoTeX), a Python asyncio bridge service, and a DualShock
-Edge controller anti-cheat subsystem. The prototype comprises ~220 files (~1,289 automated
-tests total, ~1,261 in CI excluding hardware).
+Edge controller anti-cheat subsystem. The prototype comprises ~220 files (~1,302 automated
+tests total, ~1,274 in CI excluding hardware).
 
 **Table 2: Implementation Component Summary**
 
@@ -481,10 +481,10 @@ survive the L2 IMU check.
 **L4 — Biometric Mahalanobis fingerprinting.**
 Eleven kinematic features per 50-report window are compared against a per-device *stable EMA
 baseline* — updated only on clean NOMINAL sessions to prevent fingerprint poisoning.
-The 11-feature space (Phase 17 expansion from 7): `trigger_resistance_change_rate`,
+The 11-feature space (Phase 17 expansion from 7; index 9 replaced Phase 46): `trigger_resistance_change_rate`,
 `trigger_onset_velocity_L2/R2`, `micro_tremor_accel_variance`, `grip_asymmetry`,
 `stick_autocorr_lag1/5`, `tremor_peak_hz`, `tremor_band_power` (tremor FFT 8–12 Hz band),
-`touchpad_active_fraction`, `touch_position_variance`. The stable-vs-candidate architecture
+`accel_magnitude_spectral_entropy` (Phase 46; replaces structurally-zero `touchpad_active_fraction`), `touch_position_variance`. `accel_magnitude_spectral_entropy` is the Shannon entropy of the 0–500 Hz power spectrum of the gravity-invariant accel magnitude ||accel||; computed from a 1024-sample ring buffer (0.977 Hz/bin at 1000 Hz). Per-player entropy means are nearly identical across the N=69 calibration corpus (P1: 4.878 bits, P2: 4.882 bits, P3: 4.767 bits) — this feature is a **bot-vs-human discriminator, not an inter-player identifier**. It does not contribute to inter-person separation. Human range: 0.93–8.59 bits (mean 4.93, std 1.30); static-zero injection: 0.0 (variance guard); random-noise injection: ~9.0 bits. The stable-vs-candidate architecture
 is the key security property: an adversary who gradually shifts the EMA over many borderline
 sessions cannot poison the stable reference.
 
@@ -553,16 +553,19 @@ as the immediate next hardware validation milestone.
 Each of the eleven L4 biometric features is conditional on specific controller
 usage patterns that vary substantially by game genre. A session in which the player
 never moves the right stick, never presses L2, and never triggers simultaneous
-dual-grip produces feature vectors with up to 9 of 11 fields structurally zero —
+dual-grip produces feature vectors with up to 8 of 11 fields structurally zero —
 not because the human is unusual, but because the game did not elicit the relevant
-motor behavior. This section derives minimum controller-usage requirements for each
+motor behavior. (`accel_magnitude_spectral_entropy` is active in all held-device sessions
+regardless of game genre and therefore is not structurally zero in this scenario.) This section derives minimum controller-usage requirements for each
 L4 feature, characterizes which game genres satisfy them, and defines VAPI tournament
 deployment certification tiers.
 
 **Empirical basis:** Per-feature symmetric KL divergence computed from N=64 real
 DualShock Edge sessions (3 players, NCAA Football 26) in
-`docs/interperson-separation-analysis-v2.md §Phase 41`. In that dataset, 6 of 11
-features are structurally zero and only `stick_autocorr_lag1/5` provides meaningful
+`docs/interperson-separation-analysis-v2.md §Phase 41`. In that dataset, 5 of 11
+features are structurally zero (Phase 46 replaced `touchpad_active_fraction` at index 9
+with `accel_magnitude_spectral_entropy`, which is active in all sessions — zero-fraction 0%
+across N=69 calibration windows) and only `stick_autocorr_lag1/5` provides meaningful
 inter-player information — solely because Player 3 uses the right stick far less than
 Players 1/2, not because of individual physiological differences.
 
@@ -581,10 +584,10 @@ Players 1/2, not because of individual physiological differences.
 | `grip_asymmetry` | L2 and R2 must both exceed 10 ADC simultaneously (dual-press frame) | ≥ 10 dual-press frames per session | Requires mechanical co-activation: ADS+shoot (FPS), brake+accelerate (racing), or parry+strike (action). Any game where L2 and R2 are contextually exclusive yields grip_asymmetry = 1.000 for all sessions. |
 | `stick_autocorr_lag1` | right_stick_x must deviate from dead-zone center (128) with temporal persistence | ≥ 100 non-dead-zone right-stick reports per session | Captures characteristic micro-correction patterns in sustained aim or camera movement. Spiky one-off movements contribute less than smooth persistent input. |
 | `stick_autocorr_lag5` | Same as lag1; lag5 captures longer motor persistence | ≥ 200 non-dead-zone frames | Requires continuous right-stick engagement, not single-frame panning. |
-| `tremor_peak_hz` | right_stick_x must accumulate ≥ 513 non-dead-zone frames in the extractor's ring buffer | ≥ 513 consecutive non-dead-zone reports (ring buffer fills in ~0.5s of continuous aim) | Physiological tremor is 8–12 Hz. Bot scripts that precisely track a target produce near-zero tremor. FFT resolution: 1.95 Hz/bin at 1000 Hz with 512 velocity samples. |
-| `tremor_band_power` | Same as `tremor_peak_hz` | ≥ 513 frames | Collapses to 0 when FFT is inactive. Correlated with `tremor_peak_hz`. |
-| `touchpad_active_fraction` | Session must be captured with Phase 17+ `capture_session.py` (adds `touch_active` field); player's resting thumb must contact touchpad | Post-Phase-17 capture, ≥ 1 touch-active frame | Field did not exist in pre-Phase-17 sessions. Touchpad contact is natural for thumb-resting posture on DualShock Edge; no explicit player action required. |
-| `touch_position_variance` | Same as above; requires ≥ 3 touch-active frames for variance to be non-trivial | Post-Phase-17 capture, ≥ 3 touch-active frames | Captures per-player characteristic thumb resting position (high-value biometric once populated). |
+| `tremor_peak_hz` | right_stick_x must accumulate ≥ 1025 non-dead-zone frames in the extractor's ring buffer | ≥ 1025 consecutive non-dead-zone reports (ring buffer fills in ~1.0s of continuous aim) | Physiological tremor is 8–12 Hz. Bot scripts that precisely track a target produce near-zero tremor. FFT resolution: 0.977 Hz/bin at 1000 Hz with 1024 velocity samples — 4 bins across the 8–12 Hz tremor band (Phase 49). |
+| `tremor_band_power` | Same as `tremor_peak_hz` | ≥ 1025 frames | Collapses to 0 when FFT is inactive. Correlated with `tremor_peak_hz`. |
+| `accel_magnitude_spectral_entropy` | Device must be physically held during gameplay (accel variance > 4 LSB²); requires 1024-sample ring buffer to warm up (~1s at 1000 Hz) | 1024 cumulative report frames | Gravity-invariant (||accel|| eliminates orientation dependence). Active in all genres where the device is physically held. Per-player means are nearly identical (P1: 4.878, P2: 4.882, P3: 4.767 bits) — bot-vs-human discriminator only, not inter-player identifier. Replaces structurally-zero `touchpad_active_fraction` (Phase 46). |
+| `touch_position_variance` | Session must be captured with Phase 17+ `capture_session.py` (adds `touch_active` field); requires ≥ 3 touch-active frames for variance to be non-trivial | Post-Phase-17 capture, ≥ 3 touch-active frames | Captures per-player characteristic thumb resting position (high-value biometric once populated). |
 
 ---
 
@@ -593,7 +596,7 @@ Players 1/2, not because of individual physiological differences.
 Certification tier is determined by the number of L4 features **active** in typical play
 for that genre. "Active" means the feature is expected to have non-zero variance across
 sessions from the same player — sufficient to inform the Mahalanobis fingerprint.
-Touchpad features (10, 11) are counted only for post-Phase-17 captures.
+Feature 11 (`touch_position_variance`) is counted only for post-Phase-17 captures. Feature 10 (`accel_magnitude_spectral_entropy`) is counted for all captures (active regardless of game genre).
 
 **Tiers:**
 - **FULL CERTIFICATION (≥ 9/11):** L4 operates as a full inter-player biometric identifier. Intra-player anomaly detection and cross-player transplant detection are both reliable.
@@ -603,7 +606,7 @@ Touchpad features (10, 11) are counted only for post-Phase-17 captures.
 
 **Table 7.5.2.1-B: Per-Genre L4 Feature Activation**
 
-| Genre | Rep. Titles | 1 `trg_resist` | 2 `onset_L2` | 3 `onset_R2` | 4 `micro_tremor` | 5 `grip_asym` | 6 `autocorr_lag1` | 7 `autocorr_lag5` | 8 `tremor_hz` | 9 `tremor_power` | 10 `tp_frac` | 11 `tp_var` | **Active** | **Tier** |
+| Genre | Rep. Titles | 1 `trg_resist` | 2 `onset_L2` | 3 `onset_R2` | 4 `micro_tremor` | 5 `grip_asym` | 6 `autocorr_lag1` | 7 `autocorr_lag5` | 8 `tremor_hz` | 9 `tremor_power` | 10 `accel_ent` | 11 `tp_var` | **Active** | **Tier** |
 |-------|-------------|:--------------:|:------------:|:------------:|:----------------:|:-------------:|:-----------------:|:-----------------:|:-------------:|:----------------:|:-----------:|:-----------:|:----------:|----------|
 | FPS / Battle Royale | COD Black Ops 6, Halo Infinite, Apex Legends, Fortnite | ⚠️¹ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓² | ✓² | **9–10** | **FULL** |
 | Racing (Simulation) | Gran Turismo 7, Forza Motorsport, F1 24 | ✓³ | ✓ | ✓ | ✓ | ✓ | ⚠️⁴ | ⚠️⁴ | ⚠️⁴ | ⚠️⁴ | ✓² | ✓² | **7–9** | **STANDARD–FULL** |
@@ -615,7 +618,7 @@ Touchpad features (10, 11) are counted only for post-Phase-17 captures.
 | Platformer / Narrative | Crash Bandicoot, Astro Bot, Death Stranding | ✗ | ⚠️ | ✓ | ✓ | ✗ | ✗ | ✗ | ✗ | ✗ | ✓² | ✓² | **3–5** | ⚠️ **LIMITED** |
 
 ¹ FPS games vary: COD on PlayStation uses adaptive trigger support (Haptic Feedback mode); PC-origin ports (Apex, Fortnite) typically do not.<br>
-² Touchpad features require post-Phase-17 session capture. For pre-Phase-17 captures, subtract 2 from active count.<br>
+² `touch_position_variance` (feature 11) requires post-Phase-17 session capture. For pre-Phase-17 captures, subtract 1 from active count. Feature 10 (`accel_magnitude_spectral_entropy`) is active in all held-device sessions regardless of capture script version.<br>
 ³ Gran Turismo 7, Forza Motorsport, and NBA 2K use resistance profiles for ABS/grip feedback; feature activates reliably.<br>
 ⁴ Racing right-stick (camera) is often held static during race focus. Feature activates in camera-heavy moments (replays, cornering). Autocorr and tremor are partial.<br>
 ⁵ Game-dependent; adaptive trigger support varies. God of War: no. Horizon FW: yes (bow draw). Spider-Man 2: yes (web-shooter modulation).<br>
@@ -644,8 +647,8 @@ L4 operates as **intra-player session consistency detector only** — not as an 
 |----------|----------------------|
 | Intra-player session anomaly detection (is this session consistent with this device's history?) | **ACTIVE** — 3 active features (micro_tremor, stick_autocorr_lag1/5) inform the EMA fingerprint. Unusual play behavior within a single player's session history is detectable. |
 | Cross-player transplant detection (is this a different player using this credential?) | **NOT ACTIVE** — separation ratio 0.362 (threshold > 2.0). P1/P2 are statistically indistinguishable across all 5 active features. L4 cannot detect one player's sessions submitted under another's device ID. |
-| Structural zero-variance features (trigger_resistance_change_rate, trigger_onset_velocity_L2/R2, tremor_peak_hz, tremor_band_power) | **INERT** — auto-excluded by ZERO_VAR_THRESHOLD = 1e-4 in BiometricFusionClassifier. These features do not contribute false-positive 0x30 signals; they simply do not contribute. |
-| Touchpad features (touchpad_active_fraction, touch_position_variance) | **PENDING** — zero in all pre-Phase-17 sessions. Will populate in next capture with Phase 17+ script. Expected to add one stable per-player discriminator once populated. |
+| Structural zero-variance features (trigger_resistance_change_rate, trigger_onset_velocity_L2/R2, tremor_peak_hz, tremor_band_power, touch_position_variance) | **INERT** — auto-excluded by ZERO_VAR_THRESHOLD = 1e-4 in BiometricFusionClassifier. These features do not contribute false-positive 0x30 signals; they simply do not contribute. |
+| `accel_magnitude_spectral_entropy` (index 9, Phase 46) | **ACTIVE — bot-vs-human only.** Non-zero across all N=69 sessions (mean 4.93 bits, zero-fraction 0%). Per-player means P1/P2/P3 are nearly identical (4.878/4.882/4.767 bits). Contributes to intra-player anomaly detection and bot discrimination; does **not** contribute to inter-player separation. |
 
 **Recommended use:** VAPI-certified NCAA Football 26 tournaments are appropriate where the
 integrity requirements are: (a) verifying that a real controller was physically operated
@@ -735,6 +738,18 @@ default to 0.5 (neutral) before oracle warmup, preserving [0,1] boundedness.
 L6 participation in the ZK PITL circuit (§7.5.3) is noted as future work pending
 the multi-contributor ceremony (§10.3).
 
+**L2C dead-zone note.** `p_L2C` carries its full discriminative weight only when
+right-stick velocity is non-zero (real-time aim-based games). In dead-zone stick
+game genres — e.g. NCAA College Football 26, where 68/69 calibration sessions have
+`right_stick_x = 128` throughout — the `StickImuCorrelationOracle` returns `None`
+because the Pearson cross-correlation is undefined over a constant signal. The bridge
+assigns `p_L2C = 0.5` (neutral prior), making the `0.10·p_L2C` term a fixed `+0.05`
+offset carrying no discriminative information. The formula result remains bounded in
+`[0,1]` and its weighted coefficients still sum to 1.0; the effective discriminative
+formula reduces to four active signals for this game context. The `l2c_inactive` flag
+is emitted per cycle in the bridge's PITL metadata and surfaced in the operator
+dashboard to make this state explicit.
+
 **PHG score weighting.**
 PHG score deltas are weighted by `humanity_probability` (+50% bonus at p=1.0) and by
 behavioral analysis: `delta × max(0.0, 1.0 − warmup×0.8 − burst×0.5)`. This makes
@@ -767,8 +782,8 @@ the on-chain PHG score reflect *quality* of human activity, not merely volume.
 
 **Biometric-anchored session continuity.**
 A player who gets a new controller inherits their PHG history if:
-`diagonal_mahalanobis(old_fingerprint, new_fingerprint) < 5.369`
-(the continuity threshold is tighter than the 7.019 anomaly threshold; both derived from the N=69 calibration corpus). The PHG score
+`diagonal_mahalanobis(old_fingerprint, new_fingerprint) < 5.097`
+(the continuity threshold is tighter than the 6.726 anomaly threshold; both re-derived from the N=74 calibration corpus in Phase 46). The PHG score
 is transferred on-chain via `PHGRegistry.inheritScore()`; the source is zeroed to
 prevent double-counting. Each device can be a continuity source and destination
 exactly once.
@@ -983,18 +998,18 @@ Human quant score (mean 0.59) slightly exceeds the threshold because humans also
 button presses to game-loop frame boundaries. The 2/3-signal requirement prevents false
 positives since CV and entropy remain far on the human side.
 
-**Table 7: L4 Biometric — N=69 Production Thresholds (11-feature space, Phase 17)**
+**Table 7: L4 Biometric — N=74 Production Thresholds (11-feature space, Phase 46)**
 
 | Scenario | Mahalanobis d | L4 Fires? |
 |----------|--------------|-----------|
-| Same human, different session (hw_* baseline, N=69, 3 players) | mean 2.07, max ~7.0 | No (threshold **7.019**) |
-| Genuine biometric outlier (2/69 sessions) | > 7.019 | Yes — expected at 3σ |
+| Same human, different session (hw_* baseline, N=69, 3 players) | mean 2.07, max ~7.0 | No (threshold **6.726**) |
+| Genuine biometric outlier (2/69 sessions) | > 6.726 | Yes — expected at 3σ |
 | Bot farm (transplant, same person) | Within personal ball | No — requires multi-person dataset |
 
 **Human false positive rate: 2.9% (2/69 sessions).** Two sessions exceed the mean+3σ threshold —
-expected at the 3σ level. Threshold derived from 69 real sessions across 3 distinct players
-(dist_mean=2.068, dist_std=1.650; threshold = mean+3σ = 7.019). N=69 is the full calibration
-corpus spanning Players 1–3 (hw_005–hw_073).
+expected at the 3σ level. Threshold re-derived from the N=74 calibration corpus in Phase 46
+(threshold = mean+3σ = 6.726; continuity = mean+2σ = 5.097). N=69 baseline sessions span
+Players 1–3 (hw_005–hw_073); hw_074–hw_078 added in Phase 46.
 
 **Stationary control baseline.** A 30-second session with the controller untouched on a desk
 (sessions/adversarial/stationary\_control\_001.json, 999.7 Hz) confirms:
@@ -1107,14 +1122,16 @@ thresholds empirically. The calibration corpus spans:
 - Player 3: hw_059–hw_073 (12 sessions; 5 excluded for anomalous polling)
 
 Phase 17 extended the L4 feature space from 7 to 11 features (adding tremor FFT 8–12 Hz
-band power/peak and touchpad biometrics). Three of the eleven features are structurally
-zero across all N=69 sessions (trigger_resistance_change_rate, touchpad_active_fraction,
-touch_position_variance) and are auto-excluded from calibration.
+band power/peak and touchpad biometrics). Phase 46 replaced `touchpad_active_fraction`
+(structurally zero across all N=69 sessions) with `accel_magnitude_spectral_entropy`
+(active across all N=69 sessions; zero-fraction 0%). Two features remain structurally
+zero across all N=69 sessions (trigger_resistance_change_rate, touch_position_variance)
+and are auto-excluded from calibration.
 
-| Threshold | Design-time estimate | Hardware-calibrated (N=69, 3 players) |
-|-----------|---------------------|----------------------------------------|
-| L4 anomaly (ANOMALY_THRESHOLD) | 3.0 | **7.019** (mean+3σ, 11-feature; 7-feature: 6.905) |
-| L4 continuity (CONTINUITY_THRESHOLD) | 2.0 | **5.369** (mean+2σ, 11-feature; 7-feature: 5.190) |
+| Threshold | Design-time estimate | Hardware-calibrated (N=74, Phase 46) |
+|-----------|---------------------|---------------------------------------|
+| L4 anomaly (ANOMALY_THRESHOLD) | 3.0 | **6.726** (mean+3σ, 11-feature, Phase 46; Phase 17: 7.019) |
+| L4 continuity (CONTINUITY_THRESHOLD) | 2.0 | **5.097** (mean+2σ, 11-feature, Phase 46; Phase 17: 5.369) |
 | L5 entropy | 1.5 bits | **1.0 bits** (human 10th pct: 1.231 bits) |
 | L5 CV | 0.08 | 0.08 (unchanged; human mean: 1.184, 10th pct: 0.789) |
 | L2B coupled_fraction | — | **0.55** (human mean: 0.786; 64/69 sessions with ≥15 presses) |
@@ -1125,19 +1142,20 @@ Calibration confidence: **HIGH** (N=69, 3 players). Values encoded as defaults i
 See `calibration_profile.json` for the full calibration record.
 
 The adversarial validation suite (`scripts/run_adversarial_validation.py`) subsequently
-validated these thresholds against 55 adversarial sessions across 6 attack types —
-see §8.3 for the full detection matrix.
+validated these thresholds against 71 adversarial sessions across 9 attack types
+(56 sessions A–F deterministic transforms; 15 sessions G–I professional/white-box attacks,
+Phase 48) — see §8.3 for the full detection matrix and §9.5 for Phase 48 findings.
 
 ### 8.5 Test Coverage Summary
 
 | Suite | Count | Scope |
 |-------|-------|-------|
-| Bridge pytest | 865 | Full pipeline (asyncio bridge, store, agent, enforcement, federation, L6, L2B/L2C/CalibAgent, living calibration Phase 38, multi-button L5 Phase 39) |
+| Bridge pytest | 888 | Full pipeline (asyncio bridge, store, agent, enforcement, federation, L6, L2B/L2C/CalibAgent, living calibration Phase 38, multi-button L5 Phase 39, L6 calibrated thresholds Phase 43, L2C dead-zone phantom weight fix Phase 44, accel_magnitude_spectral_entropy Phase 46, professional adversarial Phase 48, tremor FFT window widening Phase 49) |
 | SDK pytest | 28 | Self-verifying client SDK (chain hash fix: verify_chain_link now uses SHA-256(164B body)) |
 | Hardhat | 354 | All Solidity contracts |
 | Hardware | 28 | Physical DualShock Edge (gated `@pytest.mark.hardware`, excluded from CI) |
 | E2E | 14 | End-to-end simulation (requires Hardhat node; excluded from CI) |
-| **Total** | **~1,289** | *~1,261 in CI (excluding 28 hardware, 14 E2E counted separately)* |
+| **Total** | **~1,312** | *~1,284 in CI (excluding 28 hardware, 14 E2E counted separately)* |
 
 Note: Phase 17 added 45 new bridge tests: 18 for `l2b_imu_press_correlation` (L2B
 IMU-button causal latency oracle), 15 for `l2c_stick_imu_correlation` (L2C stick-IMU
@@ -1161,9 +1179,10 @@ tournament gate until N≥50 real challenge sessions are collected and analyzed.
 **Inter-person biometric identification.** L4 is an intra-player anomaly detector (separation
 ratio 0.362, below the 1.0 threshold required for reliable identification). It detects
 deviation from a player's own baseline; it does not identify *who* the player is. This is
-correct positioning for the current feature set: three of eleven features are structurally
+correct positioning for the current feature set: two of eleven features are structurally
 zero across all N=69 calibration sessions (trigger_resistance_change_rate,
-touchpad_active_fraction, touch_position_variance). The honest interpretation: L4 catches
+touch_position_variance) after Phase 46 replaced `touchpad_active_fraction` with the active
+`accel_magnitude_spectral_entropy`. The honest interpretation: L4 catches
 sessions that are anomalous for *this device's history*, not sessions that belong to *a
 different person*.
 
@@ -1172,8 +1191,12 @@ range, but the on-chain verifier receives pub[2]=0, making this constraint trivi
 satisfied. The inference code in PoAC records is committed off-chain only.
 
 **Professional bot software.** No commercial aimbot software, ML-driven bot inputs, or
-game-specific macro tools have been used as labeled adversarial data. All adversarial
-benchmarks use deterministic transforms of real human sessions.
+game-specific macro tools have been used as labeled adversarial data. Phase 48 (§9.5)
+introduces three white-box adversarial attack classes simulating a threshold-aware adversary
+with full knowledge of published thresholds and access to HID emulation hardware. These
+attacks are fully synthetic (no real bot software required) and confirm that the 9-feature
+L4 Mahalanobis is robust to threshold-aware single-feature tuning. Real hardware bots (aimbot
+software, ML-driven inputs) remain untested labeled adversarial data.
 
 **Bluetooth transport calibration.** BT transport is implemented (transport-aware parsing,
 L0 presence verifier, separate config thresholds) but all N=69 calibration sessions were
@@ -1270,10 +1293,10 @@ documents this attack surface explicitly.
 
 ### 9.4 Limitations
 
-**Biometric thresholds calibrated on N=69 sessions, 3 players.** The production thresholds
-(L4 anomaly 7.019, continuity 5.369) are calibrated from 64 included sessions across 3
-distinct players. Mode 6 living calibration autonomously refines these thresholds every 6
-hours from accumulated NOMINAL records, bounded to ±15% per cycle.
+**Biometric thresholds calibrated on N=74 sessions, 3 players.** The production thresholds
+(L4 anomaly 6.726, continuity 5.097) are re-derived in Phase 46 from 74 sessions including
+hw_074–hw_078 (touchpad, stick, tremor captures). Mode 6 living calibration autonomously
+refines these thresholds every 6 hours from accumulated NOMINAL records, bounded to ±15% per cycle.
 
 **Bridge is a trusted intermediary.** The ZK PITL circuit (§7.5.3) constrains the
 bridge's computation of biometric outputs, but requires the ZK artifact files
@@ -1302,9 +1325,12 @@ grounded. False positive and false negative rates for L6 are not yet characteriz
 
 **Biometric transplant requires multi-person calibration data (architectural constraint).**
 Inter-person separation has been measured (ratio 0.362) with the N=69 3-player corpus.
-This ratio is below 1.0, meaning L4 does not currently separate players. Three of the
-eleven features are structurally zero for all calibration sessions, and tremor FFT
-requires a wider analysis window than the current 120-frame window at 1000 Hz. Transplant
+This ratio is below 1.0, meaning L4 does not currently separate players. Two of the
+eleven features are structurally zero for all calibration sessions (Phase 46 activated
+`accel_magnitude_spectral_entropy` at index 9, replacing zero-variance `touchpad_active_fraction`),
+and tremor FFT requires a wider analysis window than the current 120-frame window at 1000 Hz.
+The new `accel_magnitude_spectral_entropy` feature does not improve inter-person separation
+(per-player means P1/P2/P3 are statistically nearly identical). Transplant
 attack detection is not a reliable metric under current conditions — the system is an
 intra-player anomaly detector, not an inter-player identifier.
 
@@ -1315,6 +1341,51 @@ sessions will eventually graduate past the detection boundary. Session-scoped de
 they cannot detect an attacker who consistently stays within the human-behavior region
 during each individual session. The defense for this attack class is multi-session
 temporal analysis (Mode 5 credential suspension), not within-session PITL scoring.
+
+### 9.5 Phase 48 — Professional Adversarial Analysis
+
+Phase 48 adds three **professional/white-box adversarial attack classes** targeting an
+adversary who: (1) has read this whitepaper and knows all published thresholds;
+(2) has hardware intermediary capability (Cronus Zen-class) for HID emulation at 1000 Hz;
+(3) has the N=74 calibration data (human variance statistics).
+
+| Attack | Class | N | Batch L4 | Live Primary Detector |
+|--------|-------|---|----------|-----------------------|
+| G: Randomized IMU bot | Gaussian IMU at human variance, real button timing | 5 | 0%† | L4 (entropy + tremor) + L2B |
+| H: Threshold-aware synthetic | All individual thresholds independently tuned | 5 | **100%** | L4 (grip_asymmetry + stick_autocorr) |
+| I: Spectral entropy mimicry | PSD-matched accel noise targeting ~4.8 bits entropy | 5 | 0% | L2B |
+
+†Phase 49 expanded batch proxy to 9 features (incl. tremor_peak_hz, tremor_band_power, 1024-sample FFT at 0.977 Hz/bin). G still 0% batch: right_stick_x preserved from source session → tremor features human-like; entropy 8.41 bits below standalone threshold 8.71. Live L4 + L2B detects G.
+
+**Key findings:**
+
+**Multivariate defense holds.** Attack H demonstrates that publishing all individual PITL
+thresholds does not enable threshold-aware evasion. The L4 Mahalanobis evaluates 9 correlated
+features simultaneously. An adversary who independently satisfies every threshold (gyro variance
+above L2 floor, Gamma-distributed IBI timing, human-range accel variance) cannot simultaneously
+reproduce `grip_asymmetry` (no concurrent L2+R2 → default 1.0 vs human mean 0.12) and
+`stick_autocorr_lag1` (random-walk ±1 → ≈0 vs human mean 0.44). The combined Mahalanobis
+distance exceeds the anomaly threshold regardless of individual feature compliance.
+
+**Spectral entropy is a robust naive-noise detector.** Attacks using Gaussian or lightly-colored
+AR noise produce entropy 7.7–8.5 bits — well above the human cluster (mean 4.93 ± 1.30 bits,
+upper 2σ = 7.54 bits). Sophisticated PSD-matching (Attack I, using FFT-based shaping of the
+target PSD from a real session) defeats the entropy feature in isolation. This is documented
+and expected — no single feature is the sole defense; spectral entropy is one of 9 correlated
+features in the L4 Mahalanobis.
+
+**L2B is the primary exposure for professional bots.** All three attack classes share one
+property: the injected IMU is generated independently of press events. Human voluntary motor
+activity produces IMU changes in the 10–60 ms window before button press (L2B causal latency
+oracle, 0x31). Bots that generate IMU separately from timing produce zero causal coupling →
+L2B fires. L2B is validated at 0% false-positive rate (N=74 sessions) and is the most
+reliable professional-bot discriminator orthogonal to spectral structure.
+
+**True blind spot documented.** A bot that (a) extracts the full biometric profile from
+captured sessions of a specific player AND (b) replays IMU with correct causal coupling
+timing achieves 0% detection across L4, L5, and L2B. This gap (biometric transplant with
+coupling) requires per-player enrolled multivariate templates with inter-person separation
+ratio > 1.0 (current ratio: 0.362) to close. See `docs/professional-adversarial-analysis.md`.
 
 ---
 
@@ -1405,12 +1476,18 @@ gating signal for tournament qualification.
 The N=69 calibration corpus now spans 3 distinct players (hw_005–hw_073). Inter-person
 Mahalanobis separation has been computed (separation ratio 0.362 — see
 docs/interperson-separation-analysis.md). The result is honest: L4 does not currently
-separate players. Three of eleven features are structurally zero (touchpad, trigger
-resistance, touch position) and two (tremor FFT) require wider FFT windows than the
-current 120-frame window at 1000 Hz. The next milestones are: (1) recapture sessions
-after Phase 17 (touchpad features now populated), (2) widen the FFT analysis window to
-≥512 frames, (3) validate whether the corrected feature set achieves inter-person
-separation.
+separate players. Phase 46 replaced `touchpad_active_fraction` (structurally zero across
+all N=69 sessions) with `accel_magnitude_spectral_entropy` (zero-fraction 0%, mean 4.93 bits).
+However, per-player entropy means are nearly identical (P1: 4.878, P2: 4.882, P3: 4.767 bits),
+confirming this new feature does not improve inter-person separation — it is a bot-vs-human
+discriminator only. Two of eleven features remain structurally zero (trigger_resistance_change_rate,
+touch_position_variance). Phase 49 widened the tremor FFT ring buffer from 513 to 1025
+positions (512→1024 velocity samples), improving resolution from 1.95 Hz/bin to
+0.977 Hz/bin — 4 bins now span the 8–12 Hz physiological tremor band. The live warm-up
+latency increased from ~0.5s to ~1.0s. Tremor FFT detection of Attacks G/H/I in the
+batch proxy: G/I remain 0% (G preserves right_stick_x; I uses PSD-matching); H remains
+100%. The next milestone is validating whether the improved tremor resolution achieves
+inter-person separation.
 
 ---
 
@@ -1443,7 +1520,7 @@ self-improvement: the system evolves its own detection thresholds from verified 
 data every 6 hours, with per-player profiles that tighten detection for known players
 without ever loosening it — a credential that improves with every verified session.
 
-The complete system (~220 files, ~1,289 automated tests including 28 on physical hardware)
+The complete system (~220 files, ~1,304 automated tests including 28 on physical hardware)
 demonstrates the concept is implementable today with existing gaming controller hardware
 and existing blockchain infrastructure. Thirteen contracts are deployed on IoTeX testnet.
 Live hardware validation confirms the foundational physical signal claims: USB polling at

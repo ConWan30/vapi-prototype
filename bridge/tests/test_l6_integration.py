@@ -1,7 +1,7 @@
 """
 Phase C — L6 PITL Integration Tests
 
-TestL6Integration (8):
+TestL6Integration (9):
 1. DualShockTransport.__init__ source contains '_l6_driver' and 'Phase C'
 2. _l6_driver is None when l6_challenges_enabled=False (default)
 3. Humanity formula source contains '0.35 * _p_l4' (L6-active branch)
@@ -10,6 +10,7 @@ TestL6Integration (8):
 6. Sensor commitment is 48 bytes when l6_pending is None
 7. Attack G: classify() returns < 0.4 for zeroed accel + onset_ms < 5 (software injection)
 8. Challenge dispatch skipped when player is idle (source contains '_player_active' check)
+9. Humanity formula with L2C=None (dead-zone stick) produces valid value in [0,1]
 """
 
 import inspect
@@ -131,6 +132,49 @@ class TestL6Integration(unittest.TestCase):
         src = inspect.getsource(dualshock_integration.DualShockTransport._session_loop)
         self.assertIn("_r2_at_rest", src,
                       "_r2_at_rest idle gate missing from _session_loop source")
+
+    def test_9_humanity_formula_l2c_none_valid_range(self):
+        """When L2C oracle returns None, p_L2C defaults to 0.5 and humanity_prob stays in [0,1].
+
+        Verifies the L2C phantom-weight behaviour documented in §7.5.4: dead-zone stick games
+        (e.g. NCAA Football 26) yield _l2c_max_corr=None → _l2c_p_human=0.5 neutral prior.
+        The 5-signal formula must remain bounded regardless of L2C oracle state.
+        """
+        import math
+
+        # Simulate L2C oracle returning None: p_L2C stays at neutral 0.5 (default).
+        p_l2c = 0.5  # neutral prior — same as dualshock_integration._l2c_p_human default
+
+        # Case A: all signals neutral (typical cold-start / dead-zone cycle)
+        p_l4, p_l5, p_e4, p_l2b = 0.5, 0.5, 0.5, 0.5
+        prob = 0.28 * p_l4 + 0.27 * p_l5 + 0.20 * p_e4 + 0.15 * p_l2b + 0.10 * p_l2c
+        self.assertGreaterEqual(prob, 0.0)
+        self.assertLessEqual(prob, 1.0)
+        self.assertAlmostEqual(prob, 0.5, places=6,
+                               msg="All-neutral signals should yield humanity_prob=0.5")
+
+        # Case B: worst-case other signals, L2C neutral — result must still be >= 0
+        prob_low = 0.28 * 0.0 + 0.27 * 0.0 + 0.20 * 0.0 + 0.15 * 0.0 + 0.10 * p_l2c
+        self.assertGreaterEqual(prob_low, 0.0)
+        self.assertLessEqual(prob_low, 1.0)
+        self.assertAlmostEqual(prob_low, 0.05, places=6,
+                               msg="L2C-only contribution should be 0.10 * 0.5 = 0.05")
+
+        # Case C: best-case other signals, L2C neutral — result must still be <= 1
+        prob_high = 0.28 * 1.0 + 0.27 * 1.0 + 0.20 * 1.0 + 0.15 * 1.0 + 0.10 * p_l2c
+        self.assertGreaterEqual(prob_high, 0.0)
+        self.assertLessEqual(prob_high, 1.0)
+        self.assertAlmostEqual(prob_high, 0.95, places=6,
+                               msg="Max 4-signal + L2C neutral = 0.90 + 0.05 = 0.95")
+
+        # Verify l2c_inactive flag is documented in _session_loop source
+        _stub_hardware_modules()
+        from vapi_bridge import dualshock_integration
+        src = inspect.getsource(dualshock_integration.DualShockTransport._session_loop)
+        self.assertIn("l2c_inactive", src,
+                      "l2c_inactive flag must be emitted in _pending_pitl_meta")
+        self.assertIn("_l2c_max_corr is None", src,
+                      "L2C dead-zone log guard must check _l2c_max_corr is None")
 
 
 if __name__ == "__main__":

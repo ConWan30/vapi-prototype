@@ -45,6 +45,26 @@ async def ws_broadcast(message: str):
     _ws_clients.difference_update(dead)
 
 
+# ---------------------------------------------------------------------------
+# Phase 44: /ws/frames — 20 Hz downsampled raw controller frame broadcaster
+# ---------------------------------------------------------------------------
+
+_ws_frame_clients: set[WebSocket] = set()
+
+
+async def ws_frames_broadcast(message: str) -> None:
+    """Broadcast a JSON string to all /ws/frames clients. Dead clients removed."""
+    if not _ws_frame_clients:
+        return
+    dead: set[WebSocket] = set()
+    for ws in _ws_frame_clients:
+        try:
+            await ws.send_text(message)
+        except Exception:
+            dead.add(ws)
+    _ws_frame_clients.difference_update(dead)
+
+
 # Inference name map for WebSocket messages (gaming codes)
 _GAMING_INF_NAMES = {
     0x20: "NOMINAL",
@@ -57,8 +77,12 @@ _GAMING_INF_NAMES = {
 }
 
 
-def _record_to_ws_msg(record) -> str:
-    """Serialize a PoACRecord to a WebSocket broadcast JSON string."""
+def _record_to_ws_msg(record, pitl_meta=None) -> str:
+    """Serialize a PoACRecord to a WebSocket broadcast JSON string.
+
+    Phase 44: pitl_meta supplies L2B/L2C/l5_source fields not stored on the record object.
+    """
+    _m = pitl_meta or {}
     return json.dumps({
         "record_hash":    record.record_hash.hex()[:16],
         "inference":      record.inference_result,
@@ -72,6 +96,17 @@ def _record_to_ws_msg(record) -> str:
         "pitl_l5_quant":    record.pitl_l5_quant_score,
         "ts_ms":           record.timestamp_ms,
         "device_id":       record.device_id.hex()[:16] if record.device_id else "",
+        # Phase 44: enriched PITL fields for Capture Monitor
+        "humanity_prob":         record.pitl_humanity_prob,
+        "l5_rhythm_humanity":    record.pitl_l5_rhythm_humanity,
+        "l4_drift_velocity":     record.pitl_l4_drift_velocity,
+        "l5_source":             _m.get("l5_source"),
+        "l2b_coupled_fraction":  _m.get("l2b_coupled_fraction"),
+        "l2b_p_human":           _m.get("l2b_p_human"),
+        "l2c_max_corr":          _m.get("l2c_max_corr"),
+        "l2c_p_human":           _m.get("l2c_p_human"),
+        # True when right stick is in dead zone → L2C oracle returned None → phantom 0.05 weight.
+        "l2c_inactive":          _m.get("l2c_inactive"),
     })
 
 
@@ -104,6 +139,17 @@ def create_app(cfg: Config, store: Store, on_record) -> FastAPI:
                 await ws.receive_text()
         except (WebSocketDisconnect, Exception):
             _ws_clients.discard(ws)
+
+    # Phase 44: raw downsampled frame stream (20 Hz, InputSnapshot batches)
+    @app.websocket("/ws/frames")
+    async def ws_frames(ws: WebSocket):
+        await ws.accept()
+        _ws_frame_clients.add(ws)
+        try:
+            while True:
+                await ws.receive_text()
+        except (WebSocketDisconnect, Exception):
+            _ws_frame_clients.discard(ws)
 
     # --- Webhook API ---
 

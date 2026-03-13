@@ -144,9 +144,10 @@ class Bridge:
             return  # Duplicate, skip
 
         # 5. Broadcast to WebSocket clients (Phase 21 — non-blocking, best-effort)
+        # Phase 44: pass pitl_meta so enriched fields (L2B/L2C/l5_source) reach the frontend
         try:
             from .transports.http import ws_broadcast, _record_to_ws_msg
-            asyncio.create_task(ws_broadcast(_record_to_ws_msg(record)))
+            asyncio.create_task(ws_broadcast(_record_to_ws_msg(record, pitl_meta)))
         except Exception:
             pass
 

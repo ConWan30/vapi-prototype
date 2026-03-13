@@ -71,14 +71,17 @@ BIOMETRIC_MODEL_MANIFEST_HASH: bytes = hashlib.sha256(BIOMETRIC_MODEL_VERSION).d
 
 LIVE_WINDOW_FRAMES: int = 120
 """Live classification window (~0.12s at 1000Hz polling).
-Tremor FFT (features 8-9) is inactive below 512 frames — tremor_peak_hz and
-tremor_band_power will always be 0.0 in the live path at this window size.
+Tremor FFT (features 8-9) requires >=1024 velocity samples from the ring buffer.
+Ring buffer (_FFT_RING_MAXLEN=1025) fills after ~1025 cumulative frames (~1.0s at
+1000Hz across successive extract() calls). Returns 0.0 during warm-up; the
+BiometricFusionClassifier zero-variance mask excludes inactive features automatically.
 """
 
-CALIBRATION_WINDOW_FRAMES: int = 1024
-"""Calibration/offline analysis window (~1s at 1000Hz polling).
-Satisfies the >=512 frame gate for tremor FFT with ~0.98 Hz/bin resolution,
-which can resolve the 8-12 Hz physiological tremor band.
+CALIBRATION_WINDOW_FRAMES: int = 1025
+"""Calibration/offline analysis window (~1.025s at 1000Hz polling).
+Produces exactly 1024 velocity samples (np.diff of 1025 positions) in a single
+extract() call, activating the tremor FFT at 0.977 Hz/bin — 4 bins across the
+8–12 Hz physiological tremor band.
 Pass window_frames=CALIBRATION_WINDOW_FRAMES to extract() when running
 threshold_calibrator.py or analyze_interperson_separation.py.
 """
@@ -146,10 +149,15 @@ class BiometricFeatureFrame:
     Requires ≥32 frames; set to 0.0 if insufficient.
     """
 
-    touchpad_active_fraction: float = 0.0
+    accel_magnitude_spectral_entropy: float = 0.0
     """
-    Fraction of frames where touch_active is True.
-    Human thumb resting pattern: player-specific. Software injection: 0.0 (no touch data).
+    Shannon entropy of the 0–500 Hz power spectrum of ||accel||_demeaned.
+    Gravity-invariant: magnitude eliminates orientation dependence.
+    Computed from 1024-sample ring buffer; returns 0.0 during warm-up.
+    Human natural grip: ~3–6 bits (calibration-derived).
+    Static zero injection: 0.0 (variance guard). Random noise: ~9.0 bits.
+    Requires 1000 Hz polling — unreliable at standard HID (125–250 Hz).
+    Replaces structurally-zero touchpad_active_fraction (Phase 46).
     """
 
     touch_position_variance: float = 0.0
@@ -170,7 +178,7 @@ class BiometricFeatureFrame:
             self.stick_autocorr_lag5,
             self.tremor_peak_hz,
             self.tremor_band_power,
-            self.touchpad_active_fraction,
+            self.accel_magnitude_spectral_entropy,  # index 9 (was touchpad_active_fraction)
             self.touch_position_variance,
         ], dtype=np.float32)
 
@@ -208,21 +216,26 @@ class BiometricFeatureExtractor:
     """
     Extracts 11 biometric features from a sequence of InputSnapshot objects.
 
-    Stateful: maintains a separate 513-frame ring buffer for right-stick X
+    Stateful: maintains a separate 1025-position ring buffer for right-stick X
     positions so that the tremor FFT (features 8-9) can accumulate across
     successive live calls even when window_frames=LIVE_WINDOW_FRAMES (120).
+    The ring yields up to 1024 velocity samples (np.diff), giving 0.977 Hz/bin
+    frequency resolution at 1000 Hz — 4 bins across the 8–12 Hz tremor band.
 
-    In calibration/offline mode (window_frames>=512), a single call with
-    enough frames activates the FFT immediately — ring-buffer state is still
-    updated but the window slice is already large enough.
+    In calibration/offline mode (window_frames=CALIBRATION_WINDOW_FRAMES=1025),
+    a single call adds exactly 1025 positions to the ring, producing 1024 velocity
+    samples and activating the FFT immediately.
     """
 
-    _FFT_RING_MAXLEN: int = 513  # positions; yields up to 512 velocity samples
+    _FFT_RING_MAXLEN: int = 1025  # positions; yields up to 1024 velocity samples (0.977 Hz/bin)
 
     def __init__(self) -> None:
         # Separate ring buffer for right_stick_x positions used by tremor FFT.
-        # Accumulates across calls; maxlen=513 → up to 512 velocity samples.
+        # Accumulates across calls; maxlen=1025 → up to 1024 velocity samples (0.977 Hz/bin).
         self._fft_ring: deque[float] = deque(maxlen=self._FFT_RING_MAXLEN)
+        # Ring buffer for accel magnitude used by spectral entropy (feature index 9).
+        # 1024 samples → 513 frequency bins at 0.977 Hz/bin at 1000 Hz.
+        self._accel_mag_ring: deque[float] = deque(maxlen=1024)
 
     def extract(
         self,
@@ -236,9 +249,10 @@ class BiometricFeatureExtractor:
             snapshots: Recent InputSnapshot frames (most recent last).
                        Requires at least 10 frames; returns zeros if fewer.
             window_frames: Maximum frames to use for non-FFT features.
-                LIVE_WINDOW_FRAMES (120): default live path.  After ~513
-                    cumulative frames the tremor FFT activates via ring buffer.
-                CALIBRATION_WINDOW_FRAMES (1024): offline analysis — tremor
+                LIVE_WINDOW_FRAMES (120): default live path.  After ~1025
+                    cumulative frames (~1.0s at 1000Hz) the tremor FFT activates
+                    via ring buffer at 0.977 Hz/bin (4 bins across 8–12 Hz).
+                CALIBRATION_WINDOW_FRAMES (1025): offline analysis — tremor
                     FFT activates immediately from the single large window.
 
         Returns:
@@ -325,8 +339,8 @@ class BiometricFeatureExtractor:
         ring_arr = np.array(list(self._fft_ring), dtype=np.float32)
         rx_vels_src = np.diff(ring_arr) / 32768.0
 
-        if len(rx_vels_src) >= 512:
-            # 512 velocity samples → bin width ≈1.95 Hz at 1000 Hz; resolves 8–12 Hz band.
+        if len(rx_vels_src) >= 1024:
+            # 1024 velocity samples → bin width ≈0.977 Hz at 1000 Hz; 4 bins across 8–12 Hz tremor band.
             fft_mag = np.abs(np.fft.rfft(rx_vels_src))
             freqs   = np.fft.rfftfreq(len(rx_vels_src), d=1.0 / fs)
             total_power = float(np.sum(fft_mag ** 2)) or 1e-9
@@ -339,13 +353,40 @@ class BiometricFeatureExtractor:
             tremor_peak_hz = 0.0
             tremor_band_power = 0.0
 
-        # 7. Touchpad biometric (resting thumb contact pattern)
+        # 7. Accel magnitude spectral entropy (gravity-invariant; 1000 Hz exclusive)
+        # Update ring buffer with magnitude samples from this window.
+        for s in snaps:
+            _ax = float(getattr(s, "accel_x", 0.0))
+            _ay = float(getattr(s, "accel_y", 0.0))
+            _az = float(getattr(s, "accel_z", 0.0))
+            self._accel_mag_ring.append(math.sqrt(_ax * _ax + _ay * _ay + _az * _az))
+
+        # Compute entropy from ring when full (1024 samples); 0.0 during warm-up.
+        if len(self._accel_mag_ring) >= 1024:
+            _ring_arr = np.array(list(self._accel_mag_ring), dtype=np.float64)
+            _var = float(np.var(_ring_arr))
+            if _var < 4.0:
+                # Near-constant signal: static injection or dead controller
+                accel_magnitude_spectral_entropy = 0.0
+            else:
+                _dc = _ring_arr - float(np.mean(_ring_arr))
+                _power = np.abs(np.fft.rfft(_dc)) ** 2
+                _total = float(np.sum(_power))
+                if _total < 1e-12:
+                    accel_magnitude_spectral_entropy = 0.0
+                else:
+                    _p = _power / _total
+                    _p = _p[_p > 1e-12]
+                    accel_magnitude_spectral_entropy = float(-np.sum(_p * np.log2(_p)))
+        else:
+            accel_magnitude_spectral_entropy = 0.0
+
+        # Touchpad position variance — kept at index 10 (pending post-Phase-17 recapture)
         touch_xs = [
             float(getattr(s, "touch0_x", 0)) / 1920.0
             for s in snaps
             if bool(getattr(s, "touch_active", False))
         ]
-        touchpad_active_fraction = len(touch_xs) / n
         touch_position_variance = float(np.var(touch_xs)) if len(touch_xs) >= 3 else 0.0
 
         return BiometricFeatureFrame(
@@ -358,8 +399,8 @@ class BiometricFeatureExtractor:
             stick_autocorr_lag5=autocorr_lag5,
             tremor_peak_hz=tremor_peak_hz,
             tremor_band_power=tremor_band_power,
-            touchpad_active_fraction=touchpad_active_fraction,
-            touch_position_variance=touch_position_variance,
+            accel_magnitude_spectral_entropy=accel_magnitude_spectral_entropy,  # index 9
+            touch_position_variance=touch_position_variance,                      # index 10
         )
 
 
@@ -427,10 +468,11 @@ class BiometricFusionClassifier:
     # Thresholds configurable via environment variables (set before module import,
     # or override on individual instances after __init__ for per-device calibration).
     # Production values come from scripts/threshold_calibrator.py run on N>=50 sessions.
-    # Phase 17 empirical calibration (N=69 sessions, 11-feature space).
-    # Source: scripts/batch_analyze_phase17_signals.py → docs/phase17-validation-results.md
-    ANOMALY_THRESHOLD: float = float(_os.getenv("L4_ANOMALY_THRESHOLD", "7.019"))
-    CONTINUITY_THRESHOLD: float = float(_os.getenv("L4_CONTINUITY_THRESHOLD", "5.369"))
+    # Phase 46 empirical calibration (N=74 sessions including hw_074–hw_078, 11-feature space,
+    # accel_magnitude_spectral_entropy at index 9 replacing touchpad_active_fraction).
+    # Source: scripts/threshold_calibrator.py → calibration_profile.json
+    ANOMALY_THRESHOLD: float = float(_os.getenv("L4_ANOMALY_THRESHOLD", "6.726"))
+    CONTINUITY_THRESHOLD: float = float(_os.getenv("L4_CONTINUITY_THRESHOLD", "5.097"))
     CONFIDENCE_MIN: int = 180          # Minimum confidence to report anomaly [0-255]
     CONFIDENCE_SCALE: float = 30.0     # Maps distance above threshold to confidence
     VAR_FLOOR: float = 1e-6            # Prevent division by zero in Mahalanobis

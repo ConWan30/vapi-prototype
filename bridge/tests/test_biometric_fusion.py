@@ -278,18 +278,18 @@ class TestTremorFFT(unittest.TestCase):
         ]
 
     def test_tremor_peak_hz_detects_8hz(self):
-        """8 Hz oscillation → tremor_peak_hz ∈ [6, 10]. Needs >=512 frames for FFT."""
-        snaps = self._snaps_with_tremor(8.0, n=600)  # 600 snaps, 599 velocity samples >= 512
-        feats = BiometricFeatureExtractor().extract(snaps, window_frames=600)
+        """8 Hz oscillation → tremor_peak_hz ∈ [6, 10]. Needs >=1024 velocity samples for FFT."""
+        snaps = self._snaps_with_tremor(8.0, n=1100)  # 1100 snaps, 1099 velocity samples >= 1024
+        feats = BiometricFeatureExtractor().extract(snaps, window_frames=1100)
         self.assertGreater(feats.tremor_peak_hz, 0.0)
         self.assertGreaterEqual(feats.tremor_peak_hz, 6.0)
         self.assertLessEqual(feats.tremor_peak_hz, 10.0,
                              msg=f"Expected ~8 Hz, got {feats.tremor_peak_hz:.2f}")
 
     def test_tremor_peak_hz_detects_10hz(self):
-        """10 Hz oscillation → tremor_peak_hz ∈ [8, 12]. Needs >=512 frames for FFT."""
-        snaps = self._snaps_with_tremor(10.0, n=600)  # 600 snaps, 599 velocity samples >= 512
-        feats = BiometricFeatureExtractor().extract(snaps, window_frames=600)
+        """10 Hz oscillation → tremor_peak_hz ∈ [8, 12]. Needs >=1024 velocity samples for FFT."""
+        snaps = self._snaps_with_tremor(10.0, n=1100)  # 1100 snaps, 1099 velocity samples >= 1024
+        feats = BiometricFeatureExtractor().extract(snaps, window_frames=1100)
         self.assertGreaterEqual(feats.tremor_peak_hz, 8.0)
         self.assertLessEqual(feats.tremor_peak_hz, 12.0,
                              msg=f"Expected ~10 Hz, got {feats.tremor_peak_hz:.2f}")
@@ -306,10 +306,10 @@ class TestTremorFFT(unittest.TestCase):
                         msg="Static bot should have near-zero 8-12 Hz band power")
 
     def test_tremor_insufficient_data(self):
-        """Fewer than 512 frames → tremor FFT fields = 0.0 (insufficient frequency resolution)."""
+        """Fewer than 1024 velocity samples → tremor FFT fields = 0.0 (insufficient resolution)."""
         snaps = [_make_snap(i, rx=int(1000 * math.sin(i))) for i in range(20)]
         feats = BiometricFeatureExtractor().extract(snaps)
-        # With < 10 frames extract returns zeros; with 20 frames no FFT (< 512 threshold)
+        # With < 10 frames extract returns zeros; with 20 frames no FFT (< 1024 velocity threshold)
         self.assertEqual(feats.tremor_peak_hz, 0.0)
         self.assertEqual(feats.tremor_band_power, 0.0)
 
@@ -323,20 +323,6 @@ class TestTremorFFT(unittest.TestCase):
 
 class TestTouchpadBiometric(unittest.TestCase):
     """Phase 17: touchpad active fraction and position variance."""
-
-    def test_touchpad_active_fraction(self):
-        """50% active frames → touchpad_active_fraction ≈ 0.5."""
-        snaps = [_make_snap(i, touch_active=(i % 2 == 0), touch0_x=960)
-                 for i in range(120)]
-        feats = BiometricFeatureExtractor().extract(snaps)
-        self.assertAlmostEqual(feats.touchpad_active_fraction, 0.5, delta=0.05)
-
-    def test_no_touch_zero_fraction(self):
-        """No touch → fraction = 0, variance = 0."""
-        snaps = [_make_snap(i, touch_active=False) for i in range(120)]
-        feats = BiometricFeatureExtractor().extract(snaps)
-        self.assertAlmostEqual(feats.touchpad_active_fraction, 0.0)
-        self.assertAlmostEqual(feats.touch_position_variance, 0.0)
 
     def test_touch_position_variance_consistent(self):
         """Consistent touch position → variance ≈ 0."""
@@ -373,13 +359,13 @@ class TestFeatureVectorDimension(unittest.TestCase):
         frame = BiometricFeatureFrame(
             tremor_peak_hz=10.5,
             tremor_band_power=0.30,
-            touchpad_active_fraction=0.40,
+            accel_magnitude_spectral_entropy=4.92,  # index 9 (Phase 46)
             touch_position_variance=0.05,
         )
         vec = frame.to_vector()
         self.assertAlmostEqual(float(vec[7]), 10.5, places=3)
         self.assertAlmostEqual(float(vec[8]), 0.30, places=3)
-        self.assertAlmostEqual(float(vec[9]), 0.40, places=3)
+        self.assertAlmostEqual(float(vec[9]), 4.92, places=3)
         self.assertAlmostEqual(float(vec[10]), 0.05, places=3)
 
     def test_session_fixture_extract_dim_11(self):
@@ -429,15 +415,15 @@ class TestZeroVarianceExclusion(unittest.TestCase):
     training variance is below ZERO_VAR_THRESHOLD from the Mahalanobis distance.
 
     Root cause being guarded against:
-      - touchpad_active_fraction and touch_position_variance are 0.0 across all
-        N=69 pre-Phase-17 sessions (touch_active field not captured until Phase 17).
+      - accel_magnitude_spectral_entropy is 0.0 during warm-up (ring buffer < 1024 frames).
       - trigger_resistance_change_rate is 0.0 in static-trigger games (NCAA Football 26).
-      - With VAR_FLOOR = 1e-6, a feature always-zero in training has ref_var ≈ 1e-6.
-      - If a new legitimate session has touchpad_active_fraction = 0.8:
-            contribution = 0.8² / 1e-6 = 640,000 → false-positive 0x30 advisory.
+      - touch_position_variance is 0.0 when touchpad is inactive.
+      - With VAR_FLOOR = 1e-6, a feature always-zero in training has ref_var ~= 1e-6.
+      - If a new legitimate session has accel_magnitude_spectral_entropy = 4.9:
+            contribution = 4.9^2 / 1e-6 = 24,000,000 -> false-positive 0x30 advisory.
     """
 
-    def _make_zero_touchpad_frame(self, **overrides) -> BiometricFeatureFrame:
+    def _make_nominal_frame(self, **overrides) -> BiometricFeatureFrame:
         kw = dict(
             trigger_resistance_change_rate=0.0,
             trigger_onset_velocity_l2=0.2,
@@ -448,47 +434,57 @@ class TestZeroVarianceExclusion(unittest.TestCase):
             stick_autocorr_lag5=0.3,
             tremor_peak_hz=9.5,
             tremor_band_power=0.15,
-            touchpad_active_fraction=0.0,
+            accel_magnitude_spectral_entropy=0.0,  # warm-up / structurally inactive
             touch_position_variance=0.0,
         )
         kw.update(overrides)
         return BiometricFeatureFrame(**kw)
 
     def _warm_up_classifier(self, clf: BiometricFusionClassifier, n_extra: int = 0) -> None:
-        """Warm up the classifier with all-zero touchpad frames."""
+        """Warm up the classifier with zero-entropy frames (simulates warm-up period)."""
         for _ in range(clf.N_WARMUP_SESSIONS + 1 + n_extra):
-            clf.update_fingerprint(self._make_zero_touchpad_frame())
+            clf.update_fingerprint(self._make_nominal_frame())
 
-    def test_no_false_positive_when_touchpad_activates(self):
-        """Post-Phase-17 touchpad becoming active must NOT trigger 0x30 advisory."""
+    def test_no_false_positive_when_entropy_activates(self):
+        """
+        Entropy feature activating from zero must NOT trigger 0x30 when var is truly zero.
+
+        The ZERO_VAR_THRESHOLD exclusion fires when ref_var[i] < 1e-4. In production this
+        occurs after ~66 zero-entropy sessions (EMA: 0.1 * 0.9^66 < 1e-4). We simulate
+        this by setting _var[9]=0.0 directly after a standard warm-up — isolating the
+        exclusion mechanism from the EMA decay rate.
+        """
         clf = BiometricFusionClassifier()
         clf.ANOMALY_THRESHOLD = 5.0
         self._warm_up_classifier(clf)
+        # Simulate true zero-variance training for the entropy slot (as seen in live
+        # calibration after ~66 sessions of zero; EMA: 0.1 * 0.9^66 ≈ 5e-4 -> 0).
+        clf._var[9] = 0.0  # forces active_mask[9] = False -> excluded from Mahalanobis
 
-        # Touchpad suddenly active — training fingerprint has zero variance for this feature
-        new_frame = self._make_zero_touchpad_frame(
-            touchpad_active_fraction=0.8,
+        # Entropy now active at typical human value -- should NOT trigger alarm
+        new_frame = self._make_nominal_frame(
+            accel_magnitude_spectral_entropy=4.9,
             touch_position_variance=0.05,
         )
         result = clf.classify(new_frame)
         self.assertIsNone(
             result,
-            f"False-positive 0x30: touchpad zero-var feature inflated "
+            f"False-positive 0x30: zero-var entropy feature not excluded -- "
             f"distance={clf.last_distance:.3f} (threshold={clf.ANOMALY_THRESHOLD})",
         )
 
     def test_last_distance_does_not_explode_from_zero_var_feature(self):
-        """last_distance stays below anomaly threshold even with extreme touchpad value."""
+        """last_distance stays bounded even with large entropy value when var was zero in training."""
         clf = BiometricFusionClassifier()
         clf.ANOMALY_THRESHOLD = 5.0
         self._warm_up_classifier(clf)
 
-        new_frame = self._make_zero_touchpad_frame(touchpad_active_fraction=1.0)
+        new_frame = self._make_nominal_frame(accel_magnitude_spectral_entropy=9.0)
         clf.classify(new_frame)
         self.assertLess(
             clf.last_distance, 100.0,
-            f"last_distance={clf.last_distance:.3f} is suspiciously large — "
-            "zero-var touchpad feature was probably not excluded.",
+            f"last_distance={clf.last_distance:.3f} is suspiciously large -- "
+            "zero-var entropy feature was probably not excluded.",
         )
 
     def test_genuine_anomaly_still_detected_on_active_features(self):
@@ -498,7 +494,7 @@ class TestZeroVarianceExclusion(unittest.TestCase):
         self._warm_up_classifier(clf)
 
         # Inject a massive deviation on grip_asymmetry (always active feature)
-        anomalous_frame = self._make_zero_touchpad_frame(grip_asymmetry=100.0)
+        anomalous_frame = self._make_nominal_frame(grip_asymmetry=100.0)
         result = clf.classify(anomalous_frame)
         self.assertIsNotNone(
             result,
@@ -515,20 +511,19 @@ class TestZeroVarianceExclusion(unittest.TestCase):
         clf = BiometricFusionClassifier()
         # Warm up with trigger_resistance_change_rate always 0.0
         for _ in range(clf.N_WARMUP_SESSIONS + 1):
-            clf.update_fingerprint(self._make_zero_touchpad_frame(
+            clf.update_fingerprint(self._make_nominal_frame(
                 trigger_resistance_change_rate=0.0
             ))
 
-        # Sample has large trigger_resistance_change_rate — still excluded because training var ≈ 0
-        frame = self._make_zero_touchpad_frame(trigger_resistance_change_rate=50.0)
-        before_distance = 0.0
+        # Sample has large trigger_resistance_change_rate -- still excluded because training var ~= 0
+        frame = self._make_nominal_frame(trigger_resistance_change_rate=50.0)
         clf.classify(frame)
         after_distance = clf.last_distance
 
-        # Without exclusion: contribution = 50² / 1e-6 = 2.5e9. With exclusion: 0.
+        # Without exclusion: contribution = 50^2 / 1e-6 = 2.5e9. With exclusion: 0.
         self.assertLess(
             after_distance, 1000.0,
-            f"trigger_resistance_change_rate (zero-var in training) was NOT excluded — "
+            f"trigger_resistance_change_rate (zero-var in training) was NOT excluded -- "
             f"distance={after_distance:.3f}",
         )
 
@@ -548,7 +543,7 @@ class TestFFTRingBuffer(unittest.TestCase):
         return S()
 
     def test_ring_buffer_activates_tremor_after_accumulation(self):
-        """After 513+ cumulative frames, tremor FFT activates even in live mode."""
+        """After 1025+ cumulative frames, tremor FFT activates even in live mode (Phase 49)."""
         import math
         extractor = BiometricFeatureExtractor()
         fs = 1000.0
@@ -556,42 +551,43 @@ class TestFFTRingBuffer(unittest.TestCase):
         snaps_a = [self._snap(rx=1000 * math.sin(2 * math.pi * 8.0 * i / fs))
                    for i in range(120)]
         feats_a = extractor.extract(snaps_a)
-        self.assertEqual(feats_a.tremor_peak_hz, 0.0, "ring < 513, FFT should be inactive")
+        self.assertEqual(feats_a.tremor_peak_hz, 0.0, "ring < 1025, FFT should be inactive")
 
-        # Continue with 4 more calls of 120 frames (total 600 → ring capped at 513)
-        for k in range(4):
+        # Continue with 8 more calls of 120 frames (total 1080 → ring capped at 1025)
+        for k in range(8):
             snaps_k = [self._snap(rx=1000 * math.sin(2 * math.pi * 8.0 * (120 * (k + 1) + i) / fs))
                        for i in range(120)]
             extractor.extract(snaps_k)
 
-        # Now ring has 513 entries; tremor should be detectable
-        snaps_final = [self._snap(rx=1000 * math.sin(2 * math.pi * 8.0 * (600 + i) / fs))
+        # Now ring has 1025 entries (1024 velocity samples); tremor should be detectable
+        snaps_final = [self._snap(rx=1000 * math.sin(2 * math.pi * 8.0 * (1080 + i) / fs))
                        for i in range(120)]
         feats_final = extractor.extract(snaps_final)
         self.assertGreater(feats_final.tremor_peak_hz, 0.0,
-                           "ring >= 513, tremor FFT should activate")
+                           "ring >= 1025, tremor FFT should activate")
         self.assertGreaterEqual(feats_final.tremor_peak_hz, 5.0,
                                 f"Expected ~8 Hz, got {feats_final.tremor_peak_hz:.2f}")
 
     def test_fresh_instance_has_no_ring_state(self):
         """Each BiometricFeatureExtractor instance starts with an empty ring."""
         extractor = BiometricFeatureExtractor()
-        # Exactly 120 frames → ring < 513 → FFT inactive
+        # Exactly 120 frames → ring < 1025 → FFT inactive
         snaps = [self._snap(rx=1000.0) for _ in range(120)]
         feats = extractor.extract(snaps)
         self.assertEqual(feats.tremor_peak_hz, 0.0)
         self.assertEqual(feats.tremor_band_power, 0.0)
 
     def test_large_window_activates_fft_immediately(self):
-        """Calibration window (>= 513 snaps) fills ring in one call → FFT active."""
+        """Calibration window (CALIBRATION_WINDOW_FRAMES=1025 snaps) fills ring → FFT active."""
         import math
+        from tinyml_biometric_fusion import CALIBRATION_WINDOW_FRAMES
         extractor = BiometricFeatureExtractor()
         fs = 1000.0
-        n = 600  # > 513
+        n = CALIBRATION_WINDOW_FRAMES  # 1025 → 1024 velocity samples >= 1024 guard
         snaps = [self._snap(rx=1000 * math.sin(2 * math.pi * 10.0 * i / fs)) for i in range(n)]
-        feats = extractor.extract(snaps, window_frames=600)
+        feats = extractor.extract(snaps, window_frames=CALIBRATION_WINDOW_FRAMES)
         self.assertGreater(feats.tremor_peak_hz, 0.0,
-                           "Single large-window call should activate FFT")
+                           "Single CALIBRATION_WINDOW_FRAMES call should activate FFT")
 
 
 class TestFullCovariance(unittest.TestCase):
@@ -608,7 +604,7 @@ class TestFullCovariance(unittest.TestCase):
             stick_autocorr_lag5=0.2,
             tremor_peak_hz=9.0,
             tremor_band_power=0.25,
-            touchpad_active_fraction=0.0,
+            accel_magnitude_spectral_entropy=4.9,
             touch_position_variance=0.0,
         )
         defaults.update(kwargs)
@@ -686,6 +682,183 @@ class TestFullCovariance(unittest.TestCase):
             clf_diag.fingerprint_hash(), clf_full.fingerprint_hash(),
             "Full-cov mode fingerprint hash should differ (includes cov matrix)",
         )
+
+
+# ---------------------------------------------------------------------------
+# Phase 46 — accel_magnitude_spectral_entropy tests
+# ---------------------------------------------------------------------------
+
+class TestAccelMagnitudeSpectralEntropy(unittest.TestCase):
+    """
+    Phase 46: Shannon entropy of 0-500 Hz accel magnitude power spectrum.
+    Gravity-invariant (||accel|| eliminates orientation dependence).
+    Requires 1024-sample ring buffer; 0.0 during warm-up.
+    """
+
+    def _make_accel_snaps(self, n: int, ax_fn, ay_fn=None, az_fn=None,
+                           inter_frame_us: int = 1000):
+        """Build n snaps with accel_x/y/z from callables."""
+        snaps = []
+        for i in range(n):
+            s = _make_snap(
+                i,
+                accel_x=float(ax_fn(i)),
+                accel_y=float(ay_fn(i) if ay_fn else 0.0),
+                accel_z=float(az_fn(i) if az_fn else 8192.0),
+                inter_frame_us=inter_frame_us,
+            )
+            snaps.append(s)
+        return snaps
+
+    def test_1_entropy_in_valid_range(self):
+        """Any realistic accel input returns entropy in [0.0, log2(513) ~= 9.0]."""
+        rng = np.random.default_rng(42)
+        snaps = [
+            _make_snap(i,
+                       accel_x=float(rng.normal(0, 500)),
+                       accel_y=float(rng.normal(0, 500)),
+                       accel_z=float(rng.normal(8192, 500)),
+                       inter_frame_us=1000)
+            for i in range(1024)
+        ]
+        ext = BiometricFeatureExtractor()
+        feat = ext.extract(snaps, window_frames=1024)
+        max_entropy = math.log2(513)
+        self.assertGreaterEqual(feat.accel_magnitude_spectral_entropy, 0.0)
+        self.assertLessEqual(feat.accel_magnitude_spectral_entropy, max_entropy + 0.01,
+                             f"entropy={feat.accel_magnitude_spectral_entropy:.3f} > max={max_entropy:.3f}")
+
+    def test_2_static_zero_injection_returns_zero(self):
+        """Zeroed accel (var < 4.0 LSB^2) triggers variance guard -> entropy = 0.0."""
+        snaps = [_make_snap(i, accel_x=0.0, accel_y=0.0, accel_z=0.0,
+                             inter_frame_us=1000)
+                 for i in range(1024)]
+        ext = BiometricFeatureExtractor()
+        feat = ext.extract(snaps, window_frames=1024)
+        self.assertEqual(feat.accel_magnitude_spectral_entropy, 0.0,
+                         "Static zero injection must return 0.0 (variance guard)")
+
+    def test_3_white_noise_returns_high_entropy(self):
+        """Independent random accel axes -> flat spectrum -> entropy > 7.0 bits."""
+        rng = np.random.default_rng(99)
+        snaps = [
+            _make_snap(i,
+                       accel_x=float(rng.normal(0, 1000)),
+                       accel_y=float(rng.normal(0, 1000)),
+                       accel_z=float(rng.normal(8192, 1000)),
+                       inter_frame_us=1000)
+            for i in range(1024)
+        ]
+        ext = BiometricFeatureExtractor()
+        feat = ext.extract(snaps, window_frames=1024)
+        self.assertGreater(feat.accel_magnitude_spectral_entropy, 7.0,
+                           f"White noise entropy={feat.accel_magnitude_spectral_entropy:.3f}, expected > 7.0")
+
+    def test_4_sine_wave_returns_low_entropy(self):
+        """Pure 10 Hz sine on accel_x -> energy concentrated at single freq -> entropy < 3.0 bits."""
+        fs = 1000.0
+        snaps = [
+            _make_snap(i,
+                       accel_x=float(300.0 * math.sin(2 * math.pi * 10.0 * i / fs)),
+                       accel_y=0.0,
+                       accel_z=8192.0,
+                       inter_frame_us=1000)
+            for i in range(1024)
+        ]
+        ext = BiometricFeatureExtractor()
+        feat = ext.extract(snaps, window_frames=1024)
+        self.assertLess(feat.accel_magnitude_spectral_entropy, 3.0,
+                        f"Sine wave entropy={feat.accel_magnitude_spectral_entropy:.3f}, expected < 3.0")
+
+
+class TestTremorFFTPhase49(unittest.TestCase):
+    """
+    Phase 49: Tremor FFT ring buffer widened from 513 → 1025 positions.
+    Resolution improved from 1.95 Hz/bin → 0.977 Hz/bin (4 bins across 8–12 Hz band).
+    Activation guard changed from >=512 → >=1024 velocity samples.
+    """
+
+    def _snap_rx(self, rx: float, ift_us: int = 1000) -> object:
+        class S:
+            right_stick_x = rx; inter_frame_us = ift_us
+            left_stick_x = 0; left_stick_y = 0; right_stick_y = 0
+            l2_trigger = 0; r2_trigger = 0
+            gyro_x = 0.0; gyro_y = 0.0; gyro_z = 0.0
+            accel_x = 0.0; accel_y = 0.0; accel_z = 1.0
+            l2_effect_mode = 0; r2_effect_mode = 0
+            touch_active = False; touch0_x = 0
+        return S()
+
+    def test_tremor_fft_inactive_at_1023_velocity_samples(self):
+        """
+        Phase 49 warm-up guard: exactly 1024 positions → 1023 velocity samples < 1024.
+        tremor_peak_hz and tremor_band_power must remain 0.0.
+        """
+        fs = 1000.0
+        # 1024 positions → np.diff → 1023 velocity samples → below new guard
+        snaps = [self._snap_rx(rx=1000.0 * math.sin(2 * math.pi * 10.0 * i / fs))
+                 for i in range(1024)]
+        feats = BiometricFeatureExtractor().extract(snaps, window_frames=1024)
+        self.assertEqual(feats.tremor_peak_hz, 0.0,
+                         "1023 velocity samples < 1024 guard: FFT must be inactive")
+        self.assertEqual(feats.tremor_band_power, 0.0,
+                         "1023 velocity samples < 1024 guard: band power must be 0.0")
+
+    def test_tremor_fft_activates_at_1025_positions(self):
+        """
+        Phase 49: exactly 1025 positions → 1024 velocity samples → guard fires.
+        Inject 10 Hz sine; tremor_peak_hz must be non-zero and tremor_band_power > 0.5.
+        """
+        fs = 1000.0
+        from tinyml_biometric_fusion import CALIBRATION_WINDOW_FRAMES
+        self.assertEqual(CALIBRATION_WINDOW_FRAMES, 1025,
+                         "CALIBRATION_WINDOW_FRAMES must be 1025 after Phase 49")
+        snaps = [self._snap_rx(rx=3000.0 * math.sin(2 * math.pi * 10.0 * i / fs))
+                 for i in range(CALIBRATION_WINDOW_FRAMES)]
+        feats = BiometricFeatureExtractor().extract(snaps, window_frames=CALIBRATION_WINDOW_FRAMES)
+        self.assertGreater(feats.tremor_peak_hz, 0.0,
+                           "1024 velocity samples: FFT must activate")
+        self.assertGreater(feats.tremor_band_power, 0.5,
+                           f"10 Hz sine → band power should dominate 8-12 Hz; got {feats.tremor_band_power:.4f}")
+
+    def test_tremor_frequency_resolution_0977_hz_per_bin(self):
+        """
+        Phase 49: With 1024 velocity samples at 1000 Hz, frequency resolution = 0.977 Hz/bin.
+        Inject 9 Hz sine: must resolve peak at [7.5, 10.5] Hz (within 1.5 bin of 9 Hz).
+        At old 1.95 Hz/bin resolution this boundary was too coarse to distinguish from 8 Hz.
+        """
+        fs = 1000.0
+        from tinyml_biometric_fusion import CALIBRATION_WINDOW_FRAMES
+        snaps = [self._snap_rx(rx=3000.0 * math.sin(2 * math.pi * 9.0 * i / fs))
+                 for i in range(CALIBRATION_WINDOW_FRAMES)]
+        feats = BiometricFeatureExtractor().extract(snaps, window_frames=CALIBRATION_WINDOW_FRAMES)
+        self.assertGreaterEqual(feats.tremor_peak_hz, 7.5,
+                                f"9 Hz peak should be >= 7.5 Hz; got {feats.tremor_peak_hz:.3f}")
+        self.assertLessEqual(feats.tremor_peak_hz, 10.5,
+                             f"9 Hz peak should be <= 10.5 Hz; got {feats.tremor_peak_hz:.3f}")
+
+    def test_live_accumulation_activates_after_9_windows(self):
+        """
+        Phase 49 live path: 9 sequential calls × 120-frame windows accumulates 1080 positions
+        in the ring (capped at 1025), yielding 1024 velocity samples → FFT activates.
+        Calls 1–8 must return tremor_peak_hz = 0.0; call 9+ must return > 0.0.
+        """
+        fs = 1000.0
+        extractor = BiometricFeatureExtractor()
+        # Calls 1–8: 8 × 120 = 960 cumulative positions → ring has 960 → 959 velocity < 1024
+        for call in range(8):
+            snaps = [self._snap_rx(rx=1000.0 * math.sin(2 * math.pi * 10.0 * (call * 120 + i) / fs))
+                     for i in range(120)]
+            feats = extractor.extract(snaps)
+            self.assertEqual(feats.tremor_peak_hz, 0.0,
+                             f"Call {call+1}: ring not yet full ({(call+1)*120} positions), FFT must be inactive")
+
+        # Call 9: adds positions 961–1080 → ring capped at 1025 → 1024 velocity samples → FFT active
+        snaps_9 = [self._snap_rx(rx=1000.0 * math.sin(2 * math.pi * 10.0 * (8 * 120 + i) / fs))
+                   for i in range(120)]
+        feats_9 = extractor.extract(snaps_9)
+        self.assertGreater(feats_9.tremor_peak_hz, 0.0,
+                           "Call 9: ring full (1025 positions / 1024 velocity samples), FFT must activate")
 
 
 if __name__ == "__main__":

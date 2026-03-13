@@ -1,96 +1,181 @@
-# VAPI Project — Claude Code Context
+# VAPI — Claude Code Project Context
 
 ## What This Project Is
-VAPI = Verified Autonomous Physical Intelligence. A cryptographic anti-cheat protocol for competitive gaming. Core primitive: Proof of Autonomous Cognition (PoAC) — a 228-byte hash-chained evidence record binding sensor commitments, model attestation, world-model state, and inference outputs, signed with hardware-backed ECDSA-P256.
 
-## Primary Device
-DualShock Edge (Sony CFI-ZCP1) — production PHCI-certified gaming controller. Adaptive triggers (motorized L2/R2 resistance) + six-axis IMU + USB 1000 Hz polling create an unforgeable biometric detection surface.
+VAPI (Verified Autonomous Physical Intelligence) is a cryptographic anti-cheat protocol
+for competitive gaming. It produces a 228-byte Proof of Autonomous Cognition (PoAC) record
+per cognition cycle, anchored on IoTeX L1. The certified device is a DualShock Edge
+(Sony CFI-ZCP1). The primary game corpus is NCAA College Football 26.
 
-## Secondary Device (extensibility validation only)
-IoTeX Pebble Tracker (nRF9160 + CryptoCell-310) — DePIN environmental sensor. Same 228-byte PoAC format, different sensor domain.
+## Repository
 
-## Current Phase: Phase 17 Complete — Master Workflow All Steps Done
-- **Bridge: 843 passed** | Hardhat: 354/354 | Hardware: 28 | Total ~1,225 tests
-- All thresholds empirically calibrated from N=69 real sessions, 3 distinct players
-- Whitepaper v3 complete (`docs/vapi-whitepaper-v2.md`) — nine-level PITL, N=69 data
-- No known gaps blocking production; next: IoTeX testnet deployment (needs funded wallet)
+`C:\Users\Contr\vapi-pebble-prototype`
 
-## Architecture Layers
-1. **Firmware** — C/Zephyr RTOS (nRF9160) + C/ESP-IDF (controller)
-2. **Smart Contracts** — Solidity on IoTeX L1 (P256 precompile at 0x0100)
-3. **Bridge Service** — Python asyncio (MQTT/CoAP/HTTP ingestion → batch → on-chain relay)
-4. **SDK** — Python + C99 header (VAPISession, VAPIVerifier, self_verify loop)
-5. **PITL** — Nine-level Physical Input Trust Layer (L0–L6, with L2B/L2C) for bot/cheat detection
-6. **Dashboard** — FastAPI + Alpine.js player/operator dashboards
+~220 files, ~1,312 automated tests total (~1,284 CI excluding 28 hardware, 14 E2E).
+Bridge: 888 passing. Contract: 354. SDK: 28. Hardware: 28. E2E: 14.
+13 contracts deployed on IoTeX testnet.
+Deployer address: `0xfCF4681e57C8de9650c3Eb4dA8e26dC9441A5EF1`
+Chain ID: 4690 (IoTeX Testnet)
+Current phase: Phase 49
 
-## PITL Stack (Nine-Level)
-| Layer | Code | Type | File |
-|-------|------|------|------|
-| L0 | — | Structural | Physical presence / HID connected |
+## Architecture at a Glance
+
+| Layer | Language | Key files |
+|-------|----------|-----------|
+| Controller anti-cheat | Python | `controller/tinyml_biometric_fusion.py`, `controller/dualshock_integration.py`, `controller/l6_trigger_driver.py`, `controller/l6_response_analyzer.py`, `controller/temporal_rhythm_oracle.py`, `controller/hid_xinput_oracle.py`, `controller/l2b_imu_press_correlation.py`, `controller/l2c_stick_imu_correlation.py` |
+| Bridge service | Python asyncio | `bridge/vapi_bridge/` — `insight_synthesizer.py`, `bridge_agent.py`, `behavioral_archaeologist.py`, `network_correlation_detector.py`, `federation_bus.py`, `alert_router.py` |
+| Smart contracts | Solidity | `contracts/` — `PoACVerifier.sol`, `PHGRegistry.sol`, `PHGCredential.sol`, `TournamentGateV3.sol`, `PITLSessionRegistry.sol`, `SkillOracle.sol`, `FederatedThreatRegistry.sol` |
+| Scripts | Python | `scripts/threshold_calibrator.py`, `scripts/run_adversarial_validation.py` (9-feature proxy Phase 49), `scripts/interperson_separation_analyzer.py`, `scripts/l6_threshold_calibrator.py`, `scripts/phase_coherence_calibration.py` (negative result, keep), `scripts/generate_professional_adversarial.py` (Phase 48) |
+| Calibration data | JSON | `sessions/human/hw_005` through `sessions/hw_078` (N=74, 3 players) |
+| Frontend dashboard | React JSX | `frontend/VAPIDashboard.jsx` — 850+ lines, void-black + electric orange + cyan |
+| Whitepaper | Markdown | `docs/vapi-whitepaper-v3.md` |
+
+## PoAC Wire Format — FROZEN, DO NOT MODIFY
+
+228 bytes total: 164-byte signed body + 64-byte ECDSA-P256 signature.
+Chain link hash = SHA-256(raw[0:164]) — 164-byte body only, NOT full 228 bytes.
+
+## PITL Nine-Level Stack
+
+| Layer | Code | Type | Signal |
+|-------|------|------|--------|
+| L0 | — | Structural | HID presence |
 | L1 | — | Structural | PoAC chain integrity |
-| L2 | 0x28 | Hard | `hid_xinput_oracle.py` — HID vs XInput + gravity absent |
-| L2B | 0x31 | Advisory | `l2b_imu_press_correlation.py` — IMU-button causal latency |
-| L2C | 0x32 | Advisory | `l2c_stick_imu_correlation.py` — stick-IMU cross-correlation |
-| L3 | 0x29/0x2A | Hard | `tinyml_backend_cheat.py` — behavioral ML |
-| L4 | 0x30 | Advisory | `tinyml_biometric_fusion.py` — 11-feature Mahalanobis |
-| L5 | 0x2B | Advisory | `temporal_rhythm_oracle.py` — CV/entropy/quantization |
-| L6 | — | Advisory | `l6_trigger_driver.py` — active challenge-response (disabled by default) |
+| L2 | 0x28 | Hard cheat | IMU gravity + HID/XInput discrepancy |
+| L3 | 0x29/0x2A | Hard cheat | TinyML behavioral classifier |
+| L2B | 0x31 | Advisory | IMU-button causal latency |
+| L2C | 0x32 | Advisory | Stick-IMU cross-correlation (inactive in dead-zone stick games) |
+| L4 | 0x30 | Advisory | 11-feature Mahalanobis biometric fingerprint |
+| L5 | 0x2B | Advisory | Temporal rhythm (CV, entropy, quantization) |
+| L6 | — | Advisory | Active haptic challenge-response (disabled by default) |
 
-## Core Contract Stack
-1. PoACVerifier — signature + chain integrity verification
-2. TieredDeviceRegistry — device identity + staking + reputation
-3. PHGRegistry — on-chain humanity score checkpoints
-4. PHGCredential — soulbound ERC-5192; suspend/reinstate/isActive
-5. TournamentGateV3 — PHG-gated + credential active check
-6. PITLSessionRegistry — ZK PITL session proof registry; anti-replay nullifiers
-7. FederatedThreatRegistry — immutable cross-confirmed cluster hash anchor
-8. BountyMarket — DePIN bounty lifecycle
-9. SkillOracle / ProgressAttestation / TeamProofAggregator — gaming contracts
+Hard codes {0x28, 0x29, 0x2A} block tournament eligibility.
+L2C returns None in dead-zone stick games (NCAA CFB 26) — 0.10 weight resolves to 0.5 neutral prior.
 
-## Key Technical Decisions
-- ECDSA-P256 (not secp256k1) — matches IoTeX P256 precompile + CryptoCell-310 hardware
-- SHA-256 for all commitments (hardware-accelerated on CryptoCell-310)
-- Fixed 228-byte wire format — zero-copy deserialization, fits NB-IoT uplink
-- Groth16 over BN254 for ZK PITL proofs (~1,820 constraints)
-- YubiKey PIV / ATECC608A for hardware-rooted signing (key never leaves hardware)
+## L4 Calibration State (Phase 49, N=74)
 
-## Calibrated Thresholds (N=69, 3 Players, 2026-03-07) — PRODUCTION
-| Threshold | Value | Derivation |
-|-----------|-------|------------|
-| L4 anomaly (ANOMALY_THRESHOLD) | **7.019** | mean+3σ, 11-feature Mahalanobis |
-| L4 continuity (CONTINUITY_THRESHOLD) | **5.369** | mean+2σ, 11-feature Mahalanobis |
-| L5 CV | **0.08** | adversarial — human 10th pct=0.789 (9.9× margin) |
-| L5 entropy | **1.0 bits** | human 10th pct=1.231 bits |
-| L2B coupled_fraction | **0.55** | human mean=0.786 across 64/69 sessions |
-| L2C max_causal_corr | **0.15** | fixed; 0/69 FP (abs() check mandatory) |
-| Stick noise floor | 19.28 LSB | mean per-axis std across all sessions |
-| IMU gyro noise floor | 332.99 LSB | 95th pct per-axis std |
+- Calibration corpus: hw_005–hw_078 (N=74 including newer tremor/touchpad sessions)
+- Feature space: 11 features, 9 active (Phase 46 added accel_magnitude_spectral_entropy)
+- Active features (9): trigger_resistance_change_rate(excl), trigger_onset_velocity_L2,
+  trigger_onset_velocity_R2, micro_tremor_accel_variance, grip_asymmetry,
+  stick_autocorr_lag1, stick_autocorr_lag5, tremor_peak_hz, tremor_band_power,
+  accel_magnitude_spectral_entropy, touch_position_variance(excl pending recapture)
+- Structurally zero / excluded: trigger_resistance_change_rate, touch_position_variance
+  (touchpad_active_fraction replaced by accel_magnitude_spectral_entropy in Phase 46)
+- L4 anomaly threshold: 6.726 (mean+3σ, Phase 46, N=74, was 7.019)
+- L4 continuity threshold: 5.097 (mean+2σ, Phase 46, N=74, was 5.369)
+- Inter-person separation ratio: 0.362 — L4 is intra-player anomaly detector only
+- Human false positive rate: ~2.9% (expected at 3σ)
 
-## Critical Bugs Found and Fixed
-1. **L2C sign bug**: `anomaly = max_corr < threshold` fired on anti-correlated signals.
-   Fix: `anomaly = abs(max_corr) < threshold`. Anti-correlation is physical coupling.
-2. **HID Cross button mapping**: bit5 of `buttons_0` raw HID byte = Cross.
-   `snap.buttons` must be: `cross = (buttons_0 >> 5) & 1` (bit0 of processed field).
-3. **Batch analysis max_frames**: default of 30k frames missed button presses in 180s sessions.
-   Always use `max_frames=0` (no limit) for full-session analysis.
+## accel_magnitude_spectral_entropy (Phase 46, index 9)
 
-## Key Technical Notes
-- `hardhat.config.js`: viaIR=true (stack-too-deep fix for PoACVerifier)
-- PoACVerifierTestable.sol: overrides `_requireValidSignature` (virtual) for Hardhat
-- conftest.py: autouse event loop fixture prevents Python 3.13 asyncio teardown crash
-- Windows SQLite tests: use `tempfile.mkdtemp()` NOT `TemporaryDirectory` (WAL PermissionError on cleanup)
-- Web3/eth_account stub pattern: mock `web3`, `web3.exceptions`, `eth_account` before import
-- EWCWorldModel INPUT_DIM=30 (tests need 30-dim input, not 10)
-- Windows print encoding: use ASCII (PASS: / ->) NOT Unicode (✓ / →) in test print() calls
-- IoTeX: chain ID 4689 mainnet, 4690 testnet; P256 precompile at 0x0100
-- ZK circuits: `pragma circom 2.0.0;` — requires circom2 Rust binary (not npm circom)
-- circom.exe v2.2.3 in `contracts/` — add to PATH when running ceremony
-- `hidapi` library: install as `pip install hidapi` (NOT `hid`)
-- `docs/vapi-whitepaper-v2.md` is canonical whitepaper; `paper/vapi-whitepaper.md` archived
+Replaces structurally-zero touchpad_active_fraction.
+Physics: Shannon entropy of the 0–500 Hz power spectrum of DC-removed ||accel||.
+Requires 1000 Hz polling — cannot be computed on standard HID (125–250 Hz) devices.
+Ring buffer: 1024 frames, follows Phase 41 pattern (returns 0.0 until filled).
+Human range: 3–8.6 bits, tightly centered at 4.8–4.9 bits (std 1.303).
+Static injection: 0.0 (variance guard). Random noise: ~9.0 bits (detectable).
+Player means nearly identical (P1: 4.878, P2: 4.882, P3: 4.767) — bot-vs-human
+discriminator only, NOT inter-player identifier. Does not improve separation ratio.
+Negative result documented: docs/phase-coherence-calibration.md (accel_phase_coherence
+ruled out — gravity dominates accel during still frames in handheld gaming grip).
+
+## Humanity Probability Formula (Phase 46)
+
+Without L6 (default):
+  humanity_probability = 0.28·p_L4 + 0.27·p_L5 + 0.20·p_E4 + 0.15·p_L2B + 0.10·p_L2C
+  NOTE: p_L2C resolves to 0.5 neutral prior in dead-zone stick games (NCAA CFB 26).
+  Formula runs as effective 4-signal in practice for this game corpus.
+
+With L6 active:
+  p_human = 0.23·p_L4 + 0.22·p_L5 + 0.15·p_E4 + 0.15·p_L6 + 0.15·p_L2B + 0.10·p_L2C
+
+## Phase Summary
+
+| Phase | Key milestone |
+|-------|---------------|
+| 17 | L4 feature space 7→11; L2B/L2C oracles added |
+| 38 | Mode 6 living calibration active (α=0.95, ±15%/cycle, 6h) |
+| 41 | Full covariance L4; ZK inference code binding |
+| 43 | L6 human response baseline; bridge 865→877 |
+| 45 | accel_phase_coherence NEGATIVE RESULT — gravity dominates; reverted; documented |
+| 46 | accel_magnitude_spectral_entropy shipped; thresholds 7.019→6.726 / 5.369→5.097; bridge 880 |
+| 47 | L2C phantom weight closed — PITL layer table live INACTIVE indicator; stale threshold labels fixed |
+| 48 | Professional adversarial data — 3 white-box attack classes (G/H/I), 15 sessions, 4 bridge tests; bridge 884 |
+| 49 | Tremor FFT window 513→1025 positions (512→1024 velocity samples); 1.95→0.977 Hz/bin; 4 bins across 8–12 Hz band; batch validator 7→9 features; bridge 888 |
+
+## Completed Items — Do Not Re-Open
+
+- Tremor FFT window widening (Phase 49) — 513→1025 ring buffer, 0.977 Hz/bin, 4 Phase 49 bridge tests, batch validator 7→9 features, Attack G batch still 0% (right_stick_x preserved), whitepaper §8.5 + feature table updated, bridge 888
+- Professional bot adversarial data (Phase 48) — 3 white-box attack classes G/H/I, 15 sessions, 4 unit tests, validation script updated, analysis doc, whitepaper §9.5 added
+- L2C phantom weight formula integrity fix (Phase 47) — PITL layer live status, log.debug, WS flag, §7.5.4, test_9, HUMANITY tile
+- accel_magnitude_spectral_entropy as active feature at index 9 (Phase 46)
+- L4 thresholds recalibrated N=74 (Phase 46)
+- L6 human response baseline calibration (Phase 43)
+- Full covariance L4 (Phase 41)
+- ZK inference code binding / pub[2]=0 gap (Phase 41)
+- IoTeX testnet deployment (13 contracts live)
+- PoAC chain hash bug fix
+- PHGCredential auto-expiry fix
+
+## Remaining Open Gaps (Phase 48, priority order)
+
+1. **L2C phantom weight** — CLOSED (Phase 47)
+   `l2c_inactive` flag in pitl_meta + WS stream; log.debug per dead-zone cycle; §7.5.4 footnote;
+   test_9 formula validity; HUMANITY tile "4-signal (L2C: dead zone)" in orange; PITL layer table
+   L2C row shows "INACTIVE (dead zone)" live when l2c_inactive=true; L4 thresholds updated; bridge 880.
+
+2. **Inter-person separation ratio 0.362** — OPEN/HIGH
+   Neither phase coherence nor spectral entropy improved it (both are bot-vs-human).
+   True fix requires: post-Phase-17 touchpad recapture (hardware + gameplay) AND
+   widening tremor FFT window beyond 120 frames.
+
+3. **Post-Phase-17 touchpad recapture** — OPEN/HIGH (requires controller + gameplay)
+   touch_position_variance structurally zero across all calibration sessions.
+
+4. **Professional bot adversarial data** — CLOSED (Phase 48)
+   3 white-box attack classes (G: randomized_bot, H: threshold_aware, I: spectral_mimicry), 15 sessions.
+   H: 100% L4 detection. G/I: batch 0% (live L4+tremor and L2B respectively). Analysis: `docs/professional-adversarial-analysis.md`.
+   Remaining gap: real hardware bot software (aimbot, ML-driven inputs) still untested.
+
+5. **Multi-party ZK ceremony** — PLANNED (no hardware)
+
+6. **PHGCredential multi-sig/timelock governance** — PLANNED (no hardware)
+
+## ZK Circuit
+
+Groth16, BN254, ~1,820 constraints, 2^11 powers-of-tau.
+PITLSessionRegistry: `0x8da0A497234C57914a46279A8F938C07D3Eb5f12`
+PitlSessionProofVerifier: `0x07D3ca1548678410edC505406f022399920d4072`
+
+## BridgeAgent
+
+claude-sonnet-4-6. 17 deterministic read-only tool bindings.
+GET /operator/agent/stream (SSE, 60 req/min). SQLite session persistence.
+
+## Hardware
+
+DualShock Edge CFI-ZCP1, USB-C, Windows 11, hidapi VID=0x054C PID=0x0DF2 interface 3.
+USB polling: 1002 Hz. Injection margin: 14,000× (accel), 10,000× (gyro).
+Micro-tremor variance: 278,239 LSB².
+
+## Hard Rules
+
+- Never modify the 228-byte PoAC wire format
+- Never change chain link hash from SHA-256(164B body)
+- Hardware tests gated @pytest.mark.hardware, excluded from CI
+- E2E tests require running Hardhat node
+- L6_CHALLENGES_ENABLED=false is the correct default
+- Per-player L4 thresholds can only tighten, never loosen (enforced by min())
+- Stable EMA track updates on NOMINAL sessions only
+- Whitepaper test counts: 888 bridge, ~1,312 total, ~1,284 CI
+- L2C phantom weight must be acknowledged in any humanity formula discussion
+- accel_magnitude_spectral_entropy is bot-vs-human only — never claim it improves separation ratio
 
 ## Build & Test Commands
+
 ```bash
-python -m pytest bridge/tests/ --ignore=bridge/tests/test_e2e_simulation.py -q  # 843 passed
+python -m pytest bridge/tests/ --ignore=bridge/tests/test_e2e_simulation.py -q  # 888 passed
 python -m pytest sdk/tests/ -v                                                   # 28
 cd contracts && npx hardhat test                                                  # 354
 pytest tests/hardware/ -v -m hardware -s                                         # 28 (needs controller)
@@ -98,12 +183,23 @@ pytest tests/hardware/ -v -m hardware -s                                        
 cd /c/Users/Contr/vapi-pebble-prototype/contracts && PATH="$(pwd):$PATH" npx hardhat run scripts/run-ceremony.js
 # E2E (needs Hardhat node):
 HARDHAT_RPC_URL=http://127.0.0.1:8545 python -m pytest bridge/tests/test_e2e_simulation.py -v
+# L6 capture workflow:
+python scripts/l6_hardware_check.py
+python scripts/l6_capture_session.py --player P1 --game "NCAA Football 26" --target 50
+python scripts/l6_threshold_calibrator.py --from-db
 ```
 
-## Known Remaining Gaps
-- L6 human-response baseline not yet hardware-calibrated (§10.6 whitepaper)
-- Multi-person Mahalanobis separation not yet validated across 3 players (§10.7)
-- Tremor FFT (8-12 Hz) needs ≥1024-frame window at 1000 Hz; current 120-frame window = 8.3 Hz/bin (too coarse)
-- Touchpad features zero for all N=69 sessions (touch_active field added in Phase 17; next sessions will populate)
-- IoTeX testnet deployment pending (needs funded wallet — see B4 in MEMORY.md)
-- L2C coverage limited: right stick rarely used in NCAA Football 26 (68/69 sessions static stick)
+## Key Gotchas (Windows / HID)
+
+- `hidapi` library: `pip install hidapi` (NOT `hid`)
+- HID Cross button: bit5 of `buttons_0` raw HID byte; `cross = (buttons_0 >> 5) & 1`
+- L2C sign bug: use `abs(max_causal_corr) < threshold` — anti-correlation is physical coupling
+- Windows SQLite tests: use `tempfile.mkdtemp()` NOT `TemporaryDirectory` (WAL PermissionError)
+- Windows print encoding: ASCII (PASS: / ->) NOT Unicode (✓ / →) in test print() calls
+- Web3/eth_account stub: mock `web3`, `web3.exceptions`, `eth_account` before import
+- EWCWorldModel INPUT_DIM=30 (tests need 30-dim input, not 10)
+- ZK circuits: `pragma circom 2.0.0;` — requires circom2 Rust binary; circom.exe v2.2.3 in `contracts/`
+- IoTeX: chain ID 4689 mainnet, 4690 testnet; P256 precompile at 0x0100
+- hardhat.config.js: viaIR=true (stack-too-deep fix for PoACVerifier)
+- conftest.py: autouse event loop fixture prevents Python 3.13 asyncio teardown crash
+- Batch analysis: always use max_frames=0 — default 30k limit misses presses in 180s sessions

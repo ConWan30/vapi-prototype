@@ -7,6 +7,11 @@ full offline PITL pipeline (L2 injection / L4 biometric Mahalanobis / L5
 temporal rhythm), and outputs a detection matrix to both terminal and
 docs/adversarial-validation-results.md.
 
+L4 fingerprint uses 9 features (Phase 49+):
+  [onset_l2, onset_r2, tremor_var, grip_asym, autocorr_lag1, autocorr_lag5,
+   accel_magnitude_spectral_entropy, tremor_peak_hz, tremor_band_power]
+Threshold is auto-calibrated from human session distance distribution (mean+3sigma).
+
 Usage:
     python scripts/run_adversarial_validation.py [--quiet]
 
@@ -30,9 +35,11 @@ DOCS_DIR     = PROJECT_ROOT / "docs"
 DOCS_DIR.mkdir(exist_ok=True)
 
 # ---------------------------------------------------------------------------
-# PITL calibrated thresholds (from N=50 hardware sessions, 2026-03-02)
+# PITL calibrated thresholds
 # ---------------------------------------------------------------------------
-L4_ANOMALY_THRESHOLD    = 5.869   # Mahalanobis distance in 6-proxy feature space
+# L4_ANOMALY_THRESHOLD is now auto-calibrated by L4Validator (mean+3sigma of
+# human distance distribution) — the hardcoded value below is a fallback only.
+L4_ANOMALY_THRESHOLD    = 5.869   # fallback; overridden by L4Validator calibration
 L4_INJECTION_GYRO_THRESH = 20.0   # LSB std — below this with active triggers = injection
 L4_MIN_TRIGGER_FRAMES   = 10      # Minimum trigger-active frames to assess L2/L4 injection
 L2_GRAVITY_THRESHOLD    = 100.0   # LSB — mean accel_magnitude below this = zeroed IMU (no gravity)
@@ -88,10 +95,77 @@ def _autocorr_py(series: list, lag: int) -> float:
     return num / (sx * sy)
 
 
+def _accel_entropy(ax_v: list, ay_v: list, az_v: list) -> float:
+    """
+    Compute accel_magnitude_spectral_entropy (Phase 46 feature).
+    Shannon entropy of DC-removed ||accel|| power spectrum.
+
+    Uses exactly 1024 samples (matching the live ring buffer maxlen=1024) so the
+    entropy scale is comparable to the Phase 46 calibration:
+      Human range: ~3–8.6 bits centred at 4.8 bits (std 1.303).
+      Gaussian noise → flat spectrum over 513 bins → ~9.0 bits.
+    Returns 0.0 if insufficient data or near-zero variance (static injection guard).
+    """
+    _WINDOW = 1024  # must match BiometricFeatureExtractor._accel_mag_ring maxlen
+    n = min(len(ax_v), len(ay_v), len(az_v))
+    if n < _WINDOW:
+        return 0.0
+    # Use the most recent _WINDOW samples (ring buffer behaviour)
+    i0 = n - _WINDOW
+    mag = np.array([math.sqrt(ax_v[i]**2 + ay_v[i]**2 + az_v[i]**2)
+                    for i in range(i0, i0 + _WINDOW)], dtype=np.float64)
+    mag_dc = mag - mag.mean()
+    if float(np.var(mag_dc)) < 4.0:  # variance guard (matches live path: var < 4.0 LSB²)
+        return 0.0
+    psd = np.abs(np.fft.rfft(mag_dc)) ** 2
+    total = psd.sum()
+    if total < 1e-12:
+        return 0.0
+    p = psd / total
+    nz = p[p > 0]
+    return float(-np.sum(nz * np.log2(nz)))
+
+
+def _tremor_features(rx_v: list) -> tuple[float, float]:
+    """
+    Extract tremor_peak_hz and tremor_band_power from right_stick_x velocity FFT.
+
+    Matches the Phase 49 live path: 1024 velocity samples from 1025 positions at 1000 Hz.
+    Frequency resolution: 0.977 Hz/bin — 4 bins across the 8–12 Hz physiological tremor band.
+    Returns (0.0, 0.0) if fewer than 1025 right_stick_x positions (insufficient data).
+    """
+    _WINDOW = 1024  # velocity samples = positions - 1
+    if len(rx_v) < _WINDOW + 1:
+        return 0.0, 0.0
+    positions = np.array(rx_v[-(_WINDOW + 1):], dtype=np.float32)
+    vels = np.diff(positions) / 32768.0  # normalize to [-1, 1] range
+
+    psd   = np.abs(np.fft.rfft(vels)) ** 2
+    freqs = np.fft.rfftfreq(_WINDOW, d=1.0 / 1000.0)  # 1000 Hz sampling
+
+    total_power = float(psd.sum())
+    if total_power < 1e-12:
+        return 0.0, 0.0
+
+    band_mask        = (freqs >= 8.0) & (freqs <= 12.0)
+    band_power_sum   = float(psd[band_mask].sum())
+    band_power_frac  = band_power_sum / total_power
+
+    if not np.any(band_mask) or band_power_sum < 1e-12:
+        tremor_peak_hz = 0.0
+    else:
+        peak_idx       = int(np.argmax(psd[band_mask]))
+        tremor_peak_hz = float(freqs[band_mask][peak_idx])
+
+    return tremor_peak_hz, band_power_frac
+
+
 def _session_fingerprint(session: dict, max_reports: int = _FINGERPRINT_REPORTS
                           ) -> list[float] | None:
     """
-    6-proxy biometric feature vector (mirrors threshold_calibrator.py).
+    9-feature biometric fingerprint vector (Phase 49: added tremor_peak_hz, tremor_band_power).
+      [onset_l2, onset_r2, tremor_var, grip_asym, ac_lag1, ac_lag5, entropy,
+       tremor_peak_hz, tremor_band_power]
     Returns None if insufficient data.
     """
     reports = session.get("reports", [])[:max_reports]
@@ -102,6 +176,7 @@ def _session_fingerprint(session: dict, max_reports: int = _FINGERPRINT_REPORTS
     gx_v, gy_v, gz_v = [], [], []
     ax_v, ay_v, az_v = [], [], []
     lx_v, ly_v = [], []
+    rx_v: list[float] = []  # right_stick_x — for tremor FFT (Phase 49)
 
     for r in reports:
         f = r.get("features", {})
@@ -111,6 +186,7 @@ def _session_fingerprint(session: dict, max_reports: int = _FINGERPRINT_REPORTS
         gx = _g("gyro_x");     gy = _g("gyro_y");     gz = _g("gyro_z")
         ax = _g("accel_x");    ay = _g("accel_y");     az = _g("accel_z")
         lx = _g("left_stick_x"); ly = _g("left_stick_y")
+        rxs = _g("right_stick_x")
         if l2 is not None: l2_v.append(l2)
         if r2 is not None: r2_v.append(r2)
         if gx is not None: gx_v.append(gx)
@@ -121,6 +197,7 @@ def _session_fingerprint(session: dict, max_reports: int = _FINGERPRINT_REPORTS
         if az is not None: az_v.append(az)
         if lx is not None: lx_v.append(lx)
         if ly is not None: ly_v.append(ly)
+        if rxs is not None: rx_v.append(rxs)
 
     onset_l2 = _trigger_onset_velocity([int(v) for v in l2_v]) if l2_v else 0.0
     onset_r2 = _trigger_onset_velocity([int(v) for v in r2_v]) if r2_v else 0.0
@@ -146,7 +223,12 @@ def _session_fingerprint(session: dict, max_reports: int = _FINGERPRINT_REPORTS
     ac1 = _autocorr_py(stick_vels, 1)
     ac5 = _autocorr_py(stick_vels, 5)
 
-    return [onset_l2, onset_r2, tremor_var, grip_asym, ac1, ac5]
+    entropy = _accel_entropy(ax_v, ay_v, az_v)
+
+    tremor_peak_hz, tremor_band_power = _tremor_features(rx_v)
+
+    return [onset_l2, onset_r2, tremor_var, grip_asym, ac1, ac5, entropy,
+            tremor_peak_hz, tremor_band_power]
 
 
 def _extract_press_intervals(session: dict) -> list[float]:
@@ -272,6 +354,9 @@ class L4Validator:
     test sessions by their Mahalanobis distance from the human centroid.
     Uses diagonal covariance (per-feature variance) matching the production
     BiometricFusionClassifier approach.
+
+    Threshold is auto-calibrated from the human reference distribution (mean+3sigma)
+    so the 9-feature vector (Phase 49: +tremor_peak_hz, +tremor_band_power) is properly weighted.
     """
 
     def __init__(self, human_sessions: list[dict], quiet: bool = False) -> None:
@@ -287,26 +372,74 @@ class L4Validator:
         self._mean   = arr.mean(axis=0)
         self._var    = arr.var(axis=0)
         self._n_ref  = len(fps)
+
+        # Auto-calibrate threshold: mean+3sigma of human distance distribution
+        dists = np.array([self._mahal(np.array(fp)) for fp in fps])
+        self._threshold = float(dists.mean() + 3.0 * dists.std())
+
         if not quiet:
             print(f"  L4 reference: {self._n_ref} human fingerprints, "
                   f"mean={self._mean.round(4).tolist()}")
+            print(f"  L4 threshold (auto, mean+3sigma): {self._threshold:.4f}")
+
+    def _mahal(self, x: np.ndarray) -> float:
+        diff = x - self._mean
+        safe = np.maximum(self._var, 1e-9)
+        return float(np.sqrt(np.sum(diff**2 / safe)))
 
     def check(self, session: dict) -> dict:
         fp = _session_fingerprint(session)
         if fp is None:
             return {"fired": False, "distance": None, "reason": "too few reports"}
-        x    = np.array(fp, dtype=np.float64)
-        diff = x - self._mean
-        safe = np.maximum(self._var, 1e-9)
-        dist = float(np.sqrt(np.sum(diff**2 / safe)))
-        fired = dist > L4_ANOMALY_THRESHOLD
+        dist  = self._mahal(np.array(fp, dtype=np.float64))
+        fired = dist > self._threshold
         return {
             "fired":      fired,
             "distance":   round(dist, 4),
-            "threshold":  L4_ANOMALY_THRESHOLD,
+            "threshold":  round(self._threshold, 4),
             "fingerprint": [round(v, 5) for v in fp],
             "inference":  "0x30 BIOMETRIC_ANOMALY" if fired else "NOMINAL",
         }
+
+
+# ---------------------------------------------------------------------------
+# Phase 46 spectral entropy calibration constants (N=74, DualShock Edge)
+# ---------------------------------------------------------------------------
+_ENTROPY_HUMAN_MEAN   = 4.8     # bits
+_ENTROPY_HUMAN_STD    = 1.303   # bits
+_ENTROPY_ANOMALY_THRESH = _ENTROPY_HUMAN_MEAN + 3 * _ENTROPY_HUMAN_STD  # 8.709 bits
+
+
+# ===========================================================================
+# L4 entropy anomaly sub-check (Phase 46)
+# ===========================================================================
+
+def check_l4_entropy_anomaly(session: dict) -> dict:
+    """
+    Standalone accel_magnitude_spectral_entropy check (Phase 46).
+    Fires if entropy > mean+3sigma = 8.709 bits (Gaussian/white-noise injection).
+    Does NOT fire for shaped-PSD mimicry (spectral_mimicry attack succeeds here).
+
+    Complements the Mahalanobis check: a single-feature entropy deviation of
+    4+ sigma isn't guaranteed to push the 7-feature Mahalanobis over threshold,
+    but it IS a direct indicator of Gaussian noise injection.
+    """
+    reports = session.get("reports", [])[:_FINGERPRINT_REPORTS]
+    ax_v, ay_v, az_v = [], [], []
+    for r in reports:
+        f = r.get("features", {})
+        ax = f.get("accel_x"); ay = f.get("accel_y"); az = f.get("accel_z")
+        if ax is not None: ax_v.append(float(ax))
+        if ay is not None: ay_v.append(float(ay))
+        if az is not None: az_v.append(float(az))
+    entropy = _accel_entropy(ax_v, ay_v, az_v)
+    fired = entropy > _ENTROPY_ANOMALY_THRESH
+    return {
+        "fired":     fired,
+        "entropy":   round(entropy, 4),
+        "threshold": round(_ENTROPY_ANOMALY_THRESH, 4),
+        "inference": "0x30 L4_ENTROPY_ANOMALY" if fired else "NOMINAL",
+    }
 
 
 # ===========================================================================
@@ -424,11 +557,17 @@ def _load_session(path: Path) -> dict | None:
 
 
 def analyze_session(session: dict, l4: L4Validator) -> dict:
-    """Run L2, L4, L5 on one session. Return per-layer results."""
-    r_l2 = check_l2(session)
-    r_l4 = l4.check(session)
-    r_l5 = check_l5(session)
+    """Run L2, L4 (Mahalanobis + entropy anomaly), L5 on one session."""
+    r_l2  = check_l2(session)
+    r_l4  = l4.check(session)
+    r_l4e = check_l4_entropy_anomaly(session)
+    r_l5  = check_l5(session)
     warmup = compute_warmup_score(session)
+
+    # Fold entropy anomaly into L4 result for reporting (entropy_value available in notes).
+    r_l4 = dict(r_l4)
+    r_l4["entropy_anomaly"] = r_l4e["fired"]
+    r_l4["entropy_value"]   = r_l4e["entropy"]
 
     any_fired = r_l2["fired"] or r_l4["fired"] or r_l5["fired"]
     return {
@@ -454,6 +593,10 @@ ATTACK_DISPLAY_NAMES = {
     "transplant":      "Biometric transplant",
     "warmup":          "Gradual warmup (E)",
     "tick_quantized":  "Quant-masked bot",
+    # Phase 48 — professional/white-box adversary attacks
+    "randomized_bot":  "Randomized IMU bot (G)",
+    "threshold_aware": "Threshold-aware synth (H)",
+    "spectral_mimicry":"Spectral entropy mimicry (I)",
     "human_baseline":  "Human baseline",
     "gaming":          "Human gaming (hw_*)",
 }
@@ -500,7 +643,9 @@ def build_report(human_results: list[dict],
         by_type[r["attack_type"]].append(r)
 
     attack_order = ["replay", "injection", "macro",
-                    "transplant", "warmup", "tick_quantized"]
+                    "transplant", "warmup", "tick_quantized",
+                    # Phase 48 professional attacks
+                    "randomized_bot", "threshold_aware", "spectral_mimicry"]
     summary_rows: list[dict] = []
 
     for at in attack_order:
@@ -614,11 +759,21 @@ def build_report(human_results: list[dict],
     w()
 
     # ---- Calibrated threshold reference ----
-    w("CALIBRATED THRESHOLDS  (N=50, high confidence, 2026-03-02)")
+    # Retrieve auto-calibrated L4 threshold from the first L4 result that has it
+    auto_thresh = None
+    for r in (human_results + adv_results):
+        t = r.get("l4", {}).get("threshold")
+        if t is not None:
+            auto_thresh = t
+            break
+    l4_thresh_str = (f"{auto_thresh:.4f} (mean+3sigma, auto-calibrated, 9-feature)"
+                     if auto_thresh else "auto-calibrated")
+    w("CALIBRATED THRESHOLDS  (N=74 hw sessions, Phase 49, auto-calibrated)")
     w("-" * 72)
     w(f"  L2 injection gyro std < {L4_INJECTION_GYRO_THRESH} LSB with active input")
     w(f"     OR accel_magnitude mean < {L2_GRAVITY_THRESHOLD} LSB (gravity absent — works on idle sessions)")
-    w(f"  L4 Mahalanobis distance > {L4_ANOMALY_THRESHOLD} (mean + 3-sigma, N=50)")
+    w(f"  L4 Mahalanobis distance > {l4_thresh_str}")
+    w(f"     Features: onset_l2, onset_r2, tremor_var, grip_asym, ac_lag1, ac_lag5, spectral_entropy, tremor_peak_hz, tremor_band_power")
     w(f"  L5 CV < {L5_CV_THRESHOLD} | entropy < {L5_ENTROPY_THRESHOLD} bits | quant > {L5_QUANT_THRESHOLD}  (need >=2/3)")
     w()
 
@@ -640,6 +795,24 @@ def _attack_notes(at: str, results: list[dict]) -> str:
         if l5:
             mq = sum(r["l5"]["quant_score"] for r in l5) / len(l5)
             return f"mean quant_score={mq:.3f}"
+    if at == "randomized_bot":
+        l4_count = sum(1 for r in results if r["l4"]["fired"])
+        ents = [r["l4"].get("entropy_value", 0.0) for r in results]
+        mean_e = sum(ents)/len(ents) if ents else 0.0
+        return (f"L4 fired {l4_count}/{len(results)} "
+                f"(right_stick_x from source session → tremor features human-like; "
+                f"mean entropy={mean_e:.2f} bits below standalone threshold 8.71; "
+                f"live L4+L2B detects; see §9.5)")
+    if at == "threshold_aware":
+        l4_count = sum(1 for r in results if r["l4"]["fired"])
+        return (f"L4 fired {l4_count}/{len(results)} "
+                f"(grip_asym=1.0 + stick_autocorr=0 deviate; multivariate defense holds)")
+    if at == "spectral_mimicry":
+        l4_count = sum(1 for r in results if r["l4"]["fired"])
+        ents = [r["l4"].get("entropy_value", 0.0) for r in results]
+        mean_e = sum(ents)/len(ents) if ents else 0.0
+        return (f"L4 fired {l4_count}/{len(results)} "
+                f"(mean entropy={mean_e:.2f} bits in human range; L2B is detection path)")
     return ""
 
 
@@ -658,7 +831,7 @@ def _to_markdown(terminal_report: str, human_results: list[dict],
         "**Generated:** 2026-03-02  \n"
         "**Calibration:** N=50 DualShock Edge sessions, high confidence  \n"
         f"**Human sessions:** {h_tot} (real hw_* + synthetic baselines)  \n"
-        f"**Adversarial sessions:** {all_adv} (6 attack types, real-data transforms)  \n"
+        f"**Adversarial sessions:** {all_adv} (9 attack types: 6 deterministic + 3 professional/Phase 48)  \n"
         f"**Detection (excl. replay):** {any_det}/{non_replay} "
         f"({100*any_det/max(non_replay,1):.1f}%)  \n"
         f"**False positive rate:** {h_fp}/{h_tot} "
@@ -677,7 +850,10 @@ def _to_markdown(terminal_report: str, human_results: list[dict],
         "| Perfect-timing macro | C | L5 | R2 presses at constant 50 ms intervals |\n"
         "| Biometric transplant | D | L4 | Stick+IMU from session X; trigger timing from Y |\n"
         "| Gradual warmup | E | L2+L4+L5 | Linear bot→human interpolation across 10 sessions |\n"
-        "| Quant-masked bot | F | L5 | 60 Hz-locked presses + 2 ms Gaussian jitter |\n\n"
+        "| Quant-masked bot | F | L5 | 60 Hz-locked presses + 2 ms Gaussian jitter |\n"
+        "| Randomized IMU bot | G | L4+L2B | Gaussian IMU at human variance + real button timing |\n"
+        "| Threshold-aware synth | H | L4+L2B | All thresholds tuned; synthetic session |\n"
+        "| Spectral entropy mimicry | I | L4 | Accel PSD shaped to match human entropy 4.8 bits |\n\n"
         "## Threshold Reference\n\n"
         f"| Layer | Threshold | N=50 Human Baseline |\n"
         f"|-------|-----------|--------------------|\n"

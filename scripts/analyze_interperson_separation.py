@@ -81,7 +81,7 @@ FEATURE_NAMES = [
     "stick_autocorr_lag5",
     "tremor_peak_hz",
     "tremor_band_power",
-    "touchpad_active_fraction",
+    "accel_magnitude_spectral_entropy",   # F10 (replaces touchpad slot; Phase 46; 1000 Hz exclusive)
     "touch_position_variance",
 ]
 N_FEATURES = len(FEATURE_NAMES)
@@ -238,13 +238,31 @@ def _extract_features_inline(snaps: list[_SnapProxy]) -> np.ndarray:
         tremor_peak_hz = 0.0
         tremor_band_power = 0.0
 
-    # 7. Touchpad biometric
+    # 7. Accel magnitude spectral entropy (gravity-invariant; inline fallback path)
+    # Requires >= 1024 samples for reliable entropy; at WINDOW_SIZE=1024 this activates.
+    _ax = np.array([float(getattr(s, "accel_x", 0.0)) for s in snaps], dtype=np.float64)
+    _ay = np.array([float(getattr(s, "accel_y", 0.0)) for s in snaps], dtype=np.float64)
+    _az = np.array([float(getattr(s, "accel_z", 0.0)) for s in snaps], dtype=np.float64)
+    _mag = np.sqrt(_ax * _ax + _ay * _ay + _az * _az)
+    if float(np.var(_mag)) < 4.0 or len(_mag) < 1024:
+        accel_magnitude_spectral_entropy = 0.0
+    else:
+        _dc = _mag - float(np.mean(_mag))
+        _power = np.abs(np.fft.rfft(_dc)) ** 2
+        _total = float(np.sum(_power))
+        if _total < 1e-12:
+            accel_magnitude_spectral_entropy = 0.0
+        else:
+            _p = _power / _total
+            _p = _p[_p > 1e-12]
+            accel_magnitude_spectral_entropy = float(-np.sum(_p * np.log2(_p)))
+
+    # Touchpad position variance — kept at index 10 (pending post-Phase-17 recapture)
     touch_xs = [
         float(getattr(s, "touch0_x", 0)) / 1920.0
         for s in snaps
         if bool(getattr(s, "touch_active", False))
     ]
-    touchpad_active_fraction = len(touch_xs) / n
     touch_position_variance = float(np.var(touch_xs)) if len(touch_xs) >= 3 else 0.0
 
     return np.array([
@@ -257,7 +275,7 @@ def _extract_features_inline(snaps: list[_SnapProxy]) -> np.ndarray:
         autocorr_lag5,
         tremor_peak_hz,
         tremor_band_power,
-        touchpad_active_fraction,
+        accel_magnitude_spectral_entropy,  # index 9 (Phase 46)
         touch_position_variance,
     ], dtype=np.float32)
 

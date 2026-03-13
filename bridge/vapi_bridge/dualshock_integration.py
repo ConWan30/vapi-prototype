@@ -816,6 +816,40 @@ class DualShockTransport:
                 await asyncio.sleep(self._interval)
                 continue
 
+            # --- Phase 44: broadcast downsampled frames to /ws/frames clients ---
+            try:
+                from .transports.http import ws_frames_broadcast as _fbc
+                import json as _json, math as _math
+                _stride = max(1, len(frames) // 20)   # target ~20 frames per 1s batch
+                _out = []
+                for _i in range(0, len(frames), _stride):
+                    _s = frames[_i]
+                    _out.append({
+                        "ts_ms":         int(_s.timestamp_ms) if hasattr(_s, "timestamp_ms") else 0,
+                        "left_stick_x":  _s.left_stick_x,
+                        "left_stick_y":  _s.left_stick_y,
+                        "right_stick_x": _s.right_stick_x,
+                        "right_stick_y": _s.right_stick_y,
+                        "l2_trigger":    _s.l2_trigger,
+                        "r2_trigger":    _s.r2_trigger,
+                        "accel_x":       round(float(_s.accel_x), 4),
+                        "accel_y":       round(float(_s.accel_y), 4),
+                        "accel_z":       round(float(_s.accel_z), 4),
+                        "gyro_x":        round(float(_s.gyro_x), 3),
+                        "gyro_y":        round(float(_s.gyro_y), 3),
+                        "gyro_z":        round(float(_s.gyro_z), 3),
+                        "accel_mag":     round(_math.sqrt(
+                                             _s.accel_x**2 + _s.accel_y**2 + _s.accel_z**2), 4),
+                        "touch_active":  bool(_s.touch_active),
+                        "touch0_x":      _s.touch0_x,
+                        "touch0_y":      _s.touch0_y,
+                        "buttons_cross": (_s.buttons >> 5) & 1,
+                        "buttons_r2":    (_s.buttons >> 15) & 1 if _s.buttons > 0 else 0,
+                    })
+                asyncio.create_task(_fbc(_json.dumps({"type": "frames", "frames": _out})))
+            except Exception:
+                pass
+
             # --- Anti-cheat classification (Layer 1) ---
             inference, confidence = self._classify(frames)
 
@@ -1015,6 +1049,14 @@ class DualShockTransport:
                         _l2c_p_human = self._stick_imu_oracle.humanity_score()
                 except Exception:
                     pass
+            # L2C inactive diagnostic: right stick in dead zone → oracle returned None.
+            # Fires every cycle for dead-zone stick games (e.g. NCAA Football 26).
+            # Visible at DEBUG level; l2c_inactive=True also emitted in _pending_pitl_meta.
+            if _l2c_max_corr is None:
+                log.debug(
+                    "L2C oracle inactive (dead-zone stick): p_L2C=0.5 neutral; "
+                    "5-signal formula running as effective 4-signal this cycle"
+                )
 
             # Phase 23: Post-warmup continuity check — fires once when L4 classifier warms up.
             # Persists the classifier's mean/var state and launches async continuity attestation.
@@ -1056,8 +1098,14 @@ class DualShockTransport:
             else:
                 _p_e4 = 0.5
             # Phase 17: L2B/L2C humanity signals (0.5 = neutral when oracle not warmed up)
+            # L2C PHANTOM WEIGHT NOTE: In dead-zone stick games (e.g. NCAA Football 26),
+            # right_stick_x stays at 128 throughout the session → StickImuCorrelationOracle
+            # returns None from extract_features() → _l2c_p_human stays at 0.5 (neutral prior).
+            # The 0.10·p_L2C term then contributes a fixed 0.05 offset carrying zero discriminative
+            # information. The formula remains bounded in [0,1] but runs as effective 4-signal.
+            # l2c_inactive flag is emitted in _pending_pitl_meta for operator visibility.
             _p_l2b = _l2b_p_human  # already defaults to 0.5
-            _p_l2c = _l2c_p_human  # already defaults to 0.5
+            _p_l2c = _l2c_p_human  # already defaults to 0.5; phantom when L2C oracle is None
             if self._l6_driver is not None:
                 # Phase C + Phase 17: L6 active — reweight to include L6 + L2B + L2C
                 _humanity_prob = (
@@ -1115,6 +1163,9 @@ class DualShockTransport:
                 # Phase 17: L2C stick-IMU correlation oracle
                 "l2c_max_corr":         _l2c_max_corr,
                 "l2c_p_human":          _l2c_p_human,
+                # True when right stick is in dead zone and L2C oracle returned None;
+                # the 0.10·p_L2C weight then contributes a fixed 0.05 phantom offset.
+                "l2c_inactive":         _l2c_max_corr is None,
             }
 
             inf_name = GAMING_INFERENCE_NAMES.get(inference, f"0x{inference:02x}")
