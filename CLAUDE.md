@@ -11,12 +11,12 @@ per cognition cycle, anchored on IoTeX L1. The certified device is a DualShock E
 
 `C:\Users\Contr\vapi-pebble-prototype`
 
-~220 files, ~1,312 automated tests total (~1,284 CI excluding 28 hardware, 14 E2E).
-Bridge: 888 passing. Contract: 354. SDK: 28. Hardware: 28. E2E: 14.
+~220 files, ~1,456 automated tests total (~1,428 CI excluding 28 hardware, 14 E2E).
+Bridge: 1032 passing. Contract: 354. SDK: 28. Hardware: 28. E2E: 14.
 13 contracts deployed on IoTeX testnet.
 Deployer address: `0x0Cf36dB57fc4680bcdfC65D1Aff96993C57a4692`
 Chain ID: 4690 (IoTeX Testnet)
-Current phase: Phase 49
+Current phase: Phase 61
 
 ## Architecture at a Glance
 
@@ -103,9 +103,11 @@ With L6 active:
 | 47 | L2C phantom weight closed — PITL layer table live INACTIVE indicator; stale threshold labels fixed |
 | 48 | Professional adversarial data — 3 white-box attack classes (G/H/I), 15 sessions, 4 bridge tests; bridge 884 |
 | 49 | Tremor FFT window 513→1025 positions (512→1024 velocity samples); 1.95→0.977 Hz/bin; 4 bins across 8–12 Hz band; batch validator 7→9 features; bridge 888 |
+| 61 | Test coverage phase — 4 new test modules (144 tests): hid_report_parser, tinyml_backend_cheat, l0_bluetooth_presence, threshold_calibrator stats+pipeline; bridge 1032 |
 
 ## Completed Items — Do Not Re-Open
 
+- Test coverage expansion (Phase 61) — 4 new test files, 144 tests: `test_hid_report_parser.py` (37 tests, CRITICAL gap), `test_backend_cheat_classifier.py` (40 tests, Layer 3 behavioral classifier), `test_l0_bluetooth_presence.py` (30 tests, L0 BT advisory scoring), `test_threshold_calibrator.py` (37 tests, statistical functions + calibration pipeline); bridge 888→1032
 - Tremor FFT window widening (Phase 49) — 513→1025 ring buffer, 0.977 Hz/bin, 4 Phase 49 bridge tests, batch validator 7→9 features, Attack G batch still 0% (right_stick_x preserved), whitepaper §8.5 + feature table updated, bridge 888
 - Professional bot adversarial data (Phase 48) — 3 white-box attack classes G/H/I, 15 sessions, 4 unit tests, validation script updated, analysis doc, whitepaper §9.5 added
 - L2C phantom weight formula integrity fix (Phase 47) — PITL layer live status, log.debug, WS flag, §7.5.4, test_9, HUMANITY tile
