@@ -103,11 +103,12 @@ With L6 active:
 | 47 | L2C phantom weight closed — PITL layer table live INACTIVE indicator; stale threshold labels fixed |
 | 48 | Professional adversarial data — 3 white-box attack classes (G/H/I), 15 sessions, 4 bridge tests; bridge 884 |
 | 49 | Tremor FFT window 513→1025 positions (512→1024 velocity samples); 1.95→0.977 Hz/bin; 4 bins across 8–12 Hz band; batch validator 7→9 features; bridge 888 |
-| 61 | Test coverage phase — 4 new test modules (144 tests): hid_report_parser, tinyml_backend_cheat, l0_bluetooth_presence, threshold_calibrator stats+pipeline; bridge 1032 |
+| 61 | Session replay system — `frame_checkpoints` SQLite table (FK→records, maxlen=60 ring, 20 Hz); `/replay` + `/checkpoints` + `/features` REST endpoints; BridgeAgent tool #29 `get_session_replay`; `useReplayMode` + `useFeatureHistory` dashboard hooks; BiometricScatter cyan DB history dots; Chain tile ▶ REPLAYABLE indicator + replay status bar |
 
 ## Completed Items — Do Not Re-Open
 
-- Test coverage expansion (Phase 61) — 4 new test files, 144 tests: `test_hid_report_parser.py` (37 tests, CRITICAL gap), `test_backend_cheat_classifier.py` (40 tests, Layer 3 behavioral classifier), `test_l0_bluetooth_presence.py` (30 tests, L0 BT advisory scoring), `test_threshold_calibrator.py` (37 tests, statistical functions + calibration pipeline); bridge 888→1032
+- Session replay system (Phase 61) — `frame_checkpoints` table (SQLite, FK to records, maxlen=60 ring buffer at 20 Hz capture rate); `/replay`, `/checkpoints`, `/features` REST endpoints; BridgeAgent tool #29 `get_session_replay`; `useReplayMode` + `useFeatureHistory` React hooks; BiometricScatter cyan DB history overlay dots; Chain tile ▶ REPLAYABLE badge + replay status bar in dashboard
+- Test coverage expansion (Phase 61 prep) — 4 new test files, 144 tests: `test_hid_report_parser.py` (37 tests, CRITICAL gap), `test_backend_cheat_classifier.py` (40 tests, Layer 3 behavioral classifier), `test_l0_bluetooth_presence.py` (30 tests, L0 BT advisory scoring), `test_threshold_calibrator.py` (37 tests, statistical functions + calibration pipeline)
 - Tremor FFT window widening (Phase 49) — 513→1025 ring buffer, 0.977 Hz/bin, 4 Phase 49 bridge tests, batch validator 7→9 features, Attack G batch still 0% (right_stick_x preserved), whitepaper §8.5 + feature table updated, bridge 888
 - Professional bot adversarial data (Phase 48) — 3 white-box attack classes G/H/I, 15 sessions, 4 unit tests, validation script updated, analysis doc, whitepaper §9.5 added
 - L2C phantom weight formula integrity fix (Phase 47) — PITL layer live status, log.debug, WS flag, §7.5.4, test_9, HUMANITY tile
@@ -120,7 +121,7 @@ With L6 active:
 - PoAC chain hash bug fix
 - PHGCredential auto-expiry fix
 
-## Remaining Open Gaps (Phase 48, priority order)
+## Remaining Open Gaps (Phase 61, priority order)
 
 1. **L2C phantom weight** — CLOSED (Phase 47)
    `l2c_inactive` flag in pitl_meta + WS stream; log.debug per dead-zone cycle; §7.5.4 footnote;
@@ -152,7 +153,7 @@ PitlSessionProofVerifier: `0x07D3ca1548678410edC505406f022399920d4072`
 
 ## BridgeAgent
 
-claude-sonnet-4-6. 17 deterministic read-only tool bindings.
+claude-sonnet-4-6. 29 deterministic read-only tool bindings (tool #29: `get_session_replay`).
 GET /operator/agent/stream (SSE, 60 req/min). SQLite session persistence.
 
 ## Hardware
@@ -170,14 +171,16 @@ Micro-tremor variance: 278,239 LSB².
 - L6_CHALLENGES_ENABLED=false is the correct default
 - Per-player L4 thresholds can only tighten, never loosen (enforced by min())
 - Stable EMA track updates on NOMINAL sessions only
-- Whitepaper test counts: 888 bridge, ~1,312 total, ~1,284 CI
+- Whitepaper test counts: 1032 bridge, ~1,456 total, ~1,428 CI
+- frame_checkpoints ring buffer: maxlen=60 (3 seconds at 20 Hz) — do not increase without memory profiling
+- /replay endpoint returns checkpoint rows in capture order; BridgeAgent tool #29 is read-only
 - L2C phantom weight must be acknowledged in any humanity formula discussion
 - accel_magnitude_spectral_entropy is bot-vs-human only — never claim it improves separation ratio
 
 ## Build & Test Commands
 
 ```bash
-python -m pytest bridge/tests/ --ignore=bridge/tests/test_e2e_simulation.py -q  # 888 passed
+python -m pytest bridge/tests/ --ignore=bridge/tests/test_e2e_simulation.py -q  # 1032 passed
 python -m pytest sdk/tests/ -v                                                   # 28
 cd contracts && npx hardhat test                                                  # 354
 pytest tests/hardware/ -v -m hardware -s                                         # 28 (needs controller)
