@@ -82,6 +82,9 @@ class Config:
         default_factory=lambda: _env("HTTP_HOST", "0.0.0.0")
     )
     http_port: int = field(default_factory=lambda: _env_int("HTTP_PORT", 8080))
+    cors_allowed_origins: str = field(
+        default_factory=lambda: _env("CORS_ALLOWED_ORIGINS", "http://localhost:5173")
+    )
 
     # --- Batching ---
     batch_size: int = field(default_factory=lambda: _env_int("BATCH_SIZE", 10))

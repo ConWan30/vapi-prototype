@@ -750,9 +750,10 @@ class ChainClient:
             # "env" source — existing behaviour; emit advisory if key is set
             if getattr(cfg, "bridge_private_key", ""):
                 log.warning(
-                    "BRIDGE_PRIVATE_KEY is a plaintext env var. "
-                    "For mainnet, migrate to an encrypted keystore "
-                    "(BRIDGE_PRIVATE_KEY_SOURCE=keystore)."
+                    "BRIDGE_PRIVATE_KEY is loaded as a plaintext environment variable. "
+                    "This is acceptable for testnet but MUST NOT be used in production. "
+                    "Set BRIDGE_PRIVATE_KEY_SOURCE=keystore and provide an encrypted "
+                    "keystore file via BRIDGE_KEYSTORE_PATH before any mainnet deployment."
                 )
             self._account = Account.from_key(cfg.bridge_private_key)
 
@@ -1636,8 +1637,17 @@ class ChainClient:
         if not self._federated_threat_registry:
             log.debug("report_federated_cluster: FEDERATED_THREAT_REGISTRY_ADDRESS not configured, skipping")
             return ""
+        # Validate format before hex conversion
+        _valid_hex = frozenset("0123456789abcdefABCDEF")
+        if not cluster_hash or len(cluster_hash) != 16 or not all(c in _valid_hex for c in cluster_hash):
+            log.warning("report_federated_cluster: invalid cluster_hash %r — skipping", cluster_hash[:32] if cluster_hash else "")
+            return ""
         # Pad 16-char hex to full 32-byte bytes32
-        padded = bytes.fromhex(cluster_hash.ljust(64, "0"))
+        try:
+            padded = bytes.fromhex(cluster_hash.ljust(64, "0"))
+        except ValueError:
+            log.warning("report_federated_cluster: bytes.fromhex failed for %r — skipping", cluster_hash)
+            return ""
         tx_hash = await self._send_tx(
             self._federated_threat_registry.functions.reportCluster,
             padded,

@@ -13,11 +13,13 @@ Endpoints:
   GET  /player/{device_id}      — Player dashboard (Trust Ledger + Identity Glyph)
 """
 
+import hashlib
+import hmac
 import json
 import logging
 import time
 
-from fastapi import FastAPI, Request, Response, HTTPException, WebSocket, WebSocketDisconnect
+from fastapi import FastAPI, Path, Query, Request, Response, HTTPException, WebSocket, WebSocketDisconnect
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import HTMLResponse, JSONResponse
 
@@ -119,11 +121,13 @@ def create_app(cfg: Config, store: Store, on_record) -> FastAPI:
 
     app = FastAPI(title="VAPI Bridge", version="0.2.0-rc1")
 
-    # --- CORS (Phase 43 — frontend dashboard on :5173) ---
+    # --- CORS (configurable via CORS_ALLOWED_ORIGINS env var) ---
+    _raw_origins = getattr(cfg, "cors_allowed_origins", "http://localhost:5173")
+    _cors_origins = [o.strip() for o in _raw_origins.split(",") if o.strip()]
     app.add_middleware(
         CORSMiddleware,
-        allow_origins=["http://localhost:5173"],
-        allow_methods=["GET", "POST"],
+        allow_origins=_cors_origins,
+        allow_methods=["GET", "POST", "PATCH"],
         allow_headers=["*"],
     )
 
@@ -199,7 +203,9 @@ def create_app(cfg: Config, store: Store, on_record) -> FastAPI:
         return store.list_devices()
 
     @app.get("/api/v1/devices/{device_id}")
-    async def get_device(device_id: str):
+    async def get_device(
+        device_id: str = Path(..., pattern="^[0-9a-fA-F]{64}$"),
+    ):
         device = store.get_device(device_id)
         if not device:
             raise HTTPException(404, "Device not found")
@@ -215,14 +221,31 @@ def create_app(cfg: Config, store: Store, on_record) -> FastAPI:
     async def health():
         return {"status": "ok"}
 
-    # --- Config PATCH (L6 capture session metadata) ---
+    # --- Config PATCH (L6 capture session metadata only) ---
+
+    # Only these fields may be updated at runtime — all others are immutable.
+    _PATCHABLE_CONFIG_FIELDS: frozenset[str] = frozenset({
+        "l6_capture_player_id",
+        "l6_capture_game_title",
+        "l6_capture_hw_session_ref",
+        "l6_capture_notes",
+    })
 
     @app.patch("/config")
-    async def patch_config(request: Request):
+    async def patch_config(
+        request: Request,
+        api_key: str = Query(..., description="Operator API key"),
+    ):
+        if not cfg.operator_api_key:
+            raise HTTPException(503, "Operator API not configured (OPERATOR_API_KEY not set)")
+        if not hmac.compare_digest(api_key, cfg.operator_api_key):
+            raise HTTPException(403, "Invalid API key")
         body = await request.json()
+        rejected = [k for k in body if k not in _PATCHABLE_CONFIG_FIELDS]
+        if rejected:
+            raise HTTPException(400, f"Fields not patchable at runtime: {rejected}")
         for key, val in body.items():
-            if hasattr(cfg, key):
-                object.__setattr__(cfg, key, val)
+            object.__setattr__(cfg, key, val)
         return {"status": "ok"}
 
     # --- L6 capture summary ---

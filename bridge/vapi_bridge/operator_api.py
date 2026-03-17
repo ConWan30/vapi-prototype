@@ -50,7 +50,7 @@ class _RateLimiter:
 
     def is_allowed(self, key: str) -> bool:
         """Return True if key is within rate limit; record this request."""
-        now = time.time()
+        now = time.monotonic()
         cutoff = now - 60.0
         dq = self._windows[key]
         while dq and dq[0] < cutoff:

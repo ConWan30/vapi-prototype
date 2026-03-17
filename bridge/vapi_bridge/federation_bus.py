@@ -43,6 +43,14 @@ def compute_cluster_hash(device_ids: list) -> str:
     return hashlib.sha256("|".join(sorted(device_ids)).encode()).hexdigest()[:16]
 
 
+_VALID_HEX_CHARS = frozenset("0123456789abcdefABCDEF")
+
+
+def _valid_cluster_hash(h: str) -> bool:
+    """Return True iff h is a well-formed 16-char hex cluster fingerprint."""
+    return isinstance(h, str) and len(h) == 16 and all(c in _VALID_HEX_CHARS for c in h)
+
+
 def compute_bridge_id(api_key: str) -> str:
     """Anonymous 16-char bridge identity derived from api_key (non-reversible)."""
     return hashlib.sha256(f"bridge:{api_key}".encode()).hexdigest()[:16]
@@ -167,16 +175,24 @@ class FederationBus:
         known = self._known_peer_hashes.setdefault(peer_url, set())
         for c in remote_clusters:
             h = c.get("cluster_hash", "")
-            if not h or h in known:
+            if not _valid_cluster_hash(h):
+                if h:
+                    log.warning("FederationBus: dropping cluster with invalid hash %r from %s", h[:32], peer_url)
+                continue
+            if h in known:
                 continue
             known.add(h)
             bridge_id = c.get("bridge_id", peer_url[:16])
+            raw_count = c.get("device_count", 0)
+            device_count = max(0, min(int(raw_count), 10_000))
+            raw_bucket = c.get("suspicion_bucket", "medium")
+            suspicion_bucket = raw_bucket if raw_bucket in {"critical", "medium"} else "medium"
             try:
                 self._store.store_federation_cluster(
                     cluster_hash=h,
                     peer_url=peer_url,
-                    device_count=c.get("device_count", 0),
-                    suspicion_bucket=c.get("suspicion_bucket", "medium"),
+                    device_count=device_count,
+                    suspicion_bucket=suspicion_bucket,
                     bridge_id=bridge_id,
                     is_local=False,
                 )

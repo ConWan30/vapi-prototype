@@ -9,7 +9,9 @@ overhead (4-byte header vs MQTT's variable-length header).
 """
 
 import asyncio
+import collections
 import logging
+import time
 
 import aiocoap
 import aiocoap.resource as resource
@@ -20,6 +22,28 @@ from ..config import Config
 log = logging.getLogger(__name__)
 
 
+class _RateLimiter:
+    """Sliding-window per-source rate limiter for CoAP transport."""
+
+    def __init__(self, requests_per_minute: int = 120):
+        self._rpm = max(1, requests_per_minute)
+        self._windows: collections.defaultdict = collections.defaultdict(collections.deque)
+
+    def is_allowed(self, key: str) -> bool:
+        now = time.monotonic()
+        cutoff = now - 60.0
+        dq = self._windows[key]
+        while dq and dq[0] < cutoff:
+            dq.popleft()
+        if len(dq) >= self._rpm:
+            return False
+        dq.append(now)
+        return True
+
+
+_coap_limiter = _RateLimiter(requests_per_minute=120)
+
+
 class PoACResource(resource.Resource):
     """CoAP resource that accepts PoAC record submissions."""
 
@@ -28,6 +52,11 @@ class PoACResource(resource.Resource):
         self._on_record = on_record
 
     async def render_post(self, request):
+        source_ip = str(request.remote.hostinfo)
+        if not _coap_limiter.is_allowed(source_ip):
+            log.warning("CoAP rate limit exceeded for source %s", source_ip)
+            return aiocoap.Message(code=aiocoap.TOO_MANY_REQUESTS, payload=b"Rate limit exceeded")
+
         payload = request.payload
         if len(payload) != POAC_RECORD_SIZE:
             return aiocoap.Message(
@@ -35,7 +64,7 @@ class PoACResource(resource.Resource):
                 payload=f"Expected {POAC_RECORD_SIZE} bytes, got {len(payload)}".encode(),
             )
 
-        source = f"coap:{request.remote.hostinfo}"
+        source = f"coap:{source_ip}"
         try:
             await self._on_record(bytes(payload), source)
             return aiocoap.Message(code=aiocoap.CHANGED, payload=b"OK")
