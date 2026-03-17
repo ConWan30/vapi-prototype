@@ -384,6 +384,7 @@ class InsightSynthesizer:
                 await self._chain.suspend_phg_credential(device_id, evidence_bytes, duration_s)
             except Exception as exc:
                 log.warning("Mode 5: on-chain suspend failed device=%s: %s", device_id[:16], exc)
+                return  # Do not write DB state if on-chain call failed — avoids DB/chain inconsistency
 
             self._store.store_credential_suspension(
                 device_id, evidence_bytes.hex(), time.time() + duration_s
@@ -515,7 +516,7 @@ class InsightSynthesizer:
         # --- Step 7: Health checks ---
         # Check 1: Data freshness
         newest_ts_ms = max(r["timestamp_ms"] for r in records)
-        age_s = (time.time() * 1000 - newest_ts_ms) / 1000.0
+        age_s = max(0.0, (time.time() * 1000 - newest_ts_ms) / 1000.0)
         if age_s > _DATA_STALE_S:
             self._store.store_protocol_insight(
                 "calibration_health_stale",

@@ -13,6 +13,7 @@ Endpoints:
   GET  /player/{device_id}      — Player dashboard (Trust Ledger + Identity Glyph)
 """
 
+import asyncio
 import hashlib
 import hmac
 import json
@@ -34,17 +35,19 @@ log = logging.getLogger(__name__)
 # ---------------------------------------------------------------------------
 
 _ws_clients: set[WebSocket] = set()
+_ws_clients_lock = asyncio.Lock()
 
 
 async def ws_broadcast(message: str):
     """Broadcast a JSON string to all connected WebSocket clients. Dead clients are removed."""
-    dead: set[WebSocket] = set()
-    for ws in _ws_clients:
-        try:
-            await ws.send_text(message)
-        except Exception:
-            dead.add(ws)
-    _ws_clients.difference_update(dead)
+    async with _ws_clients_lock:
+        dead: set[WebSocket] = set()
+        for ws in list(_ws_clients):
+            try:
+                await ws.send_text(message)
+            except Exception:
+                dead.add(ws)
+        _ws_clients.difference_update(dead)
 
 
 # ---------------------------------------------------------------------------
@@ -52,19 +55,21 @@ async def ws_broadcast(message: str):
 # ---------------------------------------------------------------------------
 
 _ws_frame_clients: set[WebSocket] = set()
+_ws_frame_clients_lock = asyncio.Lock()
 
 
 async def ws_frames_broadcast(message: str) -> None:
     """Broadcast a JSON string to all /ws/frames clients. Dead clients removed."""
     if not _ws_frame_clients:
         return
-    dead: set[WebSocket] = set()
-    for ws in _ws_frame_clients:
-        try:
-            await ws.send_text(message)
-        except Exception:
-            dead.add(ws)
-    _ws_frame_clients.difference_update(dead)
+    async with _ws_frame_clients_lock:
+        dead: set[WebSocket] = set()
+        for ws in list(_ws_frame_clients):
+            try:
+                await ws.send_text(message)
+            except Exception:
+                dead.add(ws)
+        _ws_frame_clients.difference_update(dead)
 
 
 # Inference name map for WebSocket messages (gaming codes)
@@ -136,24 +141,28 @@ def create_app(cfg: Config, store: Store, on_record) -> FastAPI:
     @app.websocket("/ws/records")
     async def ws_records(ws: WebSocket):
         await ws.accept()
-        _ws_clients.add(ws)
+        async with _ws_clients_lock:
+            _ws_clients.add(ws)
         try:
             while True:
                 # Keep-alive: client sends ping text, we ignore it
                 await ws.receive_text()
         except (WebSocketDisconnect, Exception):
-            _ws_clients.discard(ws)
+            async with _ws_clients_lock:
+                _ws_clients.discard(ws)
 
     # Phase 44: raw downsampled frame stream (20 Hz, InputSnapshot batches)
     @app.websocket("/ws/frames")
     async def ws_frames(ws: WebSocket):
         await ws.accept()
-        _ws_frame_clients.add(ws)
+        async with _ws_frame_clients_lock:
+            _ws_frame_clients.add(ws)
         try:
             while True:
                 await ws.receive_text()
         except (WebSocketDisconnect, Exception):
-            _ws_frame_clients.discard(ws)
+            async with _ws_frame_clients_lock:
+                _ws_frame_clients.discard(ws)
 
     # --- Webhook API ---
 

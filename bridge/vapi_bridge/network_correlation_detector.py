@@ -145,10 +145,11 @@ class NetworkCorrelationDetector:
         dist_mat = self.build_distance_matrix(device_ids)
         raw_clusters = self._dbscan(dist_mat, device_ids)
 
+        device_to_idx = {d: i for i, d in enumerate(device_ids)}
         result = []
         for cid, members in enumerate(raw_clusters):
             # Compute average intra-cluster distance
-            indices = [device_ids.index(d) for d in members]
+            indices = [device_to_idx[d] for d in members]
             intra_dists = []
             for i in range(len(indices)):
                 for j in range(i + 1, len(indices)):
@@ -185,4 +186,5 @@ class NetworkCorrelationDetector:
 
     def get_flagged_clusters(self) -> list:
         """Return only clusters marked is_flagged=True."""
+        # Reuse a single detect_clusters() call to avoid redundant distance-matrix rebuild
         return [c for c in self.detect_clusters() if c.is_flagged]

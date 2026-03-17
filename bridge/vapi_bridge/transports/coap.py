@@ -33,7 +33,7 @@ class _RateLimiter:
         now = time.monotonic()
         cutoff = now - 60.0
         dq = self._windows[key]
-        while dq and dq[0] < cutoff:
+        while dq and dq[0] <= cutoff:
             dq.popleft()
         if len(dq) >= self._rpm:
             return False

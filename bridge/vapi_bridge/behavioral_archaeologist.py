@@ -145,15 +145,17 @@ class BehavioralArchaeologist:
             warmup_raw = 0.0
         warmup_attack_score = _sigmoid(warmup_raw - 1.0)
 
-        # Biometric stability certificate
+        # Biometric stability certificate — requires >=5 samples, evaluated over up to 20
+        n_drift = min(20, len(drift_vals))
         biometric_stability_cert = (
-            len(drift_vals) >= 5 and float(np.mean(drift_vals[:20])) < 0.5
+            len(drift_vals) >= 5 and float(np.mean(drift_vals[:n_drift])) < 0.5
         )
 
-        # L4 consistency certificate
+        # L4 consistency certificate — requires >=5 samples, evaluated over up to 20
         if len(l4_dist_vals) >= 5:
-            mean_l4 = float(np.mean(l4_dist_vals[:20]))
-            std_l4 = float(np.std(l4_dist_vals[:20]))
+            n_l4 = min(20, len(l4_dist_vals))
+            mean_l4 = float(np.mean(l4_dist_vals[:n_l4]))
+            std_l4 = float(np.std(l4_dist_vals[:n_l4]))
             l4_consistency_cert = (std_l4 / (mean_l4 + 1e-6)) < 0.3
         else:
             l4_consistency_cert = False
