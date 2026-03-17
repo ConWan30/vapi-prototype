@@ -6,30 +6,39 @@ pragma circom 2.0.0;
  * Proves that the bridge honestly computed PITL biometric outputs for an
  * individual session without revealing raw sensor feature values on-chain.
  *
+ * Phase 62: Added C3 inferenceCodeFromBody binding.
+ *   C1 now commits inference code into featureCommitment (Poseidon 7→8 inputs).
+ *   C3 constrains inferenceResult === inferenceCodeFromBody.
+ *   A corrupt bridge generating fake inferenceResult=NOMINAL while body=CHEAT
+ *   produces a featureCommitment inconsistent with the PoAC body — forensically
+ *   detectable against the raw 228-byte record.
+ *
  * Circuit parameters:
- *   Estimated constraints: ~1,820  →  powers-of-tau 2^11 sufficient
+ *   Estimated constraints: ~1,821  →  powers-of-tau 2^11 sufficient
  *
  * Public inputs (verified by Solidity IPITLSessionVerifier.verifyProof):
- *   featureCommitment — Poseidon(7)(scaledFeatures[0..6])
+ *   featureCommitment — Poseidon(8)(scaledFeatures[0..6], inferenceCodeFromBody)
  *   humanityProbInt   — humanity_prob × 1000 ∈ [0, 1000]
- *   inferenceResult   — 8-bit VAPI inference code
+ *   inferenceResult   — 8-bit VAPI inference code (public)
  *   nullifierHash     — Poseidon(deviceIdHash, epoch)
  *   epoch             — Time-domain tag: block.number / EPOCH_BLOCKS
  *
  * Private inputs (known only to the bridge):
- *   scaledFeatures[7] — L4 biometric features × 1000, non-negative integers
- *   deviceIdHash      — Poseidon(deviceId bytes) — identity binding
- *   l5HumanityInt     — L5 rhythm_humanity_score × 1000 ∈ [0, 1000]
- *   e4DriftInt        — E4 cognitive_drift × 100 (non-negative integer)
+ *   scaledFeatures[7]      — L4 biometric features × 1000, non-negative integers
+ *   deviceIdHash           — Poseidon(deviceId bytes) — identity binding
+ *   l5HumanityInt          — L5 rhythm_humanity_score × 1000 ∈ [0, 1000]
+ *   e4DriftInt             — E4 cognitive_drift × 100 (non-negative integer)
+ *   inferenceCodeFromBody  — PoAC body byte 128, prover-supplied (Phase 62)
  *
  * Constraint groups:
- *   C1. featureCommitment === Poseidon(7)(scaledFeatures)           (~1,200 constraints)
- *   C2. inferenceResult ∉ [40, 42]  via IsNotCheatCode()           (~60 constraints)
- *   C3. humanityProbInt ∈ [0, 1000] via GreaterEqThan/LessEqThan  (~40 constraints)
- *   C4. nullifierHash === Poseidon(deviceIdHash, epoch)             (~500 constraints)
- *   C5. l5HumanityInt ∈ [0, 1000]  (domain sanity)                 (~20 constraints)
+ *   C1. featureCommitment === Poseidon(8)(scaledFeatures, inferenceCodeFromBody) (~1,200 constraints)
+ *   C2. inferenceResult ∉ [40, 42]  via IsNotCheatCode()                        (~60 constraints)
+ *   C3. inferenceResult === inferenceCodeFromBody  (Phase 62 binding)            (~1 constraint)
+ *   C4. humanityProbInt ∈ [0, 1000] via GreaterEqThan/LessEqThan               (~40 constraints)
+ *   C5. nullifierHash === Poseidon(deviceIdHash, epoch)                          (~500 constraints)
+ *   C6. l5HumanityInt ∈ [0, 1000]  (domain sanity)                              (~20 constraints)
  *
- * Nullifier design (C4):
+ * Nullifier design (C5):
  *   Anchored to (deviceIdHash, epoch) — prevents replay per device per epoch.
  *   deviceIdHash = Poseidon(deviceId bytes) — binds the proof to one physical device.
  *   epoch = block.number / EPOCH_BLOCKS — prevents reuse across time windows.
@@ -83,17 +92,22 @@ template PitlSessionProof() {
     signal input epoch;              // Domain tag: block.number / EPOCH_BLOCKS
 
     // ── Private inputs ─────────────────────────────────────────────────────
-    signal input scaledFeatures[7];  // L4 features × 1000 (non-negative)
-    signal input deviceIdHash;       // Poseidon(deviceId) — identity binding
-    signal input l5HumanityInt;      // L5 rhythm_humanity_score × 1000 ∈ [0, 1000]
-    signal input e4DriftInt;         // E4 cognitive_drift × 100 (non-negative)
+    signal input scaledFeatures[7];     // L4 features × 1000 (non-negative)
+    signal input deviceIdHash;          // Poseidon(deviceId) — identity binding
+    signal input l5HumanityInt;         // L5 rhythm_humanity_score × 1000 ∈ [0, 1000]
+    signal input e4DriftInt;            // E4 cognitive_drift × 100 (non-negative)
+    signal input inferenceCodeFromBody; // Phase 62: PoAC body byte 128, prover-supplied
 
-    // ══ C1: featureCommitment = Poseidon(7)(scaledFeatures) ══════════════
-    // Binds the public commitment to the 7 secret L4 biometric features.
-    component featH = Poseidon(7);
+    // ══ C1: featureCommitment = Poseidon(8)(scaledFeatures, inferenceCodeFromBody) ══
+    // Phase 62: inferenceCodeFromBody added as 8th preimage input.
+    // A dishonest prover that changes inferenceResult without changing
+    // inferenceCodeFromBody will produce a featureCommitment that is
+    // inconsistent with the raw PoAC body — forensically detectable.
+    component featH = Poseidon(8);
     for (var i = 0; i < 7; i++) {
         featH.inputs[i] <== scaledFeatures[i];
     }
+    featH.inputs[7] <== inferenceCodeFromBody;
     featH.out === featureCommitment;
 
     // ══ C2: inferenceResult ∉ [40, 42] ═══════════════════════════════════
@@ -101,7 +115,14 @@ template PitlSessionProof() {
     component cheatCheck = IsNotCheatCode();
     cheatCheck.inference <== inferenceResult;
 
-    // ══ C3: humanityProbInt ∈ [0, 1000] ══════════════════════════════════
+    // ══ C3: inferenceResult === inferenceCodeFromBody (Phase 62) ══════════
+    // Binds the public inferenceResult to the private inferenceCodeFromBody.
+    // For an honest bridge: inferenceResult == inferenceCodeFromBody (always true).
+    // For a corrupt bridge: changing one without the other invalidates featureCommitment
+    // against the PoAC body — making the fraud forensically detectable.
+    inferenceResult === inferenceCodeFromBody;
+
+    // ══ C4: humanityProbInt ∈ [0, 1000] ══════════════════════════════════
     // 10-bit comparators cover [0, 1023]; 1000 fits within range.
     component hpMin = GreaterEqThan(10);
     hpMin.in[0] <== humanityProbInt;
@@ -113,14 +134,14 @@ template PitlSessionProof() {
     hpMax.in[1] <== 1000;
     hpMax.out === 1;
 
-    // ══ C4: nullifierHash = Poseidon(deviceIdHash, epoch) ════════════════
+    // ══ C5: nullifierHash = Poseidon(deviceIdHash, epoch) ════════════════
     // Anchors the proof to one device × one epoch — prevents replay.
     component nullH = Poseidon(2);
     nullH.inputs[0] <== deviceIdHash;
     nullH.inputs[1] <== epoch;
     nullH.out === nullifierHash;
 
-    // ══ C5: l5HumanityInt ∈ [0, 1000] domain sanity ══════════════════════
+    // ══ C6: l5HumanityInt ∈ [0, 1000] domain sanity ══════════════════════
     // L5 rhythm_humanity_score × 1000 must be a valid probability integer.
     component l5Min = GreaterEqThan(10);
     l5Min.in[0] <== l5HumanityInt;

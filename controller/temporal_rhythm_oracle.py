@@ -174,7 +174,8 @@ class TemporalRhythmOracle:
             inference, confidence = result
     """
 
-    def __init__(self) -> None:
+    def __init__(self, button_priority_override: list | None = None) -> None:
+        self._button_priority_override = button_priority_override
         self._intervals: deque = deque(maxlen=_WINDOW)        # R2 intervals (push_frame compat)
         self._cross_intervals: deque = deque(maxlen=_WINDOW)  # Cross (X) intervals (push_snapshot)
         self._l2_intervals: deque = deque(maxlen=_WINDOW)     # L2 digital intervals
@@ -281,13 +282,27 @@ class TemporalRhythmOracle:
         Returns None if fewer than _MIN_SAMPLES intervals have been collected
         or if all intervals are effectively zero.
         """
-        # Priority order: Cross > L2_dig > R2 > Triangle (descending IBI CV per N=69 calibration)
-        _PRIORITY_DEQUES = [
-            ("cross",    self._cross_intervals),
-            ("l2_dig",   self._l2_intervals),
-            ("r2",       self._intervals),
-            ("triangle", self._triangle_intervals),
-        ]
+        # Priority order: Cross > L2_dig > R2 > Triangle (default, descending IBI CV per N=69 calibration)
+        # Phase 51: game profile may override priority (e.g. R2-first for football games).
+        _DEQUE_MAP = {
+            "cross":    self._cross_intervals,
+            "l2_dig":   self._l2_intervals,
+            "r2":       self._intervals,
+            "triangle": self._triangle_intervals,
+        }
+        if self._button_priority_override is not None:
+            _PRIORITY_DEQUES = [
+                (name, _DEQUE_MAP[name])
+                for name in self._button_priority_override
+                if name in _DEQUE_MAP
+            ]
+        else:
+            _PRIORITY_DEQUES = [
+                ("cross",    self._cross_intervals),
+                ("l2_dig",   self._l2_intervals),
+                ("r2",       self._intervals),
+                ("triangle", self._triangle_intervals),
+            ]
 
         # Step 1: Try single-button with >= _MIN_SAMPLES
         arr = None

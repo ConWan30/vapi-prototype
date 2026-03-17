@@ -152,8 +152,8 @@ def _session_biometric_fingerprint(session: dict) -> list | None:
     """
     Extract 6-proxy biometric feature vector from a captured session.
 
-    Maps to BiometricFusionClassifier's 7-feature space (6 of 7 available from
-    capture data; F1 trigger_resistance_change_rate requires OUTPUT report bytes
+    Maps to BiometricFusionClassifier's 12-feature space (7 of 12 available from
+    capture data; F1/trigger_resistance_change_rate requires OUTPUT report bytes
     not present in capture JSON):
 
     [0] onset_l2      — trigger onset velocity L2 (F2)
@@ -162,6 +162,7 @@ def _session_biometric_fingerprint(session: dict) -> list | None:
     [3] grip_asym     — L2/R2 ratio during dual-press (F5)
     [4] autocorr_lag1 — lx-velocity Pearson autocorr at lag 1 (F6)
     [5] autocorr_lag5 — lx-velocity Pearson autocorr at lag 5 (F7)
+    [6] jitter_var    — press_timing_jitter_variance (F12, Phase 57)
 
     Returns None if the session has too few reports for reliable extraction.
 
@@ -242,7 +243,10 @@ def _session_biometric_fingerprint(session: dict) -> list | None:
     autocorr1 = _autocorr_py(stick_vels, lag=1)
     autocorr5 = _autocorr_py(stick_vels, lag=5)
 
-    return [onset_l2, onset_r2, tremor_var, grip_asym, autocorr1, autocorr5]
+    # F11 (index 11): press_timing_jitter_variance (Phase 57)
+    jitter_var = _extract_jitter_variance(session)
+
+    return [onset_l2, onset_r2, tremor_var, grip_asym, autocorr1, autocorr5, jitter_var]
 
 
 # ---------------------------------------------------------------------------
@@ -363,6 +367,36 @@ def _extract_triangle_intervals(session: dict) -> list:
     return intervals
 
 
+def _extract_jitter_variance(session: dict) -> float:
+    """
+    Compute press_timing_jitter_variance from session IBI data (Phase 57).
+
+    Mirrors BiometricFeatureExtractor._press_timing_jitter_variance:
+      - Normalises each IBI by the mean IBI so the metric is scale-invariant.
+      - Returns Var(ibi / mean(ibi)); 0.0 when < 4 intervals available.
+
+    Button priority (matches TemporalRhythmOracle): Cross > L2_dig > R2 > Triangle.
+    Uses whichever button has >= 4 intervals first.
+    """
+    _MIN = 4  # minimum intervals for reliable jitter
+    for extractor in [
+        _extract_cross_intervals,
+        _extract_l2_intervals,
+        _extract_press_intervals,    # R2
+        _extract_triangle_intervals,
+    ]:
+        ivs = extractor(session)
+        if len(ivs) >= _MIN:
+            mean_ibi = _mean(ivs)
+            if mean_ibi < 1e-9:
+                return 0.0
+            normed = [v / mean_ibi for v in ivs]
+            m = _mean(normed)
+            variance = sum((v - m) ** 2 for v in normed) / len(normed)
+            return variance
+    return 0.0
+
+
 def _extract_press_intervals(session: dict) -> list:
     """
     Extract inter-press intervals (ms) from R2 trigger events.
@@ -430,6 +464,62 @@ def _load_session(path: str) -> dict:
         return None
 
 
+def _load_session_compact(path: str) -> "dict | None":
+    """
+    Load a session and immediately extract all needed compact statistics.
+    Discards the raw reports list before returning — keeps memory O(1) per session.
+
+    Returns a compact dict with precomputed scalars/small-lists, or None on error.
+    The returned dict is accepted by compute_thresholds() via its pre-extracted path.
+    """
+    try:
+        with open(path, "r", encoding="utf-8") as f:
+            data = json.load(f)
+    except (json.JSONDecodeError, OSError, MemoryError) as e:
+        print(f"  WARNING: Cannot load {path}: {e} — skipped.")
+        return None
+
+    if "reports" not in data or "metadata" not in data:
+        print(f"  WARNING: {path} missing 'reports' or 'metadata' key — skipped.")
+        return None
+
+    # Run all extractors while reports is still in memory
+    feat        = _session_features(data)
+    fingerprint = _session_biometric_fingerprint(data)
+    cross_ivs   = _extract_cross_intervals(data)
+    l2_ivs      = _extract_l2_intervals(data)
+    r2_ivs      = _extract_press_intervals(data)
+    tri_ivs     = _extract_triangle_intervals(data)
+
+    # Pre-compute stds (scalars) so the full value-lists are not needed later
+    compact = {
+        # Compact noise-floor stats (scalars, not lists)
+        "_compact":          True,
+        "lx_std":            _std(feat["lx"])     if len(feat["lx"]) >= 5 else None,
+        "ly_std":            _std(feat["ly"])     if len(feat["ly"]) >= 5 else None,
+        "rx_std":            _std(feat["rx"])     if len(feat["rx"]) >= 5 else None,
+        "ry_std":            _std(feat["ry"])     if len(feat["ry"]) >= 5 else None,
+        "gyro_x_std":        _std(feat["gyro_x"]) if len(feat["gyro_x"]) >= 5 else None,
+        "gyro_y_std":        _std(feat["gyro_y"]) if len(feat["gyro_y"]) >= 5 else None,
+        "gyro_z_std":        _std(feat["gyro_z"]) if len(feat["gyro_z"]) >= 5 else None,
+        "polling_rate_hz":   feat["polling_rate_hz"],
+        "report_count":      feat["report_count"],
+        # Metadata (minimal)
+        "metadata":          data["metadata"],
+        # Biometric fingerprint (7 floats)
+        "_fingerprint":      fingerprint,
+        # IBI intervals (small lists — typically 20-5000 elements per session)
+        "_cross_ivs":        cross_ivs,
+        "_l2_ivs":           l2_ivs,
+        "_r2_ivs":           r2_ivs,
+        "_tri_ivs":          tri_ivs,
+    }
+
+    # Drop the raw reports from memory immediately
+    del data
+    return compact
+
+
 # ---------------------------------------------------------------------------
 # Feature extraction per session
 # ---------------------------------------------------------------------------
@@ -493,10 +583,17 @@ def compute_thresholds(sessions: list) -> dict:
     """
     Compute recommended PITL thresholds from a list of loaded session dicts.
 
+    Accepts either:
+    - Full session dicts with "reports" key (legacy path, memory-intensive)
+    - Compact pre-extracted dicts produced by _load_session_compact() (Phase 57 streaming path)
+
     Returns a calibration profile dict suitable for saving as JSON.
     """
-    all_features = [_session_features(s) for s in sessions]
-    n_sessions = len(all_features)
+    # Split into compact and full sessions
+    _compact_sessions  = [s for s in sessions if s.get("_compact")]
+    _full_sessions     = [s for s in sessions if not s.get("_compact")]
+    all_features       = [_session_features(s) for s in _full_sessions]
+    n_sessions = len(sessions)
 
     # --- L5: timing CV and entropy per session (inter-press intervals) ---
     # Button preference mirrors live TemporalRhythmOracle.extract_features() priority:
@@ -519,10 +616,17 @@ def compute_thresholds(sessions: list) -> dict:
     _pooled_only_gain = 0   # sessions rescued exclusively by pooled mode
 
     for i, s in enumerate(sessions):
-        cross_ivs = _extract_cross_intervals(s)
-        l2_ivs    = _extract_l2_intervals(s)
-        r2_ivs    = _extract_press_intervals(s)
-        tri_ivs   = _extract_triangle_intervals(s)
+        # Use pre-extracted intervals if available (compact path)
+        if s.get("_compact"):
+            cross_ivs = s.get("_cross_ivs", [])
+            l2_ivs    = s.get("_l2_ivs", [])
+            r2_ivs    = s.get("_r2_ivs", [])
+            tri_ivs   = s.get("_tri_ivs", [])
+        else:
+            cross_ivs = _extract_cross_intervals(s)
+            l2_ivs    = _extract_l2_intervals(s)
+            r2_ivs    = _extract_press_intervals(s)
+            tri_ivs   = _extract_triangle_intervals(s)
 
         # Track per-button raw counts
         _btn_cross_counts.append(len(cross_ivs))
@@ -611,10 +715,16 @@ def compute_thresholds(sessions: list) -> dict:
     entropy_threshold = _percentile(session_entropies, 10) if session_entropies else 1.5
 
     # --- Stick noise floor (L4 calibration input) ---
+    # Full sessions: compute std from value lists; compact sessions: use precomputed scalar
     all_lx_stds = [_std(f["lx"]) for f in all_features if len(f["lx"]) >= 5]
     all_ly_stds = [_std(f["ly"]) for f in all_features if len(f["ly"]) >= 5]
     all_rx_stds = [_std(f["rx"]) for f in all_features if len(f["rx"]) >= 5]
     all_ry_stds = [_std(f["ry"]) for f in all_features if len(f["ry"]) >= 5]
+    for s in _compact_sessions:
+        if s.get("lx_std") is not None: all_lx_stds.append(s["lx_std"])
+        if s.get("ly_std") is not None: all_ly_stds.append(s["ly_std"])
+        if s.get("rx_std") is not None: all_rx_stds.append(s["rx_std"])
+        if s.get("ry_std") is not None: all_ry_stds.append(s["ry_std"])
     stick_noise_floor = _mean(
         [_mean(all_lx_stds), _mean(all_ly_stds), _mean(all_rx_stds), _mean(all_ry_stds)]
     ) if all_lx_stds else 5.0
@@ -625,16 +735,21 @@ def compute_thresholds(sessions: list) -> dict:
         for axis in ("gyro_x", "gyro_y", "gyro_z"):
             if len(f[axis]) >= 5:
                 all_gyro_stds.append(_std(f[axis]))
+    for s in _compact_sessions:
+        for key in ("gyro_x_std", "gyro_y_std", "gyro_z_std"):
+            if s.get(key) is not None:
+                all_gyro_stds.append(s[key])
     imu_noise_floor = _percentile(all_gyro_stds, 95) if all_gyro_stds else 50.0
 
-    # --- L4 Mahalanobis: 6-proxy biometric feature fingerprints ---
-    # Extract 6-proxy biometric feature vectors per session.
-    # Feature space mirrors BiometricFusionClassifier (6 of 7 features available
-    # from capture data; F1 trigger_resistance_change_rate omitted — requires
-    # OUTPUT report mode bytes not present in capture JSON).
+    # --- L4 Mahalanobis: biometric feature fingerprints ---
+    # Full sessions: compute fingerprint now; compact sessions: use precomputed fingerprint
     fingerprints = []
-    for s in sessions:
+    for s in _full_sessions:
         fp = _session_biometric_fingerprint(s)
+        if fp is not None:
+            fingerprints.append(fp)
+    for s in _compact_sessions:
+        fp = s.get("_fingerprint")
         if fp is not None:
             fingerprints.append(fp)
 
@@ -693,6 +808,7 @@ def compute_thresholds(sessions: list) -> dict:
 
     # --- Polling rate summary ---
     polling_rates = [f["polling_rate_hz"] for f in all_features if f["polling_rate_hz"] > 0]
+    polling_rates += [s["polling_rate_hz"] for s in _compact_sessions if s.get("polling_rate_hz", 0) > 0]
     mean_polling = _mean(polling_rates) if polling_rates else 0.0
 
     return {
@@ -711,8 +827,9 @@ def compute_thresholds(sessions: list) -> dict:
                 "current_magic_number": 3.0,
                 "derivation": (
                     "mean + 3σ of per-session Mahalanobis distance from population centroid "
-                    "(6-proxy biometric feature space; ~99.7th percentile assuming Gaussian). "
-                    "Feature space: onset_l2, onset_r2, tremor_var, grip_asym, autocorr_lag1, autocorr_lag5."
+                    "(7-proxy biometric feature space; ~99.7th percentile assuming Gaussian). "
+                    "Feature space: onset_l2, onset_r2, tremor_var, grip_asym, autocorr_lag1, "
+                    "autocorr_lag5, press_timing_jitter_variance."
                 ),
                 "unit": "Mahalanobis distance (dimensionless)",
                 "dist_mean": round(dist_mean, 3) if mahal_distances else None,
@@ -818,16 +935,16 @@ def main() -> int:
         print("ERROR: No session files found.", file=sys.stderr)
         return 1
 
-    print(f"Loading {len(paths)} session file(s)...")
+    print(f"Loading {len(paths)} session file(s)... (streaming — memory-efficient)")
     sessions = []
     for path in paths:
-        s = _load_session(path)
+        s = _load_session_compact(path)
         if s:
             sessions.append(s)
             meta = s["metadata"]
             print(f"  {os.path.basename(path)}: "
-                  f"{meta.get('report_count', '?')} reports "
-                  f"@ {meta.get('polling_rate_hz', '?')} Hz")
+                  f"{s.get('report_count', '?')} reports "
+                  f"@ {meta.get('polling_rate_hz', s.get('polling_rate_hz', '?'))} Hz")
 
     if not sessions:
         print("ERROR: No valid sessions loaded.", file=sys.stderr)

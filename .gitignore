@@ -84,6 +84,9 @@ identity.json
 bridge_config.json
 bridge/.env.core
 bridge/.env.phase*
+bridge/.env.passport-verifier
+bridge/.env.pitl-verifier
+bridge/.env.pitl-verifier-v2
 
 # OS
 .DS_Store

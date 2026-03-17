@@ -219,7 +219,7 @@ class CalibrationAgent:
             cmd,
             capture_output=True,
             text=True,
-            timeout=180,
+            timeout=600,
         )
 
         if proc.returncode != 0:

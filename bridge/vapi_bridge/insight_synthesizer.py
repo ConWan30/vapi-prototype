@@ -83,12 +83,14 @@ def _risk_label(bot: int, high_risk: int, fed: int, anomaly: int, prior: str) ->
 class InsightSynthesizer:
     """Longitudinal insight synthesis background task (Phase 35)."""
 
-    def __init__(self, store, cfg, poll_interval: float = 21600.0, chain=None):
+    def __init__(self, store, cfg, poll_interval: float = 21600.0, chain=None,
+                 on_mode6_complete=None):
         self._store = store
         self._cfg = cfg
         self._poll_interval = poll_interval
         self._running = True
         self._chain = chain  # Phase 37: optional ChainClient for credential enforcement
+        self._on_mode6_complete = on_mode6_complete  # Phase 50: callable(anomaly, continuity) | None
 
     async def run(self) -> None:
         log.info(
@@ -487,8 +489,10 @@ class InsightSynthesizer:
         new_continuity = _clamp(candidate_continuity, prev_continuity)
 
         # --- Step 5: Apply to running config (live — no restart needed) ---
-        self._cfg.l4_anomaly_threshold    = new_anomaly
-        self._cfg.l4_continuity_threshold = new_continuity
+        # Config is frozen=True; use object.__setattr__ to update thresholds in-place
+        # without a bridge restart (this is the intended live-calibration mutation path).
+        object.__setattr__(self._cfg, "l4_anomaly_threshold",    new_anomaly)
+        object.__setattr__(self._cfg, "l4_continuity_threshold", new_continuity)
 
         # --- Step 6: Per-device profiles ---
         by_device: dict[str, list[float]] = defaultdict(list)
@@ -577,6 +581,16 @@ class InsightSynthesizer:
             prev_anomaly, new_anomaly, prev_continuity, new_continuity,
             len(records), len(by_device),
         )
+
+        # Phase 50: notify BridgeAgent so it can check drift and write agent_events
+        if self._on_mode6_complete is not None:
+            try:
+                self._on_mode6_complete(
+                    float(self._cfg.l4_anomaly_threshold),
+                    float(self._cfg.l4_continuity_threshold),
+                )
+            except Exception as exc:
+                log.warning("InsightSynthesizer Mode 6 post-hook error: %s", exc)
 
     # ------------------------------------------------------------------
     # Housekeeping

@@ -52,11 +52,14 @@ class ChallengeSequencer:
         self._last_profile_id: int = 0
 
     def select_random_profile(self) -> int:
-        """Select a random profile_id, never returning 0 (BASELINE_OFF).
+        """Select a random profile_id, never returning 0 (BASELINE_OFF) or 8 (L6B_PROBE).
 
+        Profile 0 is the reset state. Profile 8 is reserved for the L6b neuromuscular
+        reflex layer and must never appear in the L6 active challenge rotation.
         Regenerates the current_nonce for each selection.
         """
-        available = [pid for pid in CHALLENGE_PROFILES if pid != 0]
+        _excluded = {0, 8}  # BASELINE_OFF, L6B_PROBE
+        available = [pid for pid in CHALLENGE_PROFILES if pid not in _excluded]
         self._last_profile_id = self._rng.choice(available)
         self.current_nonce = secrets.token_bytes(4)
         return self._last_profile_id

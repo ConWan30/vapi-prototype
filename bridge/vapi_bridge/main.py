@@ -6,6 +6,7 @@ as concurrent asyncio tasks. Handles graceful shutdown on SIGINT/SIGTERM.
 """
 
 import asyncio
+import json
 import logging
 import signal
 import sys
@@ -37,6 +38,51 @@ def _log_startup_diagnostics(cfg):
         _dlog.info("ZK %s: %s", circuit, "READY" if zkey.exists() else "MISSING (.zkey not found — run contracts/scripts/run-ceremony.js)")
     _dlog.info("PHGCredential: %s", getattr(cfg, "phg_credential_address", "") or "NOT SET")
     _dlog.info("OperatorAPI: %s", "ENABLED" if getattr(cfg, "operator_api_key", "") else "DISABLED (set OPERATOR_API_KEY to enable)")
+
+
+async def _run_ds_with_restart(ds, max_restarts: int = 3) -> None:
+    """Run DualShock transport and restart on unexpected crash (Phase 52).
+
+    Passes CancelledError through immediately (clean shutdown). Any other
+    exception is logged at ERROR level and the transport is restarted after a
+    short delay, up to max_restarts times. After that the exception is re-raised
+    so asyncio.gather() can surface it to the operator.
+    """
+    _restart_log = logging.getLogger(__name__)
+    restarts = 0
+    while True:
+        try:
+            await ds.run()
+            return  # clean shutdown path
+        except asyncio.CancelledError:
+            raise
+        except Exception as exc:
+            restarts += 1
+            if restarts > max_restarts:
+                _restart_log.critical(
+                    "DualShock transport crashed %d times — giving up: %s",
+                    restarts, exc,
+                )
+                raise
+            _restart_log.error(
+                "DualShock transport crashed (restart %d/%d in 2s): %s",
+                restarts, max_restarts, exc,
+            )
+            await asyncio.sleep(2.0)
+            _restart_log.info("Restarting DualShock transport (attempt %d)…", restarts)
+
+
+def _task_done_handler(t: asyncio.Task) -> None:
+    """Log CRITICAL when a managed bridge task dies unexpectedly (Phase 54)."""
+    if t.cancelled():
+        return
+    exc = t.exception()
+    if exc is not None:
+        log.critical(
+            "Bridge core task %s died unexpectedly: %s",
+            t.get_name(), exc,
+            exc_info=exc,
+        )
 
 
 class Bridge:
@@ -82,6 +128,7 @@ class Bridge:
         pubkey_bytes = await self._resolve_pubkey(record, source)
 
         # Tag schema version for known transports (Gate Fix A, Phase 19: from profile)
+        pitl_meta = None  # Phase 52: initialise before dualshock block so it's always defined
         if source == "dualshock":
             if (self._ds_transport is not None
                     and getattr(self._ds_transport, "_device_profile", None) is not None):
@@ -146,10 +193,17 @@ class Bridge:
         # 5. Broadcast to WebSocket clients (Phase 21 — non-blocking, best-effort)
         # Phase 44: pass pitl_meta so enriched fields (L2B/L2C/l5_source) reach the frontend
         try:
-            from .transports.http import ws_broadcast, _record_to_ws_msg
-            asyncio.create_task(ws_broadcast(_record_to_ws_msg(record, pitl_meta)))
-        except Exception:
-            pass
+            from .transports.http import ws_broadcast, _record_to_ws_msg, ws_twin_broadcast_record
+            _ws_msg = _record_to_ws_msg(record, pitl_meta)
+            asyncio.create_task(ws_broadcast(_ws_msg))
+            # Phase 59: also send to per-device twin clients
+            _twin_device_id = record.device_id.hex() if record.device_id else ""
+            if _twin_device_id:
+                _twin_msg = json.dumps({"type": "record", "data": json.loads(_ws_msg)})
+                asyncio.create_task(ws_twin_broadcast_record(_twin_device_id, _twin_msg))
+        except Exception as _ws_exc:
+            log.error("WS broadcast failed (record=%s): %s",
+                      record.record_hash.hex()[:8], _ws_exc)
 
         # 6. Enqueue for batching
         await self.batcher.enqueue(record, raw_data)
@@ -213,25 +267,31 @@ class Bridge:
             log.warning("Could not fetch balance: %s", e)
 
         # Start batcher
-        self._tasks.append(asyncio.create_task(self.batcher.run()))
+        _t = asyncio.create_task(self.batcher.run())
+        _t.add_done_callback(_task_done_handler)
+        self._tasks.append(_t)
 
         # Start manufacturer revocation listener (Gate Fix G3)
         if self.cfg.device_registry_address:
-            self._tasks.append(asyncio.create_task(
-                self.chain.watch_manufacturer_revocations()
-            ))
+            _t = asyncio.create_task(self.chain.watch_manufacturer_revocations())
+            _t.add_done_callback(_task_done_handler)
+            self._tasks.append(_t)
             log.info("Manufacturer revocation listener started")
 
         # Start enabled transports
         if self.cfg.mqtt_enabled:
             from .transports.mqtt import MqttTransport
             mqtt = MqttTransport(self.cfg, self.on_record)
-            self._tasks.append(asyncio.create_task(mqtt.run()))
+            _t = asyncio.create_task(mqtt.run())
+            _t.add_done_callback(_task_done_handler)
+            self._tasks.append(_t)
 
         if self.cfg.coap_enabled:
             from .transports.coap import CoapTransport
             coap = CoapTransport(self.cfg, self.on_record)
-            self._tasks.append(asyncio.create_task(coap.run()))
+            _t = asyncio.create_task(coap.run())
+            _t.add_done_callback(_task_done_handler)
+            self._tasks.append(_t)
 
         # Phase 32: Hoist intelligence modules so ProactiveMonitor and HTTP dashboard share instances
         from .behavioral_archaeologist import BehavioralArchaeologist
@@ -240,6 +300,15 @@ class Bridge:
         _arch = BehavioralArchaeologist(self.store)
         _prover = ContinuityProver(self.store)
         _net_det = NetworkCorrelationDetector(self.store, _prover)
+
+        # Phase 52: Validate Anthropic API key at startup — agents appear initialised but
+        # fail on first request without it. Warn early so operators know before hitting 500s.
+        import os as _os_main
+        if getattr(self.cfg, "operator_api_key", "") and not _os_main.getenv("ANTHROPIC_API_KEY"):
+            log.warning(
+                "ANTHROPIC_API_KEY not set — BridgeAgent and CalibrationIntelligenceAgent "
+                "will raise AuthenticationError on first request"
+            )
 
         # Phase 32: Eagerly create BridgeAgent with cross-device intelligence injection
         _agent_instance = None
@@ -255,6 +324,19 @@ class Bridge:
             except ImportError:
                 log.warning("anthropic not installed — BridgeAgent disabled")
 
+        # Phase 50: Eagerly create CalibrationIntelligenceAgent peer
+        _calib_intel_agent = None
+        if getattr(self.cfg, "operator_api_key", ""):
+            try:
+                from .calibration_intelligence_agent import CalibrationIntelligenceAgent
+                _calib_intel_agent = CalibrationIntelligenceAgent(self.cfg, self.store)
+                _t = asyncio.create_task(_calib_intel_agent.run_event_consumer())
+                _t.add_done_callback(_task_done_handler)
+                self._tasks.append(_t)
+                log.info("Phase 50: CalibrationIntelligenceAgent started (30-min event consumer)")
+            except Exception as _cia_exc:
+                log.warning("Phase 50: CalibrationIntelligenceAgent unavailable: %s", _cia_exc)
+
         if self.cfg.http_enabled:
             from .transports.http import create_app
             from .monitoring import create_monitoring_app, state as monitor_state
@@ -266,7 +348,11 @@ class Bridge:
             mon_app = create_monitoring_app(cfg=self.cfg, state=monitor_state, store=self.store)
             app.mount("/monitor", mon_app)
             app.mount("/dash", create_dashboard_app(self.store, _arch, _net_det))
-            app.mount("/operator", create_operator_app(self.cfg, self.store, _agent=_agent_instance))
+            app.mount("/operator", create_operator_app(
+                self.cfg, self.store,
+                _agent=_agent_instance,
+                _calib_agent=_calib_intel_agent,
+            ))
             config = uvicorn.Config(
                 app,
                 host=self.cfg.http_host,
@@ -275,7 +361,9 @@ class Bridge:
                 access_log=False,
             )
             server = uvicorn.Server(config)
-            self._tasks.append(asyncio.create_task(server.serve()))
+            _t = asyncio.create_task(server.serve())
+            _t.add_done_callback(_task_done_handler)
+            self._tasks.append(_t)
 
         if self.cfg.dualshock_enabled:
             from .dualshock_integration import DualShockTransport
@@ -296,7 +384,9 @@ class Bridge:
             ds._pitl_prover = PITLProver()
             log.info("Phase 27: PITLProver injected (zk_artifacts=%s)", PITL_ZK_ARTIFACTS_AVAILABLE)
             self._ds_transport = ds
-            self._tasks.append(asyncio.create_task(ds.run()))
+            _t = asyncio.create_task(_run_ds_with_restart(ds))
+            _t.add_done_callback(_task_done_handler)
+            self._tasks.append(_t)
             log.info("DualShock Edge transport enabled (interval=%.1fs)",
                      self.cfg.dualshock_record_interval_s)
 
@@ -323,14 +413,18 @@ class Bridge:
                 self.chain,
                 poll_interval=getattr(self.cfg, "reconciler_poll_interval", 30.0),
             )
-            self._tasks.append(asyncio.create_task(reconciler.run()))
+            _t = asyncio.create_task(reconciler.run())
+            _t.add_done_callback(_task_done_handler)
+            self._tasks.append(_t)
             log.info(
                 "Phase 25: ChainReconciler started (interval=%.0fs)",
                 getattr(self.cfg, "reconciler_poll_interval", 30.0),
             )
 
         # Phase 32: Start ProactiveMonitor — autonomous protocol surveillance
-        if getattr(self.cfg, "operator_api_key", "") and _agent_instance is not None:
+        # Phase 52: decoupled from _agent_instance — starts whenever operator_api_key is set
+        # so drift monitoring runs even when BridgeAgent init failed (e.g. anthropic absent).
+        if getattr(self.cfg, "operator_api_key", ""):
             from .proactive_monitor import ProactiveMonitor
             # Phase 17: Auto-calibration agent (4th ProactiveMonitor surveillance check)
             _calibration_agent = None
@@ -345,7 +439,9 @@ class Bridge:
                 poll_interval=getattr(self.cfg, "monitor_poll_interval", 60.0),
                 calibration_agent=_calibration_agent,
             )
-            self._tasks.append(asyncio.create_task(monitor.run()))
+            _t = asyncio.create_task(monitor.run())
+            _t.add_done_callback(_task_done_handler)
+            self._tasks.append(_t)
             log.info(
                 "Phase 32: ProactiveMonitor started (interval=%.0fs)",
                 getattr(self.cfg, "monitor_poll_interval", 60.0),
@@ -361,7 +457,9 @@ class Bridge:
                     self.store, _net_det, self.chain, self.cfg,
                     poll_interval=_fed_interval,
                 )
-                self._tasks.append(asyncio.create_task(fed_bus.run()))
+                _t = asyncio.create_task(fed_bus.run())
+                _t.add_done_callback(_task_done_handler)
+                self._tasks.append(_t)
                 log.info(
                     "Phase 34: FederationBus started (interval=%.0fs)",
                     _fed_interval,
@@ -372,9 +470,19 @@ class Bridge:
         # Phase 35: InsightSynthesizer — longitudinal synthesis, always starts (no guard)
         from .insight_synthesizer import InsightSynthesizer
         _synth_interval = getattr(self.cfg, "synthesizer_poll_interval", 21600.0)
-        synth = InsightSynthesizer(self.store, self.cfg, poll_interval=_synth_interval,
-                                   chain=self.chain)
-        self._tasks.append(asyncio.create_task(synth.run()))
+        # Phase 50: Mode 6 callback wires BridgeAgent drift detection
+        _mode6_callback = (
+            _agent_instance.check_threshold_drift if _agent_instance is not None else None
+        )
+        synth = InsightSynthesizer(
+            self.store, self.cfg,
+            poll_interval=_synth_interval,
+            chain=self.chain,
+            on_mode6_complete=_mode6_callback,
+        )
+        _t = asyncio.create_task(synth.run())
+        _t.add_done_callback(_task_done_handler)
+        self._tasks.append(_t)
         log.info("Phase 35: InsightSynthesizer started (interval=%.0fs)", _synth_interval)
         log.info(
             "Phase 36: Adaptive feedback loop active (floor=%.2f)",
@@ -384,7 +492,9 @@ class Bridge:
         # Phase 37: AlertRouter — webhook dispatch for enforcement events (always starts)
         from .alert_router import AlertRouter
         _alert_router = AlertRouter(self.cfg, self.store)
-        self._tasks.append(asyncio.create_task(_alert_router.run()))
+        _t = asyncio.create_task(_alert_router.run())
+        _t.add_done_callback(_task_done_handler)
+        self._tasks.append(_t)
         log.info(
             "Phase 37: AlertRouter started (threshold=%s)",
             getattr(self.cfg, "alert_severity_threshold", "medium"),

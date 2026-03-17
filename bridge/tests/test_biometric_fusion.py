@@ -82,7 +82,7 @@ class TestBiometricFeatureFrame(unittest.TestCase):
             stick_autocorr_lag5=0.4,
         )
         v = frame.to_vector()
-        self.assertEqual(v.shape, (11,))
+        self.assertEqual(v.shape, (12,))
         self.assertAlmostEqual(float(v[0]), 1.5)
         self.assertAlmostEqual(float(v[4]), 1.2)
 
@@ -106,7 +106,7 @@ class TestBiometricFeatureExtractor(unittest.TestCase):
         snaps = _make_snaps(60, vary_trigger=True)
         frame = BiometricFeatureExtractor().extract(snaps)
         v = frame.to_vector()
-        self.assertEqual(v.shape, (11,))
+        self.assertEqual(v.shape, (12,))
 
     def test_micro_tremor_nonzero_in_still_conditions(self):
         # Still frames: gyro near zero, accel varies slightly
@@ -159,8 +159,8 @@ class TestBiometricFusionClassifier(unittest.TestCase):
         clf = self._make_classifier_warmed(n=7)
         # Manually set fingerprint to something very different from fresh snaps
         import numpy as np
-        clf._mean = np.array([100.0]*11, dtype=np.float64)
-        clf._var  = np.array([0.01]*11, dtype=np.float64)
+        clf._mean = np.array([100.0]*12, dtype=np.float64)
+        clf._var  = np.array([0.01]*12, dtype=np.float64)
 
         frame = BiometricFeatureFrame()  # all zeros — far from mean=100
         result = clf.classify(frame)
@@ -346,13 +346,13 @@ class TestTouchpadBiometric(unittest.TestCase):
 
 
 class TestFeatureVectorDimension(unittest.TestCase):
-    """Phase 17: BiometricFeatureFrame now has 11 features."""
+    """Phase 17/57: BiometricFeatureFrame now has 12 features (11 + press_timing_jitter_variance)."""
 
     def test_feature_vector_dim_11(self):
-        """to_vector() returns a (11,) numpy array."""
+        """to_vector() returns a (12,) numpy array (11 original + Phase 57 jitter_variance)."""
         frame = BiometricFeatureFrame()
         vec = frame.to_vector()
-        self.assertEqual(len(vec), 11, f"Expected 11 features, got {len(vec)}")
+        self.assertEqual(len(vec), 12, f"Expected 12 features, got {len(vec)}")
 
     def test_feature_vector_contains_new_fields(self):
         """New fields appear in correct positions (indices 7-10)."""
@@ -399,7 +399,7 @@ class TestFeatureVectorDimension(unittest.TestCase):
             snaps.append(snap)
 
         feats = BiometricFeatureExtractor().extract(snaps)
-        self.assertEqual(len(feats.to_vector()), 11)
+        self.assertEqual(len(feats.to_vector()), 12)
         # Tremor peak should be > 0 from real stick data (not static)
         # (if stick is active enough to have a non-DC peak)
         self.assertGreaterEqual(feats.tremor_peak_hz, 0.0)

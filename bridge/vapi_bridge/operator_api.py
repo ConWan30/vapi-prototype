@@ -68,15 +68,17 @@ class AgentRequest(BaseModel):
     message: str
 
 
-def create_operator_app(cfg, store, _agent=None) -> FastAPI:
+def create_operator_app(cfg, store, _agent=None, _calib_agent=None) -> FastAPI:
     """Create the Operator Gate API sub-app.
 
     Args:
-        cfg:   Config instance (reads cfg.operator_api_key).
-        store: Store instance (reads PHG checkpoints and credential mints).
+        cfg:         Config instance (reads cfg.operator_api_key).
+        store:       Store instance (reads PHG checkpoints and credential mints).
+        _agent:      Optional pre-instantiated BridgeAgent (Phase 32).
+        _calib_agent: Optional pre-instantiated CalibrationIntelligenceAgent (Phase 50).
     """
 
-    app = FastAPI(title="VAPI Operator Gate API", version="1.0.0-phase36")
+    app = FastAPI(title="VAPI Operator Gate API", version="1.0.0-phase50")
 
     # Phase 36: Per-instance rate limiter (not a global singleton)
     _rpm = int(getattr(cfg, "rate_limit_per_minute", 60))
@@ -84,6 +86,8 @@ def create_operator_app(cfg, store, _agent=None) -> FastAPI:
 
     # Lazy-initialised BridgeAgent (None until first /agent request)
     _agent_instance = [_agent]
+    # Lazy-initialised CalibrationIntelligenceAgent (Phase 50)
+    _calib_agent_instance = [_calib_agent]
 
     def _get_agent():
         """Return the BridgeAgent instance, creating it on first call."""
@@ -96,6 +100,18 @@ def create_operator_app(cfg, store, _agent=None) -> FastAPI:
                     503, "anthropic package not installed (pip install anthropic)"
                 )
         return _agent_instance[0]
+
+    def _get_calib_agent():
+        """Return the CalibrationIntelligenceAgent instance (Phase 50)."""
+        if _calib_agent_instance[0] is None:
+            try:
+                from .calibration_intelligence_agent import CalibrationIntelligenceAgent
+                _calib_agent_instance[0] = CalibrationIntelligenceAgent(cfg, store)
+            except ImportError:
+                raise HTTPException(
+                    503, "anthropic package not installed (pip install anthropic)"
+                )
+        return _calib_agent_instance[0]
 
     # ------------------------------------------------------------------
     # Internal helpers
@@ -286,6 +302,58 @@ def create_operator_app(cfg, store, _agent=None) -> FastAPI:
             "warming_devices":  store.get_devices_by_risk_label("warming"),
             "synthesis_available": len(digests) > 0,
         }
+
+    @app.post("/calibration/agent")
+    def calibration_agent_chat(
+        req: AgentRequest,
+        api_key: str = Query(..., description="Shared operator API key"),
+    ):
+        """CalibrationIntelligenceAgent — non-streaming calibration queries (Phase 50).
+
+        Requires OPERATOR_API_KEY. Uses Claude to reason over calibration data
+        via 6 specialist tools. Session history is persisted by session_id.
+        """
+        _check_key(api_key)
+        _check_rate(api_key)
+        try:
+            return _get_calib_agent().ask(req.session_id, req.message)
+        except ImportError:
+            raise HTTPException(
+                503, "anthropic package not installed (pip install anthropic)"
+            )
+        except Exception as exc:
+            log.error("CalibrationIntelligenceAgent error: %s", exc)
+            raise HTTPException(500, f"Calibration agent error: {exc}")
+
+    @app.get("/calibration/stream")
+    async def calibration_agent_stream(
+        session_id: str,
+        message: str,
+        api_key: str = Query(..., description="Shared operator API key"),
+    ):
+        """CalibrationIntelligenceAgent SSE streaming endpoint (Phase 50).
+
+        Events (text/event-stream): same format as /agent/stream.
+        """
+        _check_key(api_key)
+        _check_rate(api_key)
+        ag = _get_calib_agent()
+
+        async def _generate():
+            try:
+                async for event in ag.stream_ask(session_id, message):
+                    yield f"data: {_json.dumps(event)}\n\n"
+            except ImportError:
+                yield f"data: {_json.dumps({'type': 'error', 'message': 'anthropic not installed'})}\n\n"
+            except Exception as exc:
+                log.error("calibration stream error: %s", exc)
+                yield f"data: {_json.dumps({'type': 'error', 'message': str(exc)})}\n\n"
+
+        return StreamingResponse(
+            _generate(),
+            media_type="text/event-stream",
+            headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"},
+        )
 
     @app.get("/enforcement")
     def get_enforcement(

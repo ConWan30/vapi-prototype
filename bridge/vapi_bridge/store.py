@@ -163,19 +163,19 @@ class Store:
                 try:
                     conn.execute(sql)
                 except sqlite3.OperationalError:
-                    pass  # column already exists
+                    log.debug("schema migration already applied: %.80s", sql)  # Phase 54
             # Phase 23 migrations — idempotent
             for sql in self._PHASE23_MIGRATIONS:
                 try:
                     conn.execute(sql)
                 except sqlite3.OperationalError:
-                    pass  # column already exists
+                    log.debug("schema migration already applied: %.80s", sql)  # Phase 54
             # Phase 25 migrations — idempotent
             for sql in self._PHASE25_MIGRATIONS:
                 try:
                     conn.execute(sql)
                 except sqlite3.OperationalError:
-                    pass  # column already exists
+                    log.debug("schema migration already applied: %.80s", sql)  # Phase 54
             # Phase 25: cognitive trajectory table
             conn.execute("""
                 CREATE TABLE IF NOT EXISTS cognitive_trajectory (
@@ -206,7 +206,7 @@ class Store:
                 try:
                     conn.execute(sql)
                 except sqlite3.OperationalError:
-                    pass  # column already exists
+                    log.debug("schema migration already applied: %.80s", sql)  # Phase 54
             # Phase 28: PHG credential mint ledger
             conn.execute("""
                 CREATE TABLE IF NOT EXISTS phg_credential_mints (
@@ -352,6 +352,157 @@ class Store:
                 CREATE INDEX IF NOT EXISTS idx_l6_captures_profile
                 ON l6_capture_sessions(profile_id, player_id, created_at)
             """)
+            # Phase 50: Agent coordination tables
+            conn.execute("""
+                CREATE TABLE IF NOT EXISTS agent_events (
+                    id           INTEGER PRIMARY KEY AUTOINCREMENT,
+                    event_type   TEXT NOT NULL,
+                    device_id    TEXT,
+                    payload_json TEXT NOT NULL,
+                    source_agent TEXT NOT NULL,
+                    target_agent TEXT,
+                    created_at   REAL NOT NULL,
+                    consumed_at  REAL,
+                    consumed_by  TEXT
+                )
+            """)
+            conn.execute(
+                "CREATE INDEX IF NOT EXISTS idx_agent_events_target "
+                "ON agent_events(target_agent, consumed_at, created_at)"
+            )
+            conn.execute("""
+                CREATE TABLE IF NOT EXISTS threshold_history (
+                    id              INTEGER PRIMARY KEY AUTOINCREMENT,
+                    threshold_type  TEXT NOT NULL,
+                    device_id       TEXT,
+                    old_value       REAL,
+                    new_value       REAL,
+                    drift_pct       REAL,
+                    sessions_used   INTEGER,
+                    phase           TEXT,
+                    created_at      REAL NOT NULL
+                )
+            """)
+            conn.execute(
+                "CREATE INDEX IF NOT EXISTS idx_threshold_history_type "
+                "ON threshold_history(threshold_type, created_at)"
+            )
+            conn.execute("""
+                CREATE TABLE IF NOT EXISTS calibration_agent_sessions (
+                    session_id   TEXT PRIMARY KEY,
+                    history_json TEXT NOT NULL,
+                    updated_at   REAL NOT NULL
+                )
+            """)
+            # Phase 55: ioID device identity registry
+            conn.execute("""
+                CREATE TABLE IF NOT EXISTS ioid_devices (
+                    device_id      TEXT PRIMARY KEY,
+                    device_address TEXT NOT NULL,
+                    did            TEXT NOT NULL,
+                    tx_hash        TEXT NOT NULL DEFAULT '',
+                    registered_at  REAL NOT NULL
+                )
+            """)
+            conn.execute(
+                "CREATE INDEX IF NOT EXISTS idx_ioid_devices_did "
+                "ON ioid_devices(did)"
+            )
+            # Phase 56: tournament passport registry
+            conn.execute("""
+                CREATE TABLE IF NOT EXISTS tournament_passports (
+                    device_id        TEXT PRIMARY KEY,
+                    passport_hash    TEXT NOT NULL,
+                    ioid_token_id    INTEGER NOT NULL DEFAULT 0,
+                    min_humanity_int INTEGER NOT NULL DEFAULT 0,
+                    tx_hash          TEXT NOT NULL DEFAULT '',
+                    on_chain         INTEGER NOT NULL DEFAULT 0,
+                    issued_at        REAL NOT NULL
+                )
+            """)
+            conn.execute(
+                "CREATE INDEX IF NOT EXISTS idx_tournament_passports_issued "
+                "ON tournament_passports(issued_at DESC)"
+            )
+            # Phase 58: operator audit log
+            conn.execute("""
+                CREATE TABLE IF NOT EXISTS operator_audit_log (
+                    id           INTEGER PRIMARY KEY AUTOINCREMENT,
+                    endpoint     TEXT NOT NULL,
+                    method       TEXT NOT NULL DEFAULT 'POST',
+                    device_id    TEXT DEFAULT '',
+                    api_key_hash TEXT DEFAULT '',
+                    source_ip    TEXT DEFAULT '',
+                    status_code  INTEGER NOT NULL,
+                    outcome      TEXT NOT NULL,
+                    ts           REAL NOT NULL
+                )
+            """)
+            conn.execute("""
+                CREATE INDEX IF NOT EXISTS idx_audit_log_device
+                ON operator_audit_log(device_id, ts DESC)
+            """)
+            # Phase 58 migrations — idempotent
+            for sql in ["ALTER TABLE pitl_session_proofs ADD COLUMN inference_code INTEGER DEFAULT NULL"]:
+                try:
+                    conn.execute(sql)
+                except sqlite3.OperationalError:
+                    log.debug("schema migration already applied: %.80s", sql)
+            # Phase 61: frame replay checkpoints
+            conn.execute("""
+                CREATE TABLE IF NOT EXISTS frame_checkpoints (
+                    id            INTEGER PRIMARY KEY AUTOINCREMENT,
+                    device_id     TEXT NOT NULL,
+                    record_hash   TEXT NOT NULL,
+                    frames_json   TEXT NOT NULL,
+                    frame_count   INTEGER NOT NULL,
+                    checkpoint_ts REAL NOT NULL,
+                    created_at    REAL NOT NULL,
+                    FOREIGN KEY (record_hash) REFERENCES records(record_hash)
+                )
+            """)
+            conn.execute("""
+                CREATE INDEX IF NOT EXISTS idx_frame_checkpoints_device
+                ON frame_checkpoints(device_id, created_at DESC)
+            """)
+            conn.execute("""
+                CREATE UNIQUE INDEX IF NOT EXISTS idx_frame_checkpoints_record
+                ON frame_checkpoints(record_hash)
+            """)
+            # Phase 62: Player enrollment ceremony state machine
+            conn.execute("""
+                CREATE TABLE IF NOT EXISTS device_enrollments (
+                    device_id          TEXT PRIMARY KEY,
+                    sessions_nominal   INTEGER NOT NULL DEFAULT 0,
+                    sessions_total     INTEGER NOT NULL DEFAULT 0,
+                    avg_humanity       REAL NOT NULL DEFAULT 0.0,
+                    status             TEXT NOT NULL DEFAULT 'pending',
+                    eligible_at        REAL,
+                    credentialed_at    REAL,
+                    tx_hash            TEXT DEFAULT '',
+                    last_updated       REAL NOT NULL
+                )
+            """)
+            conn.execute("""
+                CREATE INDEX IF NOT EXISTS idx_device_enrollments_status
+                ON device_enrollments(status, eligible_at)
+            """)
+            # Phase 63: L6b neuromuscular reflex probe log
+            conn.execute("""
+                CREATE TABLE IF NOT EXISTS l6b_probe_log (
+                    id               INTEGER PRIMARY KEY AUTOINCREMENT,
+                    device_id        TEXT    NOT NULL,
+                    probe_ts_ms      INTEGER NOT NULL,
+                    latency_ms       REAL,
+                    classification   TEXT    NOT NULL,
+                    accel_delta_peak REAL    NOT NULL DEFAULT 0.0,
+                    created_at       TEXT    NOT NULL DEFAULT (datetime('now'))
+                )
+            """)
+            conn.execute("""
+                CREATE INDEX IF NOT EXISTS idx_l6b_device
+                ON l6b_probe_log(device_id)
+            """)
             # Bootstrap schema version history (idempotent INSERT OR IGNORE)
             for _ph, _nm in [
                 (21, "pitl_sidecar"), (22, "phg_checkpoints"),
@@ -363,6 +514,15 @@ class Store:
                 (34, "federation_bus"), (35, "insight_synthesizer"),
                 (36, "adaptive_feedback"), (37, "credential_enforcement"),
                 (38, "living_calibration"), (42, "l6_calibration_capture"),
+                (50, "phase50_agent_coordination"),
+                (51, "game_aware_profiling"),
+                (55, "ioid_device_identity"),
+                (56, "tournament_passport"),
+                (58, "security_hardening"),
+                (59, "controller_twin"),
+                (61, "session_replay"),
+                (62, "enrollment_ceremony"),
+                (63, "l6b_reflex_layer"),
             ]:
                 conn.execute(
                     "INSERT OR IGNORE INTO schema_versions (phase, migration_name, applied_at)"
@@ -1015,6 +1175,138 @@ class Store:
             ).fetchone()
         return dict(row) if row else None
 
+    # --- Phase 62: Player Enrollment Ceremony ---
+
+    def upsert_enrollment(
+        self,
+        device_id: str,
+        sessions_nominal: int,
+        sessions_total: int,
+        avg_humanity: float,
+        status: str,
+        tx_hash: str = "",
+    ) -> None:
+        """Insert or update enrollment progress for a device. Idempotent."""
+        now = time.time()
+        with self._conn() as conn:
+            conn.execute("""
+                INSERT INTO device_enrollments
+                    (device_id, sessions_nominal, sessions_total, avg_humanity,
+                     status, tx_hash, last_updated)
+                VALUES (?,?,?,?,?,?,?)
+                ON CONFLICT(device_id) DO UPDATE SET
+                    sessions_nominal=excluded.sessions_nominal,
+                    sessions_total=excluded.sessions_total,
+                    avg_humanity=excluded.avg_humanity,
+                    status=excluded.status,
+                    tx_hash=excluded.tx_hash,
+                    eligible_at=CASE WHEN excluded.status='eligible' AND status!='eligible'
+                                     THEN ? ELSE eligible_at END,
+                    credentialed_at=CASE WHEN excluded.status='credentialed'
+                                         THEN ? ELSE credentialed_at END,
+                    last_updated=?
+            """, (device_id, sessions_nominal, sessions_total, avg_humanity,
+                  status, tx_hash, now, now, now, now))
+
+    def get_enrollment(self, device_id: str) -> dict | None:
+        """Return enrollment row for device, or None if no row exists."""
+        with self._conn() as conn:
+            row = conn.execute(
+                "SELECT * FROM device_enrollments WHERE device_id=?", (device_id,)
+            ).fetchone()
+        return dict(row) if row else None
+
+    def get_eligible_unenrolled(self) -> list[dict]:
+        """Devices that are eligible but not yet credentialed."""
+        with self._conn() as conn:
+            rows = conn.execute(
+                "SELECT * FROM device_enrollments WHERE status='eligible' "
+                "ORDER BY eligible_at"
+            ).fetchall()
+        return [dict(r) for r in rows]
+
+    def count_nominal_sessions(self, device_id: str) -> tuple[int, float]:
+        """Count PITL session proofs where inference_code is NOMINAL (0x20=32) or NULL.
+
+        Returns (nominal_count, avg_humanity) where avg_humanity is from humanity_prob_int/1000.
+        """
+        with self._conn() as conn:
+            row = conn.execute("""
+                SELECT COUNT(*) as n, AVG(humanity_prob_int) as avg_hp
+                FROM pitl_session_proofs
+                WHERE device_id=?
+                  AND (inference_code IS NULL OR inference_code = 32)
+            """, (device_id,)).fetchone()
+        count = int(row["n"]) if row else 0
+        avg_hp = float(row["avg_hp"]) / 1000.0 if (row and row["avg_hp"] is not None) else 0.0
+        return count, avg_hp
+
+    # --- Phase 63: L6b Neuromuscular Reflex Probe Log ---
+
+    def insert_l6b_probe(
+        self,
+        device_id: str,
+        probe_ts_ms: int,
+        latency_ms: float,
+        classification: str,
+        accel_delta_peak: float,
+    ) -> None:
+        """Persist one L6b reflex probe result (Phase 63).
+
+        latency_ms=-1.0 indicates NO_RESPONSE (stored as NULL in DB).
+        Never raises — caller wraps in try/except.
+        """
+        _lat = None if latency_ms < 0 else latency_ms
+        with self._conn() as conn:
+            conn.execute(
+                "INSERT INTO l6b_probe_log "
+                "(device_id, probe_ts_ms, latency_ms, classification, accel_delta_peak) "
+                "VALUES (?, ?, ?, ?, ?)",
+                (device_id, probe_ts_ms, _lat, classification, accel_delta_peak),
+            )
+
+    def get_l6b_baseline(self, device_id: str) -> dict:
+        """Return L6b reflex baseline statistics for a device (Phase 63).
+
+        Returns dict with:
+          device_id, probe_count, mean_latency_ms, std_latency_ms,
+          classification_distribution (dict[str, int]),
+          bot_events (int — count of BOT-classified probes)
+        """
+        with self._conn() as conn:
+            rows = conn.execute(
+                "SELECT latency_ms, classification FROM l6b_probe_log WHERE device_id=?",
+                (device_id,),
+            ).fetchall()
+        if not rows:
+            return {
+                "device_id": device_id,
+                "probe_count": 0,
+                "mean_latency_ms": None,
+                "std_latency_ms": None,
+                "classification_distribution": {},
+                "bot_events": 0,
+            }
+        latencies = [float(r["latency_ms"]) for r in rows if r["latency_ms"] is not None]
+        dist: dict[str, int] = {}
+        for r in rows:
+            c = r["classification"]
+            dist[c] = dist.get(c, 0) + 1
+        mean_lat = sum(latencies) / len(latencies) if latencies else None
+        if latencies and len(latencies) > 1:
+            var = sum((x - mean_lat) ** 2 for x in latencies) / len(latencies)
+            std_lat = var ** 0.5
+        else:
+            std_lat = None
+        return {
+            "device_id": device_id,
+            "probe_count": len(rows),
+            "mean_latency_ms": round(mean_lat, 2) if mean_lat is not None else None,
+            "std_latency_ms": round(std_lat, 2) if std_lat is not None else None,
+            "classification_distribution": dist,
+            "bot_events": dist.get("BOT", 0),
+        }
+
     def get_leaderboard(self, limit: int = 20) -> list[dict]:
         """Return top devices by confirmed cumulative PHG score (Phase 28)."""
         with self._conn() as conn:
@@ -1595,3 +1887,368 @@ class Store:
         with self._conn() as conn:
             rows = conn.execute(sql, params).fetchall()
         return {r["profile_id"]: r["n"] for r in rows}
+
+    # --- Phase 50: Agent coordination methods ---
+
+    def write_agent_event(
+        self,
+        event_type: str,
+        payload: str,
+        source: str,
+        device_id: str = None,
+        target: str = None,
+    ) -> int:
+        """Insert an agent coordination event (Phase 50). Returns the new event id."""
+        now = time.time()
+        with self._conn() as conn:
+            cur = conn.execute(
+                "INSERT INTO agent_events "
+                "(event_type, device_id, payload_json, source_agent, target_agent, created_at) "
+                "VALUES (?, ?, ?, ?, ?, ?)",
+                (event_type, device_id, payload, source, target, now),
+            )
+            return cur.lastrowid
+
+    def read_unconsumed_events(self, target_agent: str, limit: int = 50) -> list:
+        """Return unconsumed agent events for target_agent (Phase 50)."""
+        with self._conn() as conn:
+            rows = conn.execute(
+                "SELECT * FROM agent_events "
+                "WHERE target_agent = ? AND consumed_at IS NULL "
+                "ORDER BY created_at ASC LIMIT ?",
+                (target_agent, limit),
+            ).fetchall()
+        return [dict(r) for r in rows]
+
+    def mark_event_consumed(self, event_id: int, consumed_by: str) -> None:
+        """Mark an agent event as consumed (Phase 50)."""
+        with self._conn() as conn:
+            conn.execute(
+                "UPDATE agent_events SET consumed_at = ?, consumed_by = ? WHERE id = ?",
+                (time.time(), consumed_by, event_id),
+            )
+
+    def write_threshold_history(
+        self,
+        threshold_type: str,
+        old_value: float,
+        new_value: float,
+        drift_pct: float,
+        sessions_used: int,
+        phase: str,
+        device_id: str = None,
+    ) -> None:
+        """Record a threshold change in history (Phase 50)."""
+        with self._conn() as conn:
+            conn.execute(
+                "INSERT INTO threshold_history "
+                "(threshold_type, device_id, old_value, new_value, drift_pct, "
+                "sessions_used, phase, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+                (threshold_type, device_id, old_value, new_value, drift_pct,
+                 sessions_used, phase, time.time()),
+            )
+
+    def get_threshold_history(self, limit: int = 20) -> list:
+        """Return recent threshold history entries desc by created_at (Phase 50)."""
+        with self._conn() as conn:
+            rows = conn.execute(
+                "SELECT * FROM threshold_history ORDER BY created_at DESC LIMIT ?",
+                (limit,),
+            ).fetchall()
+        return [dict(r) for r in rows]
+
+    def get_last_global_recalibration_time(self) -> float:
+        """Return epoch of last global agent-triggered recalibration, or 0.0 (Phase 50)."""
+        with self._conn() as conn:
+            row = conn.execute(
+                "SELECT MAX(created_at) as ts FROM threshold_history "
+                "WHERE threshold_type LIKE 'global%' "
+                "AND phase IN ('manual', 'agent_triggered')",
+            ).fetchone()
+        ts = row["ts"] if (row is not None and row["ts"] is not None) else None
+        return float(ts) if ts is not None else 0.0
+
+    def count_records_since_last_calibration(self, device_id: str) -> int:
+        """Count records for device_id since last threshold_history entry (Phase 50)."""
+        with self._conn() as conn:
+            row = conn.execute(
+                "SELECT MAX(created_at) as ts FROM threshold_history WHERE device_id = ?",
+                (device_id,),
+            ).fetchone()
+            last_ts = float(row["ts"]) if (row is not None and row["ts"] is not None) else 0.0
+            result = conn.execute(
+                "SELECT COUNT(*) as n FROM records WHERE device_id = ? AND created_at > ?",
+                (device_id, last_ts),
+            ).fetchone()
+        return int(result["n"]) if result is not None else 0
+
+    def store_calib_agent_session(self, session_id: str, history: list) -> None:
+        """Persist CalibrationIntelligenceAgent conversation history (Phase 50)."""
+        now = time.time()
+        with self._conn() as conn:
+            conn.execute(
+                "INSERT INTO calibration_agent_sessions (session_id, history_json, updated_at) "
+                "VALUES (?, ?, ?) "
+                "ON CONFLICT(session_id) DO UPDATE SET "
+                "history_json = excluded.history_json, updated_at = excluded.updated_at",
+                (session_id, json.dumps(history, default=str), now),
+            )
+
+    def load_calib_agent_session(self, session_id: str) -> list:
+        """Load CalibrationIntelligenceAgent conversation history (Phase 50)."""
+        with self._conn() as conn:
+            row = conn.execute(
+                "SELECT history_json FROM calibration_agent_sessions WHERE session_id = ?",
+                (session_id,),
+            ).fetchone()
+        if row is None:
+            return []
+        try:
+            return json.loads(row["history_json"])
+        except Exception:
+            return []
+
+    # --- Phase 58: Operator Audit Log ---
+
+    def log_operator_action(
+        self, endpoint: str, device_id: str, api_key_hash: str,
+        source_ip: str, status_code: int, outcome: str,
+    ) -> None:
+        """Append immutable operator audit log entry (Phase 58)."""
+        with self._conn() as conn:
+            conn.execute(
+                "INSERT INTO operator_audit_log "
+                "(endpoint, device_id, api_key_hash, source_ip, status_code, outcome, ts) "
+                "VALUES (?, ?, ?, ?, ?, ?, ?)",
+                (endpoint, device_id, api_key_hash, source_ip, status_code, outcome, time.time()),
+            )
+
+    def get_operator_audit_log(
+        self, limit: int = 100, device_id: str = ""
+    ) -> list[dict]:
+        """Return recent operator audit entries, optionally filtered by device (Phase 58)."""
+        with self._conn() as conn:
+            if device_id:
+                rows = conn.execute(
+                    "SELECT * FROM operator_audit_log WHERE device_id = ? "
+                    "ORDER BY ts DESC LIMIT ?", (device_id, limit),
+                ).fetchall()
+            else:
+                rows = conn.execute(
+                    "SELECT * FROM operator_audit_log ORDER BY ts DESC LIMIT ?", (limit,),
+                ).fetchall()
+        return [dict(r) for r in rows]
+
+    # --- Phase 59: My Controller Digital Twin ---
+
+    def get_controller_twin_snapshot(self, device_id: str) -> dict:
+        """Aggregate all data for the My Controller 3D page (Phase 59)."""
+        device   = self.get_device(device_id) or {}
+        profile  = self.get_player_calibration_profile(device_id) or {}
+        ioid     = self.get_ioid_device(device_id) or {}
+        passport = self.get_tournament_passport(device_id) or {}
+        audit_log = self.get_operator_audit_log(limit=10, device_id=device_id[:16])
+        # Query biometric_fingerprint_store directly (Phase 59)
+        with self._conn() as conn:
+            _fp_row = conn.execute(
+                "SELECT * FROM biometric_fingerprint_store WHERE device_id = ?",
+                (device_id,),
+            ).fetchone()
+            biofp = dict(_fp_row) if _fp_row else {}
+            recent = conn.execute(
+                "SELECT record_hash, inference, pitl_l4_distance, pitl_humanity_prob, "
+                "pitl_l4_features, created_at FROM records "
+                "WHERE device_id = ? ORDER BY created_at DESC LIMIT 20",
+                (device_id,),
+            ).fetchall()
+            insight_rows = conn.execute(
+                "SELECT content, severity, insight_type, created_at "
+                "FROM protocol_insights WHERE device_id = ? "
+                "ORDER BY created_at DESC LIMIT 5",
+                (device_id,),
+            ).fetchall()
+        dists = [r["pitl_l4_distance"] for r in recent if r["pitl_l4_distance"] is not None]
+        trend = "UNKNOWN"
+        if len(dists) >= 4:
+            mid = len(dists) // 2
+            first_h  = sum(dists[mid:]) / max(len(dists) - mid, 1)
+            second_h = sum(dists[:mid]) / mid
+            trend = ("DEGRADING" if first_h > second_h * 1.1
+                     else "IMPROVING" if first_h < second_h * 0.9 else "STABLE")
+        return {
+            "device":    dict(device) if device else {},
+            "calibration": {
+                "anomaly_threshold":    profile.get("anomaly_threshold"),
+                "continuity_threshold": profile.get("continuity_threshold"),
+                "baseline_mean":        profile.get("baseline_mean"),
+                "baseline_std":         profile.get("baseline_std"),
+                "session_count":        profile.get("session_count", 0),
+            },
+            "biometric_fingerprint": {
+                "mean_json":  biofp.get("mean_json"),
+                "var_json":   biofp.get("var_json"),
+                "n_sessions": biofp.get("n_sessions", 0),
+            },
+            "ioid":     {"registered": bool(ioid), "did": ioid.get("did"), "tx_hash": ioid.get("tx_hash")},
+            "passport": {
+                "issued": bool(passport),
+                "passport_hash": passport.get("passport_hash"),
+                "min_humanity_int": passport.get("min_humanity_int"),
+                "on_chain": bool(passport.get("on_chain")),
+                "issued_at": passport.get("issued_at"),
+            },
+            "audit_log": audit_log,
+            "anomaly_trend": trend,
+            "recent_records": [dict(r) for r in recent],
+            "insights": [dict(r) for r in insight_rows],
+        }
+
+    # --- Phase 61: Frame Replay Checkpoints ---
+
+    def store_frame_checkpoint(
+        self, device_id: str, record_hash: str, frames: list
+    ) -> None:
+        """Store a frame replay checkpoint for a PoAC record (Phase 61)."""
+        import json as _json
+        frames_json = _json.dumps(frames)
+        frame_count = len(frames)
+        now = time.time()
+        with self._conn() as conn:
+            conn.execute(
+                "INSERT OR IGNORE INTO frame_checkpoints "
+                "(device_id, record_hash, frames_json, frame_count, checkpoint_ts, created_at) "
+                "VALUES (?, ?, ?, ?, ?, ?)",
+                (device_id, record_hash, frames_json, frame_count, now, now),
+            )
+
+    def get_frame_checkpoint(
+        self, device_id: str, record_hash: str
+    ) -> dict | None:
+        """Return frame checkpoint for a specific PoAC record (Phase 61)."""
+        import json as _json
+        with self._conn() as conn:
+            row = conn.execute(
+                "SELECT frames_json, frame_count, checkpoint_ts FROM frame_checkpoints "
+                "WHERE device_id = ? AND record_hash = ?",
+                (device_id, record_hash),
+            ).fetchone()
+        if not row:
+            return None
+        return {
+            "record_hash":   record_hash,
+            "frames":        _json.loads(row["frames_json"]),
+            "frame_count":   row["frame_count"],
+            "checkpoint_ts": row["checkpoint_ts"],
+        }
+
+    def list_checkpoints_for_device(
+        self, device_id: str, limit: int = 100
+    ) -> list[str]:
+        """Return record_hash list for all stored checkpoints (Phase 61)."""
+        with self._conn() as conn:
+            rows = conn.execute(
+                "SELECT record_hash FROM frame_checkpoints "
+                "WHERE device_id = ? ORDER BY created_at DESC LIMIT ?",
+                (device_id, min(limit, 500)),
+            ).fetchall()
+        return [r["record_hash"] for r in rows]
+
+    # --- Phase 55: ioID Device Identity Registry ---
+
+    def store_ioid_device(
+        self,
+        device_id: str,
+        device_address: str,
+        did: str,
+        tx_hash: str = "",
+    ) -> None:
+        """Persist an ioID device registration record (Phase 55)."""
+        with self._conn() as conn:
+            conn.execute(
+                """
+                INSERT OR REPLACE INTO ioid_devices
+                    (device_id, device_address, did, tx_hash, registered_at)
+                VALUES (?, ?, ?, ?, ?)
+                """,
+                (device_id, device_address, did, tx_hash, time.time()),
+            )
+
+    def get_ioid_device(self, device_id: str) -> dict | None:
+        """Return the ioID registration record for device_id, or None (Phase 55)."""
+        with self._conn() as conn:
+            row = conn.execute(
+                "SELECT * FROM ioid_devices WHERE device_id = ?",
+                (device_id,),
+            ).fetchone()
+        return dict(row) if row else None
+
+    def get_all_ioid_devices(self) -> list[dict]:
+        """Return all registered ioID devices ordered by registration time (Phase 55)."""
+        with self._conn() as conn:
+            rows = conn.execute(
+                "SELECT * FROM ioid_devices ORDER BY registered_at ASC"
+            ).fetchall()
+        return [dict(r) for r in rows]
+
+    # --- Phase 56: Tournament Passport ---
+
+    def store_tournament_passport(
+        self,
+        device_id: str,
+        passport_hash: str,
+        ioid_token_id: int,
+        min_humanity_int: int,
+        tx_hash: str = "",
+        on_chain: bool = False,
+    ) -> None:
+        """Persist a tournament passport record (Phase 56)."""
+        with self._conn() as conn:
+            conn.execute(
+                """
+                INSERT OR REPLACE INTO tournament_passports
+                    (device_id, passport_hash, ioid_token_id, min_humanity_int,
+                     tx_hash, on_chain, issued_at)
+                VALUES (?, ?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    device_id, passport_hash, ioid_token_id, min_humanity_int,
+                    tx_hash, 1 if on_chain else 0, time.time(),
+                ),
+            )
+
+    def get_tournament_passport(self, device_id: str) -> dict | None:
+        """Return tournament passport for device_id, or None (Phase 56)."""
+        with self._conn() as conn:
+            row = conn.execute(
+                "SELECT * FROM tournament_passports WHERE device_id = ?",
+                (device_id,),
+            ).fetchone()
+        return dict(row) if row else None
+
+    def get_passport_eligible_sessions(
+        self,
+        device_id: str,
+        min_humanity: float,
+        limit: int = 10,
+    ) -> list[dict]:
+        """Return NOMINAL sessions with humanity_prob >= min_humanity (Phase 56).
+
+        Used to determine eligibility for tournament passport issuance.
+        Returns up to `limit` sessions ordered newest-first.
+        """
+        with self._conn() as conn:
+            rows = conn.execute(
+                """
+                SELECT record_hash, pitl_humanity_prob, pitl_proof_nullifier,
+                       inference, created_at
+                FROM records
+                WHERE device_id = ?
+                  AND inference = 32
+                  AND pitl_humanity_prob >= ?
+                  AND pitl_proof_nullifier IS NOT NULL
+                ORDER BY created_at DESC
+                LIMIT ?
+                """,
+                (device_id, min_humanity, limit),
+            ).fetchall()
+        return [dict(r) for r in rows]

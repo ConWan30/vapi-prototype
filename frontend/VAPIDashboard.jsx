@@ -28,7 +28,7 @@ const PITL_LAYERS = [
   { id: "L2B", name: "IMU-Button Coupling",    type: "ADVISORY",   code: "0x31",   signal: "5–80ms precursor window",              status: "ACTIVE",  margin: null,  detail: "IMU micro-disturbance absent before button rising edge → decoupled. Threshold: coupled_fraction < 0.55" },
   { id: "L2C", name: "Stick-IMU Correlation",  type: "ADVISORY",   code: "0x32",   signal: "Pearson cross-corr 10–60ms",           status: "ACTIVE",  margin: null,  detail: "abs(max_causal_corr) of stick velocity vs. gyro_z at causal lags. Threshold < 0.15. abs() mandatory — anti-correlation is physical coupling. Dead-zone stick games (e.g. NCAA CFB 26): right stick stays at 128 → oracle returns None → p_L2C = 0.5 neutral prior. Formula runs as effective 4-signal; l2c_inactive flag emitted in PITL metadata and visible in HUMANITY tile." },
   { id: "L3",  name: "Behavioral ML",          type: "HARD CHEAT", code: "0x29/2A",signal: "9-feature temporal classifier",        status: "ACTIVE",  margin: null,  detail: "30→64→32→6 INT8 net. Targets MACRO (σ² < 1.0ms²) + AIMBOT (jerk > 2.0)" },
-  { id: "L4",  name: "Biometric Fingerprint",  type: "ADVISORY",   code: "0x30",   signal: "11-feature Mahalanobis (Phase 46)",    status: "ACTIVE",  margin: null,  detail: "Anomaly threshold: 6.726 (mean+3σ, N=74, Phase 46). Continuity: 5.097. Index 9: accel_magnitude_spectral_entropy (bot-vs-human, gravity-invariant, 1000Hz-exclusive). Zero-variance features auto-excluded (ZERO_VAR_THRESHOLD=1e-4)." },
+  { id: "L4",  name: "Biometric Fingerprint",  type: "ADVISORY",   code: "0x30",   signal: "12-feature Mahalanobis (Phase 46/57)", status: "ACTIVE",  margin: null,  detail: "Anomaly threshold: 6.726 (mean+3σ, N=74, Phase 46). Continuity: 5.097. Index 9: accel_magnitude_spectral_entropy (bot-vs-human, gravity-invariant, 1000Hz-exclusive). Index 11: press_timing_jitter_variance (Phase 57) — normalised IBI variance; human 0.001–0.05, bot macro <0.00005. Zero-variance features auto-excluded (ZERO_VAR_THRESHOLD=1e-4)." },
   { id: "L5",  name: "Temporal Rhythm",        type: "ADVISORY",   code: "0x2B",   signal: "4-btn IBI · CV · entropy · 60Hz quant",status: "ACTIVE",  margin: null,  detail: "Phase 39: 4-button priority Cross(1.373)>L2_dig(1.333)>R2(1.176)>Triangle(1.138). Pooled IBI fallback ≥5 samples/button. Fires on ≥2/3: CV<0.08, entropy<1.0bit, quant>0.55. l5_source persisted in PITL metadata." },
   { id: "L6",  name: "Active Haptic C-R",      type: "ADVISORY",   code: "—",      signal: "Motorized trigger resistance",         status: "CALIBRATED", margin: null,  detail: "6 profiles calibrated (Phase 43, N=43 captures, PROFILE_VERSION 2). Per-profile onset_ms/settle_ms thresholds wired. DISABLED — L6_CHALLENGES_ENABLED=false. RIGID_MAX uncalibrated (N=2)." },
 ];
@@ -148,19 +148,25 @@ function useBridgeData() {
   const [mode,     setMode]     = useState("DEMO"); // "LIVE" | "DEMO"
   const [records,  setRecords]  = useState([]);
   const wsRef = useRef(null);
+  const fetchAbortRef = useRef(null);        // Phase 54: cancel in-flight fetch on rapid events
+  const reconnectDelayRef = useRef(5000);    // Phase 54: exponential backoff state
 
   useEffect(() => {
     let active = true;
     let pollTimer = null;
 
     async function fetchSnapshot() {
+      // Phase 54: cancel any in-flight fetch before launching a new one
+      if (fetchAbortRef.current) fetchAbortRef.current.abort();
+      fetchAbortRef.current = new AbortController();
       try {
         const res = await fetch(`${BRIDGE_URL}/dashboard/snapshot`,
-          { signal: AbortSignal.timeout(3000) });
+          { signal: fetchAbortRef.current.signal });
         if (!res.ok) throw new Error(`HTTP ${res.status}`);
         const data = await res.json();
         if (active) { setSnapshot(data); setMode("LIVE"); }
-      } catch {
+      } catch (e) {
+        if (e?.name === "AbortError") return; // cancelled by newer fetch — ignore
         if (active) setMode(prev => prev === "LIVE" ? "LIVE" : "DEMO");
       }
     }
@@ -171,15 +177,30 @@ function useBridgeData() {
     function connectWs() {
       try {
         const ws = new WebSocket(`ws://localhost:8080/ws/records`);
-        ws.onopen    = () => { if (active) setMode("LIVE"); };
+        ws.onopen    = () => {
+          reconnectDelayRef.current = 5000;  // Phase 54: reset backoff on successful connect
+          if (active) setMode("LIVE");
+        };
         ws.onmessage = (e) => {
           try {
-            const rec = JSON.parse(e.data);
-            if (active) setRecords(prev => [{ ...rec, _ts: Date.now() }, ...prev].slice(0, 10));
+            const msg = JSON.parse(e.data);
+            if (msg.type === "controller_registered") {
+              // Controller is live — force a snapshot refresh to update hardware.controller_connected
+              if (active) fetchSnapshot();
+            } else {
+              if (active) setRecords(prev => [{ ...msg, _ts: Date.now() }, ...prev].slice(0, 10));
+            }
           } catch {}
         };
         ws.onerror = () => {};
-        ws.onclose = () => { if (active) setTimeout(connectWs, 5000); };
+        ws.onclose = () => {
+          if (active) {
+            // Phase 54: exponential backoff — 5s → 10s → 30s → 60s cap
+            const delay = reconnectDelayRef.current;
+            reconnectDelayRef.current = Math.min(delay * 2, 60000);
+            setTimeout(connectWs, delay);
+          }
+        };
         wsRef.current = ws;
       } catch {}
     }
@@ -200,6 +221,7 @@ function useFrameData(enabled) {
   const [accelHistory, setAccelHistory] = useState([]);
   const [latestFrame,  setLatestFrame]  = useState(null);
   const wsRef = useRef(null);
+  const reconnectDelayRef = useRef(5000);  // Phase 54: exponential backoff state
 
   useEffect(() => {
     if (!enabled) return;
@@ -207,6 +229,7 @@ function useFrameData(enabled) {
     function connect() {
       try {
         const ws = new WebSocket(`ws://localhost:8080/ws/frames`);
+        ws.onopen  = () => { reconnectDelayRef.current = 5000; }; // Phase 54: reset on connect
         ws.onmessage = (e) => {
           if (!active) return;
           try {
@@ -224,7 +247,14 @@ function useFrameData(enabled) {
           } catch {}
         };
         ws.onerror = () => {};
-        ws.onclose = () => { if (active) setTimeout(connect, 5000); };
+        ws.onclose = () => {
+          if (active) {
+            // Phase 54: exponential backoff — 5s → 10s → 30s → 60s cap
+            const delay = reconnectDelayRef.current;
+            reconnectDelayRef.current = Math.min(delay * 2, 60000);
+            setTimeout(connect, delay);
+          }
+        };
         wsRef.current = ws;
       } catch {}
     }
@@ -831,6 +861,18 @@ function OpenItems() {
     { id: "C3", label: "Spectral Entropy Feature (Phase 46)", status: "COMPLETE", priority: "—",     detail: "accel_magnitude_spectral_entropy index 9 · replaces touchpad_active_fraction (zero-variance) · N=74 recalibration → thresholds 6.726/5.097 · bot-vs-human only, does not improve 0.362 separation ratio" },
     { id: "C4", label: "L2C Phantom Weight (Phase 47)",      status: "COMPLETE", priority: "—",      detail: "l2c_inactive flag in pitl_meta · log.debug per dead-zone cycle · §7.5.4 footnote in whitepaper · HUMANITY tile shows '4-signal (L2C: dead zone)' in orange · PITL layer table live INACTIVE indicator" },
     { id: "C5", label: "Tremor FFT Widening (Phase 49)",     status: "COMPLETE", priority: "—",      detail: "ring buffer 513→1025 positions · 512→1024 velocity samples · 1.95→0.977 Hz/bin · 4 bins across 8–12 Hz band · batch validator 7→9 features · bridge 888" },
+    { id: "C6", label: "Agentic Intelligence (Phase 50)",    status: "COMPLETE", priority: "—",      detail: "CalibrationIntelligenceAgent peer (6 tools, 30-min event consumer, min() enforcement) · BridgeAgent +3 tools (get_session_narrative, compare_device_fingerprints, get_calibration_agent_status) · agent_events/threshold_history/calibration_agent_sessions tables · /calibration/agent + /calibration/stream endpoints · bridge 902" },
+    { id: "C7", label: "Game-Aware Profiling (Phase 51)",    status: "COMPLETE", priority: "—",      detail: "GameProfile registry (ncaa_cfb_26) · L5 R2-first priority override for football · L6-Passive sprint onset EMA baseline · resistance event flagging (ratio 1.5x) · BridgeAgent get_game_profile tool · bridge 915" },
+    { id: "C8", label: "Resilience Hardening (Phase 52+53)", status: "COMPLETE", priority: "—",      detail: "WS broadcast NaN/Inf guard (_safe_val) · DS transport restart wrapper (3x) · controller_registered WS event · CONTROLLER OK badge · ANTHROPIC_API_KEY startup check · CalibrationIntelligenceAgent failure escalation · ProactiveMonitor decoupled · CORS +:5174 · gas dead-letter extended · chain gas error discrimination · _pending_pitl_meta reset · 21 new tests · bridge 936" },
+    { id: "C9", label: "Runtime Hardening (Phase 54)",       status: "COMPLETE", priority: "—",      detail: "numpy fallback ImportError fix (NCD build_distance_matrix) · _task_done_handler CRITICAL log on 11 managed tasks · send_raw_transaction nonce reset on send failure · WS receive 60s timeout (ws_records + ws_frames) · store migration log.debug · fetchSnapshot abort dedup · WS reconnect exponential backoff 5→60s · 5 new tests · bridge 941" },
+    { id: "D0", label: "ioID Device Identity (Phase 55)",   status: "COMPLETE", priority: "—",      detail: "VAPIioIDRegistry.sol · ioid_devices SQLite table · DID did:io:0x<addr> in PITL metadata + WS stream · ensure_ioid_registered() + ioid_increment_session() chain calls · get_ioid_status BridgeAgent tool #22 · 5 new tests · bridge 946" },
+    { id: "D1", label: "ZK Tournament Passport (Phase 56)", status: "COMPLETE", priority: "—",      detail: "TournamentPassport.circom (5 public signals) · PITLTournamentPassport.sol (mock mode, SESSION_COUNT=5) · tournament_passports table · generate_tournament_passport BridgeAgent tool #23 · POST /operator/passport endpoint · 5 new tests · bridge 951" },
+    { id: "D2", label: "Jitter Variance Feature (Phase 57)", status: "COMPLETE", priority: "—",     detail: "press_timing_jitter_variance index 11 in BiometricFeatureFrame · _BIO_FEATURE_DIM 11→12 · normalised IBI variance: human 0.001–0.05, bot macro <0.00005 · IBI deques (Cross/L2/R2/Triangle, maxlen=50) · behavioral_archaeologist FEATURE_KEYS updated · threshold_calibrator _extract_jitter_variance() · 5 new tests · bridge 956" },
+    { id: "D3", label: "Security Hardening (Phase 58)", status: "COMPLETE", priority: "—",          detail: "Operator endpoint auth (x-api-key → 401/503) · sliding-window per-IP rate limiter (60s window, cfg.rate_limit_per_minute) · operator_audit_log table + log_operator_action/get_operator_audit_log · inference_code column in pitl_session_proofs (ZK binding Phase 58A partial) · BridgeAgent tools #24–27: analyze_threshold_impact, predict_evasion_cost, get_anomaly_trend, generate_incident_report · 16 new tests · bridge 972" },
+    { id: "E3", label: "PITLSessionRegistry v2 (Phase 58B)", status: "PLANNED", priority: "HIGH",   detail: "Deploy PITLSessionRegistry v2: nullifierInferenceCodes[nullifier]=inferenceCode on-chain · PITLTournamentPassport rejects CHEAT-coded nullifiers · requires testnet IOTX (wallet funded 2026-03-14) · no new ceremony" },
+    { id: "E4", label: "ZK Inference Binding (Phase 59)", status: "FUTURE", priority: "MEDIUM",     detail: "Circuit constraint: inferenceCode cryptographically derived from sensor commitment preimage · new MPC ceremony required · closes biometric transplant gap for on-chain tournament gating" },
+    { id: "E5", label: "My Controller 3D Twin (Phase 59)", status: "COMPLETE", priority: "—",
+      detail: "Physics-driven DualShock Edge digital twin · /ws/twin/{device_id} fusion stream · IBI Biometric Heartbeat · PoAC DNA Helix chain timeline · L4 aura · L6-Passive R2 stiffness · ZK passport + ioID DID panel · Phase 58 audit log queries · BridgeAgent tool #28 · +15 tests · bridge 987" },
   ];
   const colors  = { OPEN: "#ff9500", PLANNED: "#00d4ff", FUTURE: "#5a6a74", COMPLETE: "#00ff88" };
   const pColors = { HIGH: "#ff2d55", MEDIUM: "#ff9500", LOW: "#5a6a74", "—": "#3d5060" };
@@ -934,12 +976,31 @@ const AGENT_QUICK_QUERIES = [
 ];
 
 const AGENT_TOOLS = [
-  "get_player_profile",      "get_leaderboard",         "get_leaderboard_rank",
-  "run_pitl_calibration",    "get_continuity_chain",    "get_recent_records",
-  "get_startup_diagnostics", "get_phg_checkpoints",     "check_eligibility",
-  "get_pitl_proof",          "get_behavioral_report",   "get_network_clusters",
-  "get_federation_status",   "query_digest",            "get_detection_policy",
-  "get_credential_status",   "get_calibration_status",
+  "get_player_profile",           "get_leaderboard",              "get_leaderboard_rank",
+  "run_pitl_calibration",         "get_continuity_chain",         "get_recent_records",
+  "get_startup_diagnostics",      "get_phg_checkpoints",          "check_eligibility",
+  "get_pitl_proof",               "get_behavioral_report",        "get_network_clusters",
+  "get_federation_status",        "query_digest",                 "get_detection_policy",
+  "get_credential_status",        "get_calibration_status",
+  // Phase 50
+  "get_session_narrative",        "compare_device_fingerprints",  "get_calibration_agent_status",
+  // Phase 51
+  "get_game_profile",
+];
+
+const CALIB_AGENT_TOOLS = [
+  "get_threshold_history",        "get_feature_variance_report",
+  "get_zero_variance_features",   "get_separation_analysis",
+  "get_pending_recalibration_flags", "trigger_recalibration",
+];
+
+const CALIB_QUICK_QUERIES = [
+  "Show threshold history",
+  "What features have zero variance?",
+  "What is the separation analysis?",
+  "Check pending recalibration flags",
+  "How has the anomaly threshold evolved?",
+  "Run personal recalibration",
 ];
 
 function AgentPanel({ apiKey, onThinkingChange }) {
@@ -1237,6 +1298,270 @@ function AgentPanel({ apiKey, onThinkingChange }) {
   );
 }
 
+/* ─── CALIBRATION INTELLIGENCE AGENT PANEL (Phase 50) ───────────────────── */
+
+function CalibAgentPanel({ apiKey, phase50Stats }) {
+  const [messages,  setMessages]  = useState([]);
+  const [input,     setInput]     = useState("");
+  const [thinking,  setThinking]  = useState(false);
+  const abortRef = useRef(null);
+  const feedRef  = useRef(null);
+
+  const pendingFlags = phase50Stats?.calib_agent_events_pending ?? 0;
+  const lastUpdate   = phase50Stats?.last_threshold_update_ts   ?? null;
+  const histCount    = phase50Stats?.threshold_history_count    ?? 0;
+
+  async function sendMessage(text) {
+    if (!text.trim() || thinking) return;
+    if (abortRef.current) abortRef.current.abort();
+
+    setMessages(prev => [...prev, { role: "user", text: text.trim() }]);
+    setInput("");
+    setThinking(true);
+
+    const assistantIdx = { val: -1 };
+    setMessages(prev => {
+      assistantIdx.val = prev.length;
+      return [...prev, { role: "assistant", text: "", badges: [] }];
+    });
+
+    const ctrl = new AbortController();
+    abortRef.current = ctrl;
+    const key = apiKey || "";
+    const url = `${BRIDGE_URL}/operator/calibration/stream?session_id=calib_dashboard&message=${encodeURIComponent(text.trim())}&api_key=${encodeURIComponent(key)}`;
+
+    try {
+      const res = await fetch(url, { signal: ctrl.signal });
+      if (!res.ok) {
+        const errText = res.status === 403 ? "Invalid API key" :
+                        res.status === 429 ? "Rate limit exceeded" :
+                        res.status === 503 ? "OPERATOR_API_KEY not configured on bridge" :
+                        `HTTP ${res.status}`;
+        setMessages(prev => {
+          const next = [...prev];
+          next[assistantIdx.val] = { role: "assistant", text: `Error: ${errText}`, badges: [] };
+          return next;
+        });
+        setThinking(false);
+        return;
+      }
+
+      const reader  = res.body.getReader();
+      const decoder = new TextDecoder();
+      let   buf     = "";
+
+      while (true) {
+        const { done, value } = await reader.read();
+        if (done) break;
+        buf += decoder.decode(value, { stream: true });
+        const parts = buf.split("\n\n");
+        buf = parts.pop();
+        for (const part of parts) {
+          const line = part.trim();
+          if (!line.startsWith("data:")) continue;
+          try {
+            const evt = JSON.parse(line.slice(5).trim());
+            if (evt.type === "text_delta") {
+              setMessages(prev => {
+                const next = [...prev];
+                const msg  = next[assistantIdx.val];
+                next[assistantIdx.val] = { ...msg, text: (msg.text || "") + evt.text };
+                return next;
+              });
+            } else if (evt.type === "tool_start") {
+              setMessages(prev => {
+                const next = [...prev];
+                const msg  = next[assistantIdx.val];
+                next[assistantIdx.val] = { ...msg, badges: [...(msg.badges || []), { kind: "start", tool: evt.tool }] };
+                return next;
+              });
+            } else if (evt.type === "tool_result") {
+              setMessages(prev => {
+                const next = [...prev];
+                const msg  = next[assistantIdx.val];
+                next[assistantIdx.val] = { ...msg, badges: [...(msg.badges || []), { kind: "result", tool: evt.tool, preview: evt.preview }] };
+                return next;
+              });
+            } else if (evt.type === "done" || evt.type === "error") {
+              if (evt.type === "error") {
+                setMessages(prev => {
+                  const next = [...prev];
+                  next[assistantIdx.val] = { ...next[assistantIdx.val], text: (next[assistantIdx.val].text || "") + `\n[Error: ${evt.message}]` };
+                  return next;
+                });
+              }
+              setThinking(false);
+            }
+          } catch {}
+        }
+      }
+    } catch (err) {
+      if (err.name !== "AbortError") {
+        setMessages(prev => {
+          const next = [...prev];
+          next[assistantIdx.val] = { role: "assistant", text: `Connection error: ${err.message}`, badges: [] };
+          return next;
+        });
+      }
+    } finally {
+      setThinking(false);
+    }
+  }
+
+  useEffect(() => {
+    if (feedRef.current) feedRef.current.scrollTop = feedRef.current.scrollHeight;
+  }, [messages]);
+  useEffect(() => () => { if (abortRef.current) abortRef.current.abort(); }, []);
+
+  const noKey = !apiKey;
+
+  return (
+    <Panel style={{ animation: "fadeIn 0.4s ease both", borderColor: "rgba(0,212,255,0.18)" }}>
+      <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", marginBottom: 14 }}>
+        <SectionLabel>CalibrationIntelligenceAgent — /operator/calibration/stream · Phase 50</SectionLabel>
+        <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
+          {pendingFlags > 0 && (
+            <span style={{
+              fontFamily: "'JetBrains Mono', monospace", fontSize: 9,
+              color: "#ff9500", padding: "3px 8px",
+              background: "rgba(255,149,0,0.1)", border: "1px solid rgba(255,149,0,0.3)",
+              borderRadius: 2,
+            }}>
+              {pendingFlags} PENDING FLAG{pendingFlags !== 1 ? "S" : ""}
+            </span>
+          )}
+          {histCount > 0 && (
+            <span style={{
+              fontFamily: "'JetBrains Mono', monospace", fontSize: 9,
+              color: "#00d4ff", padding: "3px 8px",
+              background: "rgba(0,212,255,0.06)", border: "1px solid rgba(0,212,255,0.2)",
+              borderRadius: 2,
+            }}>
+              {histCount} CYCLES LOGGED
+            </span>
+          )}
+          <span style={{
+            fontFamily: "'JetBrains Mono', monospace", fontSize: 9,
+            color: thinking ? "#00d4ff" : "#00d4ff",
+            animation: thinking ? "statusPulse 1.2s ease-in-out infinite" : "none",
+            letterSpacing: "0.1em",
+          }}>
+            {thinking ? "◌ CALIBRATING..." : "● CALIB READY"}
+          </span>
+        </div>
+      </div>
+
+      {lastUpdate && (
+        <div style={{ fontFamily: "'JetBrains Mono', monospace", fontSize: 8, color: "#3d5060", marginBottom: 10 }}>
+          last threshold update: {lastUpdate}
+        </div>
+      )}
+
+      <div style={{ marginBottom: 12, display: "flex", flexWrap: "wrap", gap: 4 }}>
+        {CALIB_AGENT_TOOLS.map(t => (
+          <span key={t} style={{
+            fontFamily: "'JetBrains Mono', monospace", fontSize: 8, color: "#3d6070",
+            padding: "2px 7px", background: "rgba(0,212,255,0.04)",
+            border: "1px solid rgba(0,212,255,0.12)", borderRadius: 2,
+          }}>{t}</span>
+        ))}
+      </div>
+
+      {noKey && (
+        <div style={{
+          fontFamily: "'JetBrains Mono', monospace", fontSize: 9, color: "#ff9500",
+          padding: "8px 12px", marginBottom: 12,
+          background: "rgba(255,149,0,0.06)", border: "1px solid rgba(255,149,0,0.2)",
+          borderRadius: 2,
+        }}>
+          Set VITE_BRIDGE_API_KEY in frontend/.env to enable calibration agent queries.
+        </div>
+      )}
+
+      <div ref={feedRef} style={{
+        minHeight: 80, maxHeight: 240, overflowY: "auto",
+        display: "flex", flexDirection: "column", gap: 8,
+        marginBottom: 12, paddingRight: 4,
+      }}>
+        {messages.length === 0 && (
+          <div style={{ fontFamily: "'JetBrains Mono', monospace", fontSize: 9, color: "#3d5060", textAlign: "center", padding: "20px 0" }}>
+            Query the calibration intelligence agent. · 6 tools · 30-min event consumer · min() enforcement
+          </div>
+        )}
+        {messages.map((msg, i) => (
+          <div key={i} style={{
+            padding: "8px 12px",
+            background: msg.role === "user" ? "rgba(0,212,255,0.05)" : "rgba(0,212,255,0.03)",
+            border: `1px solid ${msg.role === "user" ? "rgba(0,212,255,0.12)" : "rgba(0,212,255,0.08)"}`,
+            borderRadius: 2,
+          }}>
+            <div style={{ fontFamily: "'JetBrains Mono', monospace", fontSize: 8, color: "#00d4ff", marginBottom: 4, letterSpacing: "0.1em" }}>
+              {msg.role === "user" ? "USER" : "CALIB-AGENT"}
+            </div>
+            {msg.text && (
+              <div style={{ fontFamily: "'JetBrains Mono', monospace", fontSize: 9, color: "#c4cdd6", whiteSpace: "pre-wrap", lineHeight: 1.5 }}>
+                {msg.text}
+              </div>
+            )}
+            {msg.badges && msg.badges.length > 0 && (
+              <div style={{ marginTop: 6, display: "flex", flexWrap: "wrap", gap: 4 }}>
+                {msg.badges.map((b, j) => (
+                  <span key={j} style={{
+                    fontFamily: "'JetBrains Mono', monospace", fontSize: 8, letterSpacing: "0.05em",
+                    padding: "2px 7px",
+                    background: b.kind === "result" ? "rgba(0,212,255,0.08)" : "rgba(0,212,255,0.05)",
+                    border: `1px solid ${b.kind === "result" ? "rgba(0,212,255,0.3)" : "rgba(0,212,255,0.15)"}`,
+                    color: "#00d4ff", borderRadius: 2,
+                  }}>
+                    {b.kind === "result" ? `✓ ${b.tool}${b.preview ? `: ${b.preview}` : ""}` : `⚙ ${b.tool}`}
+                  </span>
+                ))}
+              </div>
+            )}
+          </div>
+        ))}
+      </div>
+
+      <div style={{ display: "flex", flexWrap: "wrap", gap: 4, marginBottom: 10 }}>
+        {CALIB_QUICK_QUERIES.map(q => (
+          <button key={q} onClick={() => sendMessage(q)} disabled={thinking || noKey} style={{
+            background: "none", border: "1px solid rgba(0,212,255,0.2)",
+            color: (thinking || noKey) ? "#3d5060" : "#c4cdd6",
+            fontFamily: "'JetBrains Mono', monospace", fontSize: 8, letterSpacing: "0.05em",
+            padding: "4px 9px", borderRadius: 2,
+            cursor: (thinking || noKey) ? "default" : "pointer",
+          }}>{q}</button>
+        ))}
+      </div>
+
+      <div style={{ display: "flex", gap: 8 }}>
+        <input
+          type="text" value={input}
+          onChange={e => setInput(e.target.value)}
+          onKeyDown={e => { if (e.key === "Enter") sendMessage(input); }}
+          disabled={thinking || noKey}
+          placeholder="Query the CalibrationIntelligenceAgent…"
+          style={{
+            flex: 1, background: "rgba(0,212,255,0.03)", border: "1px solid rgba(0,212,255,0.2)",
+            color: "#c4cdd6", fontFamily: "'JetBrains Mono', monospace",
+            fontSize: 10, padding: "8px 12px", borderRadius: 2, outline: "none",
+          }}
+        />
+        <button onClick={() => sendMessage(input)} disabled={thinking || noKey || !input.trim()} style={{
+          background: (thinking || noKey || !input.trim()) ? "rgba(0,212,255,0.03)" : "rgba(0,212,255,0.12)",
+          border: "1px solid rgba(0,212,255,0.3)",
+          color: (thinking || noKey || !input.trim()) ? "#3d5060" : "#00d4ff",
+          fontFamily: "'JetBrains Mono', monospace", fontSize: 9, letterSpacing: "0.15em",
+          padding: "8px 18px", borderRadius: 2,
+          cursor: (thinking || noKey || !input.trim()) ? "default" : "pointer",
+        }}>
+          SEND
+        </button>
+      </div>
+    </Panel>
+  );
+}
+
 /* ─── SECTION: CAPTURE MONITOR (Phase 44) ───────────────────────────────── */
 
 function StickPad({ x = 128, y = 128, label }) {
@@ -1412,11 +1737,13 @@ export default function VAPIDashboard() {
   const pulse                    = usePulse(3000);
   const { snapshot, mode, records } = useBridgeData();
   const { accelHistory, latestFrame } = useFrameData(mode === "LIVE");
+  const latestDeviceId = records[0]?.device_id || '';
   const [agentThinking, setAgentThinking] = useState(false);
 
   const sessionTarget  = snapshot?.session?.total_sessions  ?? 74;
-  const testTarget     = snapshot?.session?.total_tests     ?? 888;
-  const contractTarget = snapshot?.session?.contracts_live  ?? 13;
+  const testTarget     = snapshot?.session?.total_tests     ?? 972;
+  const contractTarget = snapshot?.session?.contracts_live  ?? 15;
+  const phase50Stats   = snapshot?.phase50 ?? null;
 
   const sessionCount  = useCounter(sessionTarget,  1500);
   const testCount     = useCounter(testTarget,     1800);
@@ -1492,7 +1819,7 @@ export default function VAPIDashboard() {
               </span>
             </div>
             <div style={{ fontFamily: "'JetBrains Mono', monospace", fontSize: 9, color: "#3d5060", marginTop: 3, letterSpacing: "0.1em" }}>
-              Cryptographic Anti-Cheat Protocol · DualShock Edge CFI-ZCP1 · IoTeX L1 · Whitepaper v3 (Phase 49)
+              Cryptographic Anti-Cheat Protocol · DualShock Edge CFI-ZCP1 · IoTeX L1 · Whitepaper v3 (Phase 58)
             </div>
           </div>
           <div style={{ display: "flex", gap: 16, alignItems: "center" }}>
@@ -1531,6 +1858,28 @@ export default function VAPIDashboard() {
             )}
             {mode === "LIVE" && (
               <div style={{
+                display: "flex", alignItems: "center", gap: 6,
+                padding: "6px 12px",
+                border: snapshot?.hardware?.controller_connected
+                  ? "1px solid rgba(0,212,255,0.3)"
+                  : "1px solid rgba(255,59,48,0.3)",
+                borderRadius: 2,
+                background: snapshot?.hardware?.controller_connected
+                  ? "rgba(0,212,255,0.05)"
+                  : "rgba(255,59,48,0.05)",
+              }}>
+                <span style={{
+                  width: 7, height: 7, borderRadius: "50%", flexShrink: 0,
+                  background: snapshot?.hardware?.controller_connected ? "#00d4ff" : "#ff3b30",
+                }} />
+                <span style={{ fontFamily: "'JetBrains Mono', monospace", fontSize: 9,
+                  color: snapshot?.hardware?.controller_connected ? "#00d4ff" : "#ff3b30" }}>
+                  {snapshot?.hardware?.controller_connected ? "CONTROLLER OK" : "NO CONTROLLER"}
+                </span>
+              </div>
+            )}
+            {mode === "LIVE" && (
+              <div style={{
                 display: "flex", alignItems: "center", gap: 5,
                 padding: "6px 12px",
                 border: "1px solid rgba(255,107,0,0.2)",
@@ -1547,6 +1896,44 @@ export default function VAPIDashboard() {
                   {agentThinking ? "◌ AGENT THINKING..." : "● AGENT READY"}
                 </span>
               </div>
+            )}
+            {mode === "LIVE" && snapshot?.game_profile?.active && (
+              <div style={{
+                display: "flex", alignItems: "center", gap: 5,
+                padding: "6px 12px",
+                border: "1px solid rgba(0,212,255,0.3)",
+                borderRadius: 2,
+                background: "rgba(0,212,255,0.05)",
+              }}>
+                <span style={{
+                  width: 6, height: 6, borderRadius: "50%",
+                  background: "#00d4ff", flexShrink: 0,
+                }} />
+                <span style={{
+                  fontFamily: "'JetBrains Mono', monospace",
+                  fontSize: 9, color: "#00d4ff", letterSpacing: "0.08em",
+                  textTransform: "uppercase",
+                }}>
+                  {snapshot.game_profile.display_name}
+                </span>
+                <span style={{
+                  fontFamily: "'JetBrains Mono', monospace",
+                  fontSize: 8, color: "#3d5060", letterSpacing: "0.06em",
+                }}>
+                  L5: {(snapshot.game_profile.l5_priority ?? []).slice(0, 2).join(">").toUpperCase()}
+                </span>
+              </div>
+            )}
+            {mode === "LIVE" && snapshot?.hardware?.controller_connected && latestDeviceId && (
+              <a href={`/controller-twin.html?device=${latestDeviceId}`}
+                 target="_blank" rel="noopener noreferrer"
+                 style={{ display: "inline-flex", alignItems: "center", gap: 4,
+                          padding: "3px 10px", border: `1px solid rgba(255,107,0,0.4)`,
+                          borderRadius: 2, background: `rgba(255,107,0,0.07)`, cursor: "pointer",
+                          fontFamily: "'JetBrains Mono', monospace", fontSize: 8,
+                          color: "#ff6b00", textDecoration: "none", letterSpacing: "0.1em" }}>
+                MY CONTROLLER ↗
+              </a>
             )}
           </div>
         </div>
@@ -1612,11 +1999,23 @@ export default function VAPIDashboard() {
 
         {/* ── BRIDGEAGENT CHAT PANEL (LIVE mode only) ───────────────────── */}
         {mode === "LIVE" && (
-          <div style={{ padding: "16px 32px 32px" }}>
+          <div style={{ padding: "16px 32px 0" }}>
             <div className="panel-fade" style={{ animationDelay: "0.55s" }}>
               <AgentPanel
                 apiKey={import.meta.env.VITE_BRIDGE_API_KEY}
                 onThinkingChange={setAgentThinking}
+              />
+            </div>
+          </div>
+        )}
+
+        {/* ── CALIBRATION INTELLIGENCE AGENT PANEL (Phase 50, LIVE only) ── */}
+        {mode === "LIVE" && (
+          <div style={{ padding: "16px 32px 32px" }}>
+            <div className="panel-fade" style={{ animationDelay: "0.60s" }}>
+              <CalibAgentPanel
+                apiKey={import.meta.env.VITE_BRIDGE_API_KEY}
+                phase50Stats={phase50Stats}
               />
             </div>
           </div>
@@ -1629,10 +2028,10 @@ export default function VAPIDashboard() {
           display: "flex", justifyContent: "space-between", alignItems: "center",
         }}>
           <span style={{ fontFamily: "'JetBrains Mono', monospace", fontSize: 8, color: "#3d5060" }}>
-            VAPI Protocol Dashboard · Whitepaper v3 · Phase 49 · IoTeX Testnet
+            VAPI Protocol Dashboard · Whitepaper v3 · Phase 58 · IoTeX Testnet
           </span>
           <span style={{ fontFamily: "'JetBrains Mono', monospace", fontSize: 8, color: "#3d5060" }}>
-            228B PoAC wire format FROZEN · 9-layer PITL · Groth16 BN254 · ~1,312 tests
+            228B PoAC wire format FROZEN · 9-layer PITL · Groth16 BN254 · ~1,397 tests
           </span>
           <div style={{ display: "flex", alignItems: "center", gap: 6 }}>
             <span style={{

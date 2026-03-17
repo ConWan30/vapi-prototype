@@ -1,11 +1,12 @@
 {
-  "_note": "IoTeX Testnet — full deployment complete 2026-03-08",
-  "_deployer": "0xfCF4681e57C8de9650c3Eb4dA8e26dC9441A5EF1",
+  "_note": "IoTeX Testnet — Phase 62 deployment complete 2026-03-16",
+  "_deployer_original": "0xfCF4681e57C8de9650c3Eb4dA8e26dC9441A5EF1",
+  "_deployer_phase62": "0x0Cf36dB57fc4680bcdfC65D1Aff96993C57a4692",
   "_network": "iotex_testnet",
   "_chainId": 4690,
-  "_status": "COMPLETE — 14 contracts deployed (PITLSessionRegistry now live with real ZK verifier)",
+  "_status": "COMPLETE — 20 contracts deployed (Phase 62: VAPIioIDRegistry, PITLTournamentPassport, TournamentPassportVerifier, PITLSessionRegistryV2, PitlSessionProofVerifierV2)",
   "_explorer": "https://testnet.iotexscan.io/address/",
-  "_iotx_spent": "~7.2 IOTX total (PitlSessionProofVerifier added 2026-03-08)",
+  "_iotx_spent": "~7.2 IOTX original + ~1.7 IOTX Phase 62 = ~8.9 IOTX total",
 
   "TieredDeviceRegistry":      "0x73753E916eEE0DAfEc1f6a16d98d4E4aFf9E8230",
   "PoACVerifier":               "0x26178AD95DB507f0D298fAAFC19752fC86166c6C",
@@ -20,14 +21,25 @@
   "PITLSessionRegistry":        "0x8da0A497234C57914a46279A8F938C07D3Eb5f12",
   "PHGCredential":              "0x0Af852f5850f7bf50151BbBC14905f3a160f7F27",
   "FederatedThreatRegistry":    "0xe837FaB5B441b37E2bA215FA14Ee11427DCd0f24",
-  "TournamentGateV3":               "0x6fEe9F6fB24A3e6cEF93f0cA5cA9875625c5D4Ef",
-  "PitlSessionProofVerifier":       "0x07D3ca1548678410edC505406f022399920d4072",
+  "TournamentGateV3":           "0x6fEe9F6fB24A3e6cEF93f0cA5cA9875625c5D4Ef",
+  "PitlSessionProofVerifier":   "0x07D3ca1548678410edC505406f022399920d4072",
+
+  "VAPIioIDRegistry":           "0xF7885B588718b891B2234477D031607da4a7ACfe",
+  "PITLTournamentPassport":     "0xa72454748A1E272Bf084bEfBd0A0fC5516685AEC",
+  "TournamentPassportVerifier": "0xb95C0561EF2b1081F07B6Cd3c37f4C9dd3caa112",
+  "PITLSessionRegistryV2":      "0xAfb544c09B6dec303740F2d218d6C784eB064ec3",
+  "PitlSessionProofVerifierV2": "0x5f4e30EB180Bb87c5Ad65623fA3566f838db8a38",
 
   "_wiring_notes": {
     "BountyMarket_gate": "TournamentGateV2 wired (setTournamentGate called in deploy-phase25.js). TournamentGateV3 is bridge-queryable but NOT wired to BountyMarket (gate already set). Wire V3 manually if needed.",
     "TieredDeviceRegistry_updaters": "PoACVerifier and BountyMarket granted setReputationUpdater=true",
     "IdentityContinuityRegistry": "Wired into PHGRegistry via setIdentityRegistry()",
     "PITLSessionRegistry": "LIVE — PitlSessionProofVerifier wired via setPITLVerifier() on 2026-03-08. Real Groth16 proofs required.",
-    "PitlSessionProofVerifier": "Groth16 verifier for PitlSessionProof circuit. Contract renamed from Groth16Verifier to PitlSessionProofVerifier before deploy."
+    "PitlSessionProofVerifier": "Groth16 verifier for PitlSessionProof v1 circuit (Poseidon 7 inputs).",
+    "VAPIioIDRegistry": "Phase 55 — DID device identity registry. Bridge: 0x0Cf36dB57fc4680bcdfC65D1Aff96993C57a4692. Deployed 2026-03-16.",
+    "PITLTournamentPassport": "Phase 56 — ZK tournament passport (mock mode until setPassportVerifier called). Wired to PITLSessionRegistry + VAPIioIDRegistry. Deployed 2026-03-16.",
+    "TournamentPassportVerifier": "Phase 56 — Groth16 verifier for TournamentPassport.circom. Wired via setPassportVerifier() 2026-03-16. PITLTournamentPassport now LIVE.",
+    "PITLSessionRegistryV2": "Phase 62 — PITL session registry with Phase 62 circuit (C3 inference code binding). Bridge: 0x0Cf36dB57fc4680bcdfC65D1Aff96993C57a4692. Deployed 2026-03-16.",
+    "PitlSessionProofVerifierV2": "Phase 62 — Groth16 verifier for PitlSessionProof circuit with C3 constraint (Poseidon 8 inputs). Wired via setPITLVerifier() 2026-03-16. PITLSessionRegistryV2 now LIVE."
   }
 }

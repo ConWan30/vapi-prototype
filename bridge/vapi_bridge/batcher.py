@@ -89,6 +89,7 @@ class Batcher:
             pending = self._store.get_pending_records(limit=500)
             if pending:
                 log.info("Batcher: re-enqueuing %d pending records from DB", len(pending))
+            _skipped = 0
             for row in pending:
                 raw = row.get("raw_data")
                 if raw is None:
@@ -96,14 +97,29 @@ class Batcher:
                 try:
                     from .codec import parse_record
                     record = parse_record(bytes(raw))
+                    # Restore device_id from DB — parse_record doesn't derive it
+                    # (device_id is keccak256(pubkey), computed during ingest, not in raw bytes)
+                    db_device_id = row.get("device_id", "")
+                    if db_device_id:
+                        record.device_id = bytes.fromhex(db_device_id)
                     self._queue.put_nowait((record, bytes(raw)))
-                except Exception:
-                    pass  # corrupt record — skip silently
+                except Exception as _rec_exc:
+                    _skipped += 1
+                    log.debug("Batcher startup: skipping corrupt record (row_id=%s): %s",
+                              row.get("id", "?"), _rec_exc)
+            if _skipped:
+                log.warning("Batcher startup: %d corrupt record(s) skipped", _skipped)
         except Exception as exc:
             log.warning("Batcher: startup recovery failed (non-fatal): %s", exc)
 
         # Start retry loop in parallel
         retry_task = asyncio.create_task(self._retry_loop())
+
+        def _retry_task_done(t: asyncio.Task) -> None:
+            if not t.cancelled() and t.exception() is not None:
+                log.error("Batcher retry_task died unexpectedly: %s", t.exception())
+
+        retry_task.add_done_callback(_retry_task_done)
 
         try:
             while self._running:
@@ -120,7 +136,8 @@ class Batcher:
                     if batch:
                         await self._submit_batch(batch)
                         drained += len(batch)
-                except Exception:
+                except Exception as _drain_exc:
+                    log.warning("Batcher shutdown drain error: %s", _drain_exc)
                     break
             if drained:
                 log.info("Batcher: drained %d record(s) on shutdown", drained)
@@ -246,11 +263,45 @@ class Batcher:
                 self._store.batch_update_status(record_hashes, STATUS_FAILED)
 
         except Exception as e:
-            log.error("Batch submission failed: %s", e)
-            self._store.update_submission(
-                sub_id, status=STATUS_FAILED, error=str(e)[:500]
-            )
-            self._store.batch_update_status(record_hashes, STATUS_FAILED)
+            err_str = str(e)
+            # P256PrecompileEmptyReturn (0xf46a06ea) = IoTeX testnet P256 precompile
+            # not available via this RPC endpoint. Dead-letter immediately — retrying
+            # won't help; this is a testnet infrastructure limitation, not a transient error.
+            if "f46a06ea" in err_str:
+                log.warning(
+                    "Batch dead-lettered: IoTeX testnet P256 precompile unavailable "
+                    "(0xf46a06ea). On-chain submission disabled for this session. "
+                    "Local PITL pipeline unaffected."
+                )
+                self._store.update_submission(
+                    sub_id, status=STATUS_DEAD_LETTER, error="P256PrecompileEmptyReturn (testnet)"
+                )
+                self._store.batch_update_status(record_hashes, STATUS_DEAD_LETTER)
+            elif "insufficient funds" in err_str:
+                # Dead-letter immediately — retrying won't help without more gas.
+                # Local PITL pipeline is unaffected; top up wallet to re-enable on-chain anchoring.
+                log.debug("Batch dead-lettered: insufficient funds for gas (top up wallet to re-enable on-chain anchoring)")
+                self._store.update_submission(
+                    sub_id, status=STATUS_DEAD_LETTER, error="insufficient funds for gas"
+                )
+                self._store.batch_update_status(record_hashes, STATUS_DEAD_LETTER)
+            elif any(pat in err_str.lower() for pat in (
+                "out of gas", "intrinsic gas too low", "gas required exceeds allowance",
+                "transaction reverted", "execution reverted", "contract revert",
+            )):
+                # Phase 52: EVM gas/revert errors that are permanent (not transient network).
+                # Dead-letter rather than burning retry budget on guaranteed failures.
+                log.warning("Batch dead-lettered: EVM revert/gas error — %s", err_str[:200])
+                self._store.update_submission(
+                    sub_id, status=STATUS_DEAD_LETTER, error=err_str[:500]
+                )
+                self._store.batch_update_status(record_hashes, STATUS_DEAD_LETTER)
+            else:
+                log.error("Batch submission failed: %s", e)
+                self._store.update_submission(
+                    sub_id, status=STATUS_FAILED, error=err_str[:500]
+                )
+                self._store.batch_update_status(record_hashes, STATUS_FAILED)
 
     async def _maybe_commit_phg_checkpoints(self, records: list[PoACRecord]):
         """Commit PHG checkpoints for devices that crossed the interval boundary.

@@ -6,26 +6,26 @@
   "hardware_note": "All thresholds derived from real DualShock Edge hardware data. Replace bridge magic numbers with these values after validating false-positive rate at each skill tier.",
   "thresholds": {
     "l4_mahalanobis_anomaly": {
-      "recommended": 6.726,
+      "recommended": 7.009,
       "current_magic_number": 3.0,
-      "derivation": "mean + 3\u03c3 of per-session Mahalanobis distance from population centroid (6-proxy biometric feature space; ~99.7th percentile assuming Gaussian). Feature space: onset_l2, onset_r2, tremor_var, grip_asym, autocorr_lag1, autocorr_lag5.",
+      "derivation": "mean + 3\u03c3 of per-session Mahalanobis distance from population centroid (7-proxy biometric feature space; ~99.7th percentile assuming Gaussian). Feature space: onset_l2, onset_r2, tremor_var, grip_asym, autocorr_lag1, autocorr_lag5, press_timing_jitter_variance.",
       "unit": "Mahalanobis distance (dimensionless)",
-      "dist_mean": 1.839,
-      "dist_std": 1.629,
+      "dist_mean": 2.083,
+      "dist_std": 1.642,
       "n_fingerprints": 74,
       "ci95": [
-        1.468,
-        2.21
+        1.709,
+        2.458
       ]
     },
     "l4_mahalanobis_continuity": {
-      "recommended": 5.097,
+      "recommended": 5.367,
       "current_magic_number": 2.0,
       "derivation": "mean + 2\u03c3 of per-session Mahalanobis distance from population centroid (6-proxy biometric feature space; ~95th percentile assuming Gaussian).",
       "unit": "Mahalanobis distance (dimensionless)",
       "ci95": [
-        1.468,
-        2.21
+        1.709,
+        2.458
       ]
     },
     "l5_cv_threshold": {
@@ -66,8 +66,8 @@
     "mean_reports_per_session": 203467.0,
     "session_cv_mean": 1.526,
     "session_entropy_mean": 1.621,
-    "l4_mahal_dist_mean": 1.839,
-    "l4_mahal_dist_std": 1.629,
+    "l4_mahal_dist_mean": 2.083,
+    "l4_mahal_dist_std": 1.642,
     "l4_fingerprints_extracted": 74,
     "l5_button_coverage": {
       "cross": {

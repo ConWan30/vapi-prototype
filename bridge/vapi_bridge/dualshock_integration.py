@@ -384,6 +384,8 @@ class DualShockTransport:
         self._ewc_model            = None   # EWCWorldModel (E4)
         self._preference_model     = None   # PreferenceModel (E2)
         self._frame_buffer: list   = []     # Accumulated frames for EWC session update
+        import collections as _col
+        self._replay_ring: _col.deque = _col.deque(maxlen=60)   # Phase 61 replay buffer
         self._session_count: int   = 0      # Loop-iteration counter for EWC scheduling
         self._recent_session_vecs: list = []  # Last N session vectors for Fisher
         self._l2_mode_history: list[int] = []  # Last 16 L2 mode values for trigger_mode_hash
@@ -406,6 +408,10 @@ class DualShockTransport:
         # Phase 27: ZK PITL session proof — injected by main.py
         self._pitl_prover = None  # PITLProver instance, None = proof generation disabled
 
+        # Phase 62: Player enrollment ceremony
+        from .enrollment_manager import EnrollmentManager
+        self._enrollment = EnrollmentManager(store, chain_client, cfg)
+
         # Phase 38: per-player calibration profile cache (6h TTL, populated from Mode 6)
         self._player_profile_cache: dict[str, float] = {}  # device_id_hex -> personal anomaly threshold
         self._player_profile_cache_ts: float = 0.0
@@ -414,6 +420,15 @@ class DualShockTransport:
         self._bt_presence_verifier = None   # BluetoothPresenceVerifier or None
         self._bt_presence_score: float = 0.5  # last overall_score; 0.5 = neutral/USB
         self._bt_seq_bytes_batch: list = []   # BT sequence counter bytes from last _poll_frames()
+
+        # --- Phase 51: Game-Aware Profiling ---
+        self._game_profile = None           # GameProfile | None, set in _init_hardware
+        self._l6p_r2_onsets: list = []      # bootstrap samples (ms)
+        self._l6p_baseline_ms: float | None = None  # running EMA baseline
+        self._l6p_r2_above: bool = False    # rising-edge tracker
+        self._l6p_last_r2_ts: float = 0.0  # time.monotonic() * 1000 of last R2 rising edge
+        self._l6p_events: int = 0           # total R2 presses scored this session
+        self._l6p_flagged: int = 0          # resistance events flagged this session
 
         # Phase C: L6 Active Physical Challenge-Response
         self._l6_driver = None     # L6TriggerDriver, set below if enabled
@@ -436,6 +451,31 @@ class DualShockTransport:
                 log.info("Phase C: L6 Active Challenge-Response enabled")
             except Exception as _l6_exc:
                 log.warning("Phase C: L6 init failed (non-fatal): %s", _l6_exc)
+
+        # Phase 63: L6b Neuromuscular Reflex Layer
+        self._l6b_enabled: bool = getattr(self._cfg, "l6b_enabled", False)
+        self._l6b_analyzer = None          # L6bReflexAnalyzer, set below if enabled
+        self._l6b_pre_buffer: deque = deque(maxlen=50)
+        self._l6b_post_buffer: list = []
+        self._l6b_pending: dict | None = None   # {probe_ts, pre_reports, frames_remaining}
+        self._l6b_probe_count: int = 0
+        self._l6b_p_human: float = 0.5          # neutral prior until first probe completes
+        self._l6b_loop_count: int = 0
+        if self._l6b_enabled:
+            try:
+                _proj_root_l6b = str(Path(__file__).parents[2])
+                if _proj_root_l6b not in sys.path:
+                    sys.path.insert(0, _proj_root_l6b)
+                from bridge.controller.l6b_reflex_analyzer import L6bReflexAnalyzer
+                self._l6b_analyzer = L6bReflexAnalyzer(
+                    human_min_ms=getattr(self._cfg, "l6b_human_min_ms", 80.0),
+                    human_max_ms=getattr(self._cfg, "l6b_human_max_ms", 280.0),
+                    accel_delta_threshold_lsb=getattr(self._cfg, "l6b_accel_delta_threshold_lsb", 500.0),
+                )
+                log.info("Phase 63: L6b Neuromuscular Reflex enabled")
+            except Exception as _l6b_exc:
+                log.warning("Phase 63: L6b init failed (non-fatal): %s", _l6b_exc)
+                self._l6b_enabled = False
 
     # ------------------------------------------------------------------
     # Phase 38: Per-player effective L4 threshold
@@ -753,6 +793,28 @@ class DualShockTransport:
         except Exception:
             log.warning("TemporalRhythmOracle unavailable — Layer 5 inactive")
 
+        # --- Phase 51: Game Profile ---
+        try:
+            from vapi_bridge.game_profile import get_profile_or_none  # type: ignore
+            _gp_id = getattr(self._cfg, "game_profile_id", "")
+            if _gp_id:
+                self._game_profile = get_profile_or_none(_gp_id)
+                if self._game_profile is not None:
+                    from controller.temporal_rhythm_oracle import TemporalRhythmOracle as _TRO  # type: ignore
+                    self._temporal_oracle = _TRO(
+                        button_priority_override=list(self._game_profile.l5_button_priority)
+                    )
+                    log.info(
+                        "Phase 51: game profile '%s' loaded — L5 priority=%s L6-Passive=%s",
+                        self._game_profile.display_name,
+                        self._game_profile.l5_button_priority,
+                        self._game_profile.l6_passive_enabled,
+                    )
+                else:
+                    log.warning("Phase 51: GAME_PROFILE_ID=%r not in registry", _gp_id)
+        except Exception as _gp_exc:
+            log.warning("Phase 51: game profile load skipped (non-fatal): %s", _gp_exc)
+
         # Phase 17: Layer 2B — IMU-Button Press Cross-Modal Latency Oracle
         try:
             from l2b_imu_press_correlation import ImuPressCorrelationOracle  # type: ignore
@@ -797,6 +859,24 @@ class DualShockTransport:
         self._store.upsert_device(did_hex, self._pubkey_hex)
         log.info("Device registered: %s... pubkey=%s...", did_hex[:16], self._pubkey_hex[:32])
 
+        # Phase 53: broadcast controller presence immediately on registration
+        # so the frontend knows a device is connected before the first PoAC record
+        try:
+            from vapi_bridge.transports.http import ws_broadcast as _ws_bcast
+            import asyncio as _asyncio
+            import json as _json
+            _asyncio.get_event_loop().call_soon_threadsafe(
+                lambda: _asyncio.create_task(
+                    _ws_bcast(_json.dumps({
+                        "type": "controller_registered",
+                        "device_id": did_hex[:16],
+                        "pubkey_prefix": self._pubkey_hex[:16] if self._pubkey_hex else "",
+                    }))
+                )
+            )
+        except Exception as _reg_bcast_exc:
+            log.debug("controller_registered broadcast skipped: %s", _reg_bcast_exc)
+
     # ------------------------------------------------------------------
     # Main session loop
     # ------------------------------------------------------------------
@@ -815,6 +895,10 @@ class DualShockTransport:
             if not frames:
                 await asyncio.sleep(self._interval)
                 continue
+
+            # Phase 53: reset pitl_meta at the start of each iteration so Bridge.on_record()
+            # never reads stale values from the previous cycle if an exception fires mid-loop.
+            self._pending_pitl_meta = {}
 
             # --- Phase 44: broadcast downsampled frames to /ws/frames clients ---
             try:
@@ -846,7 +930,19 @@ class DualShockTransport:
                         "buttons_cross": (_s.buttons >> 5) & 1,
                         "buttons_r2":    (_s.buttons >> 15) & 1 if _s.buttons > 0 else 0,
                     })
-                asyncio.create_task(_fbc(_json.dumps({"type": "frames", "frames": _out})))
+                # Phase 61: accumulate downsampled frames for session replay
+                self._replay_ring.extend(_out)
+                _frame_msg = _json.dumps({"type": "frames", "frames": _out})
+                asyncio.create_task(_fbc(_frame_msg))
+                # Phase 59: also send to per-device twin clients
+                try:
+                    from .transports.http import ws_twin_broadcast_frame as _twinfbc
+                    _twin_device_id = self._device_id_hex if hasattr(self, "_device_id_hex") else ""
+                    if _twin_device_id:
+                        _twin_frame_msg = _json.dumps({"type": "frame", "data": {"type": "frames", "frames": _out}})
+                        asyncio.create_task(_twinfbc(_twin_device_id, _twin_frame_msg))
+                except Exception:
+                    pass
             except Exception:
                 pass
 
@@ -1058,6 +1154,54 @@ class DualShockTransport:
                     "5-signal formula running as effective 4-signal this cycle"
                 )
 
+            # --- Phase 51: L6-Passive (read-only, no controller writes) ---
+            _l6p_onset_ms: float | None = None
+            _l6p_flag: bool = False
+            _L6P_PRESS = 64
+            _L6P_RELEASE = 30
+            try:  # Phase 52: guard entire L6-Passive block — math/type errors must not crash the session loop
+                if (
+                    self._game_profile is not None
+                    and self._game_profile.l6_passive_enabled
+                    and self._game_profile.l6_passive_button == "r2"
+                ):
+                    _now_l6p = time.monotonic() * 1000.0
+                    for _snap in frames:
+                        _r2v = int(getattr(_snap, "r2_trigger", 0))
+                        if not self._l6p_r2_above and _r2v >= _L6P_PRESS:
+                            self._l6p_r2_above = True
+                            if self._l6p_last_r2_ts > 0:
+                                _onset = _now_l6p - self._l6p_last_r2_ts
+                                _n_boot = self._game_profile.l6_passive_baseline_n
+                                if len(self._l6p_r2_onsets) < _n_boot:
+                                    self._l6p_r2_onsets.append(_onset)
+                                    if len(self._l6p_r2_onsets) == _n_boot:
+                                        self._l6p_baseline_ms = (
+                                            sum(self._l6p_r2_onsets) / _n_boot
+                                        )
+                                elif self._l6p_baseline_ms is not None:
+                                    _alpha = self._game_profile.l6_passive_ema_alpha
+                                    self._l6p_baseline_ms = (
+                                        _alpha * _onset
+                                        + (1.0 - _alpha) * self._l6p_baseline_ms
+                                    )
+                                    if _onset > self._game_profile.l6_passive_flag_ratio * self._l6p_baseline_ms:
+                                        _l6p_flag = True
+                                        self._l6p_flagged += 1
+                                        log.debug(
+                                            "L6-Passive: resistance event "
+                                            "onset=%.1fms baseline=%.1fms ratio=%.2f",
+                                            _onset, self._l6p_baseline_ms,
+                                            _onset / self._l6p_baseline_ms,
+                                        )
+                                    _l6p_onset_ms = _onset
+                                    self._l6p_events += 1
+                            self._l6p_last_r2_ts = _now_l6p
+                        elif self._l6p_r2_above and _r2v < _L6P_RELEASE:
+                            self._l6p_r2_above = False
+            except Exception as _l6p_exc:
+                log.warning("L6-Passive block error (non-fatal, session continues): %s", _l6p_exc)
+
             # Phase 23: Post-warmup continuity check — fires once when L4 classifier warms up.
             # Persists the classifier's mean/var state and launches async continuity attestation.
             if (not self._warmup_attested
@@ -1106,15 +1250,34 @@ class DualShockTransport:
             # l2c_inactive flag is emitted in _pending_pitl_meta for operator visibility.
             _p_l2b = _l2b_p_human  # already defaults to 0.5
             _p_l2c = _l2c_p_human  # already defaults to 0.5; phantom when L2C oracle is None
-            if self._l6_driver is not None:
-                # Phase C + Phase 17: L6 active — reweight to include L6 + L2B + L2C
+            # Phase 63: L6b is "active" once at least one probe has completed.
+            # Until probe_count >= 1, l6b_p_human=0.5 neutral prior contributes no signal.
+            _l6_active  = self._l6_driver is not None
+            _l6b_active = self._l6b_analyzer is not None and self._l6b_probe_count >= 1
+            if _l6_active and _l6b_active:
+                # Both L6 + L6b active — 7-signal formula. Coefficients sum = 1.00.
+                _humanity_prob = (
+                    0.20 * _p_l4 + 0.18 * _p_l5 + 0.12 * _p_e4
+                    + 0.14 * self._l6_p_human
+                    + 0.14 * self._l6b_p_human
+                    + 0.12 * _p_l2b + 0.10 * _p_l2c
+                )
+            elif _l6_active:
+                # L6 active only — 6-signal formula (UNCHANGED from Phase C). Sum = 1.00.
                 _humanity_prob = (
                     0.23 * _p_l4 + 0.22 * _p_l5 + 0.15 * _p_e4
                     + 0.15 * self._l6_p_human
                     + 0.15 * _p_l2b + 0.10 * _p_l2c
                 )
+            elif _l6b_active:
+                # L6b active only (no L6) — new 6-signal formula. Sum = 1.00.
+                _humanity_prob = (
+                    0.25 * _p_l4 + 0.24 * _p_l5 + 0.17 * _p_e4
+                    + 0.14 * self._l6b_p_human
+                    + 0.12 * _p_l2b + 0.08 * _p_l2c
+                )
             else:
-                # Phase 17: 5-signal formula (L4 + L5 + E4 + L2B + L2C)
+                # Baseline 5-signal formula (L4 + L5 + E4 + L2B + L2C). Sum = 1.00.
                 _humanity_prob = (
                     0.28 * _p_l4 + 0.27 * _p_l5 + 0.20 * _p_e4
                     + 0.15 * _p_l2b + 0.10 * _p_l2c
@@ -1141,6 +1304,15 @@ class DualShockTransport:
                     log.debug("L0 BT presence check error (non-fatal): %s", _bt_exc)
 
             # Phase 21: store PITL metadata sidecar — read by Bridge.on_record() for persistence
+            # Phase 55: ioID DID lookup from local store (non-blocking)
+            _ioid_did = None
+            if self._device_id is not None:
+                try:
+                    _ioid_rec = self._store.get_ioid_device(self._device_id.hex())
+                    _ioid_did = _ioid_rec.get("did") if _ioid_rec else None
+                except Exception:
+                    pass
+
             self._pending_pitl_meta = {
                 "l4_distance":        _l4_distance,
                 "l4_warmed_up":       _l4_warmed,
@@ -1166,7 +1338,25 @@ class DualShockTransport:
                 # True when right stick is in dead zone and L2C oracle returned None;
                 # the 0.10·p_L2C weight then contributes a fixed 0.05 phantom offset.
                 "l2c_inactive":         _l2c_max_corr is None,
+                # Phase 51: game profile
+                "game_profile_id":      getattr(self._game_profile, "profile_id", None),
+                "game_display_name":    getattr(self._game_profile, "display_name", None),
+                "l6p_onset_ms":         _l6p_onset_ms,
+                "l6p_flag":             _l6p_flag,
+                "l6p_baseline_ms":      self._l6p_baseline_ms,
+                "l6p_events":           self._l6p_events,
+                "l6p_flagged":          self._l6p_flagged,
+                # Phase 55: ioID DID
+                "ioid_did":             _ioid_did,
+                # Phase 63: L6b Neuromuscular Reflex
+                "l6b_enabled":          self._l6b_enabled,
+                "l6b_probe_count":      self._l6b_probe_count,
+                "l6b_p_human":          self._l6b_p_human if self._l6b_probe_count > 0 else None,
             }
+
+            # Phase 59: IBI snapshot for Biometric Heartbeat visualization
+            if hasattr(self._bio_extractor, "get_ibi_snapshot"):
+                self._pending_pitl_meta["ibi_snapshot"] = self._bio_extractor.get_ibi_snapshot(last_n=20)
 
             inf_name = GAMING_INFERENCE_NAMES.get(inference, f"0x{inference:02x}")
 
@@ -1276,6 +1466,54 @@ class DualShockTransport:
                                 except Exception:
                                     pass
 
+            # --- Phase 63: L6b Neuromuscular Reflex pre-buffer + probe window ---
+            if self._l6b_enabled and frames:
+                # Feed frames into pre-buffer (flat ax/ay/az format for L6bReflexAnalyzer)
+                for _f in frames:
+                    _l6b_entry = {
+                        "ax": getattr(_f, "accel_x", 0),
+                        "ay": getattr(_f, "accel_y", 0),
+                        "az": getattr(_f, "accel_z", 0),
+                    }
+                    if self._l6b_pending is None:
+                        self._l6b_pre_buffer.append(_l6b_entry)
+                    else:
+                        self._l6b_post_buffer.append(_l6b_entry)
+                # Check if capture window has closed
+                if self._l6b_pending is not None and self._l6b_analyzer is not None:
+                    self._l6b_pending["frames_remaining"] -= len(frames)
+                    if self._l6b_pending["frames_remaining"] <= 0:
+                        try:
+                            _l6b_result = self._l6b_analyzer.analyze(
+                                self._l6b_pending["pre_reports"],
+                                self._l6b_post_buffer,
+                                self._l6b_pending["probe_ts"],
+                            )
+                            self._l6b_p_human = self._l6b_analyzer.classify(_l6b_result)
+                            self._l6b_probe_count += 1
+                            log.debug(
+                                "Phase 63: L6b result latency=%.1fms class=%s p_human=%.3f",
+                                _l6b_result.latency_ms,
+                                _l6b_result.classification,
+                                self._l6b_p_human,
+                            )
+                            if self._store and self._device_id is not None:
+                                try:
+                                    self._store.insert_l6b_probe(
+                                        device_id=self._device_id.hex(),
+                                        probe_ts_ms=int(self._l6b_pending["probe_ts"] * 1000),
+                                        latency_ms=_l6b_result.latency_ms,
+                                        classification=_l6b_result.classification,
+                                        accel_delta_peak=_l6b_result.accel_delta_peak,
+                                    )
+                                except Exception as _store_exc:
+                                    log.debug("Phase 63: L6b store insert failed (non-fatal): %s", _store_exc)
+                        except Exception as _exc:
+                            log.warning("Phase 63: L6b analysis failed (non-fatal): %s", _exc)
+                        finally:
+                            self._l6b_pending = None
+                            self._l6b_post_buffer = []
+
             # --- Phase 13 E4: accumulate frames; update EWC world model every N intervals ---
             _e4_cognitive_drift = None
             if self._ewc_model is not None and frames:
@@ -1356,6 +1594,37 @@ class DualShockTransport:
                         )
                     except Exception as _exc:
                         log.warning("Phase C: L6 challenge dispatch failed (non-fatal): %s", _exc)
+
+            # --- Phase 63: L6b probe dispatch ---
+            self._l6b_loop_count += 1
+            _l6b_interval = getattr(self._cfg, "l6b_probe_interval_ticks", 6750)
+            if (
+                self._l6b_analyzer is not None
+                and self._l6b_pending is None
+                and self._l6b_loop_count % _l6b_interval == 0
+                and self._l6b_loop_count > 0
+                and self._reader and self._reader.ds
+                and self._l6_driver is not None  # reuse L6TriggerDriver for haptic delivery
+            ):
+                try:
+                    _probe_ts = await self._l6_driver.send_challenge(8, self._reader.ds)
+                    # Schedule trigger restore — 15ms after pulse to ensure BASELINE_OFF
+                    import asyncio as _al6b
+                    _al6b.get_event_loop().call_later(
+                        0.015,
+                        lambda: _al6b.ensure_future(
+                            self._l6_driver.clear_triggers(self._reader.ds)
+                        ) if self._reader and self._reader.ds else None,
+                    )
+                    self._l6b_pending = {
+                        "probe_ts": _probe_ts,
+                        "pre_reports": list(self._l6b_pre_buffer),
+                        "frames_remaining": int(350),  # 350ms capture window at ~1 report/ms
+                    }
+                    self._l6b_post_buffer = []
+                    log.debug("Phase 63: L6b probe dispatched ts=%.3f", _probe_ts)
+                except Exception as _exc:
+                    log.warning("Phase 63: L6b probe dispatch failed (non-fatal): %s", _exc)
 
             # --- Pace to interval ---
             elapsed = time.monotonic() - t_start
@@ -1613,6 +1882,17 @@ class DualShockTransport:
             await self._on_record(raw, "dualshock")
         except Exception as exc:
             log.warning("Bridge on_record error: %s", exc)
+        # Phase 61: store frame checkpoint for session replay
+        try:
+            import hashlib as _hl
+            _rh = _hl.sha256(raw[:164]).hexdigest()
+            self._store.store_frame_checkpoint(
+                device_id=self._device_id.hex() if self._device_id is not None else "",
+                record_hash=_rh,
+                frames=list(self._replay_ring),
+            )
+        except Exception:
+            pass
 
     async def _shutdown_cleanup(self):
         """Submit final SkillOracle update and reset controller state."""
@@ -1686,6 +1966,19 @@ class DualShockTransport:
                     asyncio.create_task(
                         self._chain.submit_pitl_proof(dev_hex, proof, fc, hp_int, infer, null, epoch)
                     )
+                    # Phase 55: ensure ioID registration (idempotent, non-fatal)
+                    asyncio.create_task(
+                        self._chain.ensure_ioid_registered(dev_hex, self._store)
+                    )
+                    # Phase 55: increment ioID session counter after successful proof
+                    asyncio.create_task(
+                        self._chain.ioid_increment_session(dev_hex)
+                    )
+                # Phase 62: update enrollment progress after each PITL proof
+                humanity_prob = float(hp_int) / 1000.0
+                asyncio.create_task(
+                    self._enrollment.update_enrollment(dev_hex, infer, humanity_prob)
+                )
                 log.info(
                     "Phase 27: PITL session proof stored: device=%s hp_int=%d fc=%s",
                     dev_hex[:16], hp_int, hex(fc)[:16],

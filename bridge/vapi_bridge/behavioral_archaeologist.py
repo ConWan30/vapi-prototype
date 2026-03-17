@@ -26,6 +26,9 @@ FEATURE_KEYS = [
     "grip_asymmetry",
     "stick_autocorr_lag1",
     "stick_autocorr_lag5",
+    # Phase 57: press_timing_jitter_variance — 10th active feature (was 9)
+    # Normalised IBI variance; human physiological jitter 0.001–0.05; bot < 0.00005.
+    "press_timing_jitter_variance",
 ]
 
 

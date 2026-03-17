@@ -120,6 +120,24 @@ CHALLENGE_PROFILES: dict[int, TriggerChallengeProfile] = {
         settle_threshold_ms=1500.0, # estimated — only 2 captures, not production-grade
         description="Maximum rigid resistance — both triggers",
     ),
+    # Phase 63: L6b Neuromuscular Reflex — sub-perceptual probe.
+    # NEVER include in ChallengeSequencer.select_random_profile() rotation.
+    # Amplitude 60/255 ≈ 24% — below conscious sensation threshold on CFI-ZCP1.
+    # Used exclusively by L6bReflexAnalyzer to trigger involuntary grip response.
+    8: TriggerChallengeProfile(
+        profile_id=8,
+        name="L6B_PROBE",
+        r2_mode=TRIGGER_PULSE, r2_forces=(60, 0, 0, 0, 0, 0, 0),
+        l2_mode=TRIGGER_OFF,  l2_forces=(0,),
+        onset_threshold_ms=280.0,   # not used by L6b analyzer; present for schema compat
+        settle_threshold_ms=500.0,
+        description=(
+            "Sub-perceptual 10ms R2 pulse (~24% amplitude). "
+            "Triggers involuntary neuromuscular reflex — NOT a voluntary press challenge. "
+            "Human IMU response latency: 80-280ms. Bot: 0-15ms. "
+            "Restore to BASELINE_OFF within 15ms of delivery."
+        ),
+    ),
 }
 
 

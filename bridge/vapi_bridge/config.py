@@ -232,6 +232,12 @@ class Config:
         default_factory=lambda: _env("PITL_SESSION_REGISTRY_ADDRESS", "")
     )
 
+    # --- Phase 62: PITLSessionRegistryV2 (Phase 62 C3 circuit) ---
+    # When set, submit_pitl_proof routes to v2 instead of v1.
+    pitl_session_registry_v2_address: str = field(
+        default_factory=lambda: _env("PITL_SESSION_REGISTRY_V2_ADDRESS", "")
+    )
+
     # --- Phase 28: PHG Credential (Soulbound On-Chain Credential Registry) ---
     phg_credential_address: str = field(
         default_factory=lambda: _env("PHG_CREDENTIAL_ADDRESS", "")
@@ -287,13 +293,17 @@ class Config:
     # --- L4 Calibration: Hardware-derived Mahalanobis thresholds ---
     # Calibrated from N=69 sessions (2 players, DualShock Edge USB, 2026-03-07).
     # anomaly  = mean+3sigma (99.7th pct) = 6.905  [converging — delta vs N=54 was +0.124]
-    # continuity = mean+2sigma (95th pct) = 5.190
+    # continuity = mean+2sigma (95th pct)
+    # Phase 57 recalibration (N=74, HIGH confidence, 12-feature space with jitter_var):
+    #   anomaly=7.009, continuity=5.367 (+4.2% / +5.3% vs Phase 46 6.726/5.097)
+    # Threshold rise is expected: adding press_timing_jitter_variance (feature 12) expands
+    # the Mahalanobis distance distribution; 3σ compensates correctly.
     # Use scripts/threshold_calibrator.py to recalibrate after new sessions.
     l4_anomaly_threshold: float = field(
-        default_factory=lambda: float(_env("L4_ANOMALY_THRESHOLD", "6.905"))
+        default_factory=lambda: float(_env("L4_ANOMALY_THRESHOLD", "7.009"))
     )
     l4_continuity_threshold: float = field(
-        default_factory=lambda: float(_env("L4_CONTINUITY_THRESHOLD", "5.190"))
+        default_factory=lambda: float(_env("L4_CONTINUITY_THRESHOLD", "5.367"))
     )
 
     # --- L5 Calibration: TemporalRhythmOracle thresholds ---
@@ -398,6 +408,58 @@ class Config:
     l6_capture_notes: str = field(
         default_factory=lambda: _env("L6_CAPTURE_NOTES", "")
     )
+
+    # --- Phase 51: Game-Aware Profiling ---
+    game_profile_id: str = field(
+        default_factory=lambda: _env("GAME_PROFILE_ID", "")
+    )
+    """
+    Active game profile slug. Overrides L5 button priority and enables L6-Passive.
+    Example: 'ncaa_cfb_26'. Empty = default priority, no L6-Passive.
+    Set via GAME_PROFILE_ID env var or bridge/.env.
+    """
+
+    # --- Phase 55: ioID Device Identity Registry ---
+    ioid_registry_address: str = field(
+        default_factory=lambda: _env("IOID_REGISTRY_ADDRESS", ""),
+    )
+
+    # --- Phase 56: ZK Tournament Passport ---
+    tournament_passport_address: str = field(
+        default_factory=lambda: _env("TOURNAMENT_PASSPORT_ADDRESS", ""),
+    )
+
+    # --- Phase 63: L6b Neuromuscular Reflex Layer ---
+    l6b_enabled: bool = field(
+        default_factory=lambda: _env("L6B_ENABLED", "false").lower() == "true"
+    )
+    """False by default — L6b disabled unless L6B_ENABLED=true env var set."""
+    l6b_probe_interval_ticks: int = field(
+        default_factory=lambda: int(_env("L6B_PROBE_INTERVAL_TICKS", "6750"))
+    )
+    """Ticks between L6b probe opportunities. Default 6750 ≈ 67.5s at 100Hz session loop."""
+    l6b_accel_delta_threshold_lsb: float = field(
+        default_factory=lambda: float(_env("L6B_ACCEL_DELTA_THRESHOLD_LSB", "500.0"))
+    )
+    """Min |accel_mag - pre_mean| (LSB) to count as a reflex impulse above noise floor."""
+    l6b_human_min_ms: float = field(
+        default_factory=lambda: float(_env("L6B_HUMAN_MIN_MS", "80.0"))
+    )
+    """Minimum latency (ms) to classify as HUMAN reflex (spinal reflex arc lower bound)."""
+    l6b_human_max_ms: float = field(
+        default_factory=lambda: float(_env("L6B_HUMAN_MAX_MS", "280.0"))
+    )
+    """Maximum latency (ms) to classify as HUMAN reflex (cortical loop upper bound)."""
+
+    # --- Phase 62: Player Enrollment Ceremony ---
+    enrollment_min_sessions: int = field(
+        default_factory=lambda: _env_int("ENROLLMENT_MIN_SESSIONS", 10)
+    )
+    """Minimum NOMINAL PITL sessions required to qualify for PHGCredential mint."""
+    enrollment_humanity_min: float = field(
+        default_factory=lambda: float(_env("ENROLLMENT_HUMANITY_MIN", "0.60"))
+    )
+    """Minimum average humanity probability (across NOMINAL sessions) for enrollment."""
 
     def validate(self) -> list[str]:
         """Return list of configuration errors (empty = valid)."""

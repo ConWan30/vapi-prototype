@@ -13,9 +13,13 @@ Endpoints:
   GET  /player/{device_id}      — Player dashboard (Trust Ledger + Identity Glyph)
 """
 
+import asyncio
+import hashlib as _hashlib
 import json
 import logging
+import math as _math
 import time
+from collections import defaultdict as _defaultdict
 
 from fastapi import FastAPI, Request, Response, HTTPException, WebSocket, WebSocketDisconnect
 from fastapi.middleware.cors import CORSMiddleware
@@ -26,6 +30,27 @@ from ..config import Config
 from ..store import Store
 
 log = logging.getLogger(__name__)
+
+# ---------------------------------------------------------------------------
+# Phase 58: Sliding-window per-IP rate limiter + API key hash helper
+# ---------------------------------------------------------------------------
+
+_rate_buckets: dict[str, list[float]] = _defaultdict(list)
+
+
+def _check_rate_limit(client_ip: str, limit: int) -> bool:
+    """Sliding-window per-IP rate limiter (60s window). Returns False if over limit."""
+    now = time.time()
+    _rate_buckets[client_ip] = [t for t in _rate_buckets[client_ip] if now - t < 60.0]
+    if len(_rate_buckets[client_ip]) >= limit:
+        return False
+    _rate_buckets[client_ip].append(now)
+    return True
+
+
+def _api_key_hash(key: str) -> str:
+    """SHA-256 prefix of operator key — for audit log storage (never store raw key)."""
+    return _hashlib.sha256(key.encode()).hexdigest()[:16]
 
 # ---------------------------------------------------------------------------
 # WebSocket broadcaster — module-level singleton
@@ -65,6 +90,38 @@ async def ws_frames_broadcast(message: str) -> None:
     _ws_frame_clients.difference_update(dead)
 
 
+# Phase 59: device-scoped fusion WebSocket client registry
+_ws_twin_clients: dict[str, set] = {}
+
+
+async def ws_twin_broadcast_frame(device_id: str, frame_msg: str) -> None:
+    """Broadcast a frame to /ws/twin/{device_id} clients (Phase 59)."""
+    clients = _ws_twin_clients.get(device_id, set())
+    if not clients:
+        return
+    dead: set = set()
+    for ws in list(clients):
+        try:
+            await ws.send_text(frame_msg)
+        except Exception:
+            dead.add(ws)
+    clients.difference_update(dead)
+
+
+async def ws_twin_broadcast_record(device_id: str, record_msg: str) -> None:
+    """Broadcast a PoAC record to /ws/twin/{device_id} clients (Phase 59)."""
+    clients = _ws_twin_clients.get(device_id, set())
+    if not clients:
+        return
+    dead: set = set()
+    for ws in list(clients):
+        try:
+            await ws.send_text(record_msg)
+        except Exception:
+            dead.add(ws)
+    clients.difference_update(dead)
+
+
 # Inference name map for WebSocket messages (gaming codes)
 _GAMING_INF_NAMES = {
     0x20: "NOMINAL",
@@ -77,10 +134,26 @@ _GAMING_INF_NAMES = {
 }
 
 
+def _safe_val(v):
+    """Convert NaN/Inf floats to None so json.dumps never raises ValueError.
+
+    pitl_l4_distance and similar fields can be NaN during classifier warmup.
+    json.dumps raises ValueError on NaN/Inf — this guard makes the WS broadcast
+    unconditionally safe regardless of biometric classifier state.
+    """
+    if v is None:
+        return None
+    if isinstance(v, float) and (_math.isnan(v) or _math.isinf(v)):
+        return None
+    return v
+
+
 def _record_to_ws_msg(record, pitl_meta=None) -> str:
     """Serialize a PoACRecord to a WebSocket broadcast JSON string.
 
     Phase 44: pitl_meta supplies L2B/L2C/l5_source fields not stored on the record object.
+    Phase 53: all float fields wrapped with _safe_val() to prevent ValueError on NaN/Inf
+    during L4 classifier warmup.
     """
     _m = pitl_meta or {}
     return json.dumps({
@@ -90,23 +163,31 @@ def _record_to_ws_msg(record, pitl_meta=None) -> str:
                                                   f"0x{record.inference_result:02X}"),
         "confidence":     record.confidence,
         "chain_ok":       True,
-        "pitl_l4_distance": record.pitl_l4_distance,
-        "pitl_l5_cv":       record.pitl_l5_cv,
-        "pitl_l5_entropy":  record.pitl_l5_entropy_bits,
-        "pitl_l5_quant":    record.pitl_l5_quant_score,
+        "pitl_l4_distance": _safe_val(record.pitl_l4_distance),
+        "pitl_l5_cv":       _safe_val(record.pitl_l5_cv),
+        "pitl_l5_entropy":  _safe_val(record.pitl_l5_entropy_bits),
+        "pitl_l5_quant":    _safe_val(record.pitl_l5_quant_score),
         "ts_ms":           record.timestamp_ms,
         "device_id":       record.device_id.hex()[:16] if record.device_id else "",
         # Phase 44: enriched PITL fields for Capture Monitor
-        "humanity_prob":         record.pitl_humanity_prob,
-        "l5_rhythm_humanity":    record.pitl_l5_rhythm_humanity,
-        "l4_drift_velocity":     record.pitl_l4_drift_velocity,
+        "humanity_prob":         _safe_val(record.pitl_humanity_prob),
+        "l5_rhythm_humanity":    _safe_val(record.pitl_l5_rhythm_humanity),
+        "l4_drift_velocity":     _safe_val(record.pitl_l4_drift_velocity),
         "l5_source":             _m.get("l5_source"),
-        "l2b_coupled_fraction":  _m.get("l2b_coupled_fraction"),
-        "l2b_p_human":           _m.get("l2b_p_human"),
-        "l2c_max_corr":          _m.get("l2c_max_corr"),
-        "l2c_p_human":           _m.get("l2c_p_human"),
+        "l2b_coupled_fraction":  _safe_val(_m.get("l2b_coupled_fraction")),
+        "l2b_p_human":           _safe_val(_m.get("l2b_p_human")),
+        "l2c_max_corr":          _safe_val(_m.get("l2c_max_corr")),
+        "l2c_p_human":           _safe_val(_m.get("l2c_p_human")),
         # True when right stick is in dead zone → L2C oracle returned None → phantom 0.05 weight.
         "l2c_inactive":          _m.get("l2c_inactive"),
+        # Phase 51: game profile
+        "game_profile_id":  _m.get("game_profile_id"),
+        "l6p_onset_ms":     _safe_val(_m.get("l6p_onset_ms")),
+        "l6p_flag":         _m.get("l6p_flag"),
+        "l6p_baseline_ms":  _safe_val(_m.get("l6p_baseline_ms")),
+        # Phase 55: ioID device DID
+        "ioid_did":         _m.get("ioid_did"),
+        "ibi_snapshot":     _m.get("ibi_snapshot"),   # Phase 59
     })
 
 
@@ -119,10 +200,17 @@ def create_app(cfg: Config, store: Store, on_record) -> FastAPI:
 
     app = FastAPI(title="VAPI Bridge", version="0.2.0-rc1")
 
-    # --- CORS (Phase 43 — frontend dashboard on :5173) ---
+    # --- CORS (Phase 43 — frontend dashboard on :5173/:5174) ---
+    # Phase 52: include :5174 so Vite fallback port (when strictPort=false) also works.
+    # Extra origin configurable via FRONTEND_ORIGIN env var for non-localhost setups.
+    import os as _cors_os
+    _cors_origins = ["http://localhost:5173", "http://localhost:5174"]
+    _extra_origin = _cors_os.getenv("FRONTEND_ORIGIN", "").strip()
+    if _extra_origin:
+        _cors_origins.append(_extra_origin)
     app.add_middleware(
         CORSMiddleware,
-        allow_origins=["http://localhost:5173"],
+        allow_origins=_cors_origins,
         allow_methods=["GET", "POST"],
         allow_headers=["*"],
     )
@@ -136,8 +224,14 @@ def create_app(cfg: Config, store: Store, on_record) -> FastAPI:
         try:
             while True:
                 # Keep-alive: client sends ping text, we ignore it
-                await ws.receive_text()
+                # Phase 54: 60s timeout prevents indefinite block on silent/crashed clients
+                try:
+                    await asyncio.wait_for(ws.receive_text(), timeout=60.0)
+                except asyncio.TimeoutError:
+                    break  # client silent 60s — close connection
         except (WebSocketDisconnect, Exception):
+            pass
+        finally:
             _ws_clients.discard(ws)
 
     # Phase 44: raw downsampled frame stream (20 Hz, InputSnapshot batches)
@@ -147,8 +241,14 @@ def create_app(cfg: Config, store: Store, on_record) -> FastAPI:
         _ws_frame_clients.add(ws)
         try:
             while True:
-                await ws.receive_text()
+                # Phase 54: 60s timeout prevents indefinite block on silent/crashed clients
+                try:
+                    await asyncio.wait_for(ws.receive_text(), timeout=60.0)
+                except asyncio.TimeoutError:
+                    break
         except (WebSocketDisconnect, Exception):
+            pass
+        finally:
             _ws_frame_clients.discard(ws)
 
     # --- Webhook API ---
@@ -234,6 +334,171 @@ def create_app(cfg: Config, store: Store, on_record) -> FastAPI:
         )
         return {"by_profile": counts}
 
+    # --- Phase 56: Tournament Passport ---
+
+    @app.post("/operator/passport")
+    async def operator_passport(request: Request):
+        """Request tournament passport status / generation for a device (Phase 56)."""
+        # Phase 58: rate limit + auth check before parsing body
+        client_ip = request.client.host if request.client else "unknown"
+        if not _check_rate_limit(client_ip, cfg.rate_limit_per_minute):
+            store.log_operator_action("/operator/passport", "", "", client_ip, 429, "rate_limited")
+            return JSONResponse({"error": "rate_limit_exceeded"}, status_code=429)
+        x_api_key = request.headers.get("x-api-key", "")
+        if not cfg.operator_api_key:
+            return JSONResponse({"error": "operator_api_key not configured"}, status_code=503)
+        if x_api_key != cfg.operator_api_key:
+            store.log_operator_action("/operator/passport", "", _api_key_hash(x_api_key),
+                                      client_ip, 401, "unauthorized")
+            return JSONResponse({"error": "unauthorized"}, status_code=401)
+        try:
+            body = await request.json()
+        except Exception:
+            raise HTTPException(status_code=400, detail="Invalid JSON body")
+        device_id  = body.get("device_id", "")
+        min_humanity = float(body.get("min_humanity", 0.60))
+        if not device_id:
+            raise HTTPException(status_code=400, detail="device_id required")
+        # Check ioID registration
+        ioid_record = store.get_ioid_device(device_id)
+        if not ioid_record:
+            return JSONResponse({
+                "status":    "ioid_not_registered",
+                "device_id": device_id[:16],
+            })
+        # Check existing passport
+        existing = store.get_tournament_passport(device_id)
+        if existing and existing.get("passport_hash"):
+            return JSONResponse({
+                "status":          "passport_ready",
+                "device_id":       device_id[:16],
+                "did":             ioid_record.get("did", ""),
+                "passport_hash":   existing.get("passport_hash", ""),
+                "min_humanity_int": existing.get("min_humanity_int", 0),
+                "issued_at":       existing.get("issued_at", 0),
+                "on_chain":        bool(existing.get("on_chain", 0)),
+            })
+        # Check eligible sessions
+        eligible = store.get_passport_eligible_sessions(device_id, min_humanity, limit=10)
+        n_eligible = len(eligible)
+        if n_eligible < 5:
+            return JSONResponse({
+                "status":            "pending_sessions",
+                "device_id":         device_id[:16],
+                "did":               ioid_record.get("did", ""),
+                "eligible_sessions": n_eligible,
+                "required":          5,
+                "min_humanity":      min_humanity,
+            })
+        min_hp = min(s.get("pitl_humanity_prob", 0.0) or 0.0 for s in eligible[:5])
+        return JSONResponse({
+            "status":            "eligible",
+            "device_id":         device_id[:16],
+            "did":               ioid_record.get("did", ""),
+            "eligible_sessions": n_eligible,
+            "min_humanity_int":  int(min_hp * 1000),
+        })
+
+    @app.post("/operator/passport/issue")
+    async def issue_passport(request: Request):
+        """Issue a ZK Tournament Passport for an eligible device (Phase 56).
+
+        Requires: ioID registered + >=5 NOMINAL sessions with humanity >= min_humanity.
+        Generates a real Groth16 proof when artifacts are available, mock proof otherwise.
+        Submits to PITLTournamentPassport contract if chain is configured.
+
+        Body JSON:
+          { "device_id": "...", "device_secret": "...", "min_humanity": 0.60 }
+        """
+        # Phase 58: rate limit + auth check before parsing body
+        client_ip = request.client.host if request.client else "unknown"
+        if not _check_rate_limit(client_ip, cfg.rate_limit_per_minute):
+            store.log_operator_action("/operator/passport/issue", "", "", client_ip, 429, "rate_limited")
+            return JSONResponse({"error": "rate_limit_exceeded"}, status_code=429)
+        x_api_key = request.headers.get("x-api-key", "")
+        if not cfg.operator_api_key:
+            return JSONResponse({"error": "operator_api_key not configured"}, status_code=503)
+        if x_api_key != cfg.operator_api_key:
+            store.log_operator_action("/operator/passport/issue", "", _api_key_hash(x_api_key),
+                                      client_ip, 401, "unauthorized")
+            return JSONResponse({"error": "unauthorized"}, status_code=401)
+        try:
+            body = await request.json()
+        except Exception:
+            raise HTTPException(status_code=400, detail="Invalid JSON body")
+        device_id     = body.get("device_id", "")
+        device_secret = body.get("device_secret", "")
+        min_humanity  = float(body.get("min_humanity", 0.60))
+        if not device_id:
+            raise HTTPException(status_code=400, detail="device_id required")
+        if not device_secret:
+            raise HTTPException(status_code=400, detail="device_secret required")
+
+        ioid_record = store.get_ioid_device(device_id)
+        if not ioid_record:
+            return JSONResponse({"status": "ioid_not_registered", "device_id": device_id[:16]},
+                                status_code=400)
+
+        eligible = store.get_passport_eligible_sessions(device_id, min_humanity, limit=5)
+        if len(eligible) < 5:
+            return JSONResponse({
+                "status":            "pending_sessions",
+                "eligible_sessions": len(eligible),
+                "required":          5,
+            }, status_code=400)
+
+        from ..passport_prover import PassportProver
+        prover = PassportProver()
+
+        nullifiers   = [s.get("pitl_nullifier_hash") or "0" * 64 for s in eligible]
+        humanitys    = [float(s.get("pitl_humanity_prob") or 0.0) for s in eligible]
+        try:
+            proof_bytes, passport_hash_bytes, min_humanity_int = prover.generate_proof(
+                session_nullifiers=nullifiers,
+                session_humanitys=humanitys,
+                device_secret=device_secret,
+                ioid_token_id=0,
+                epoch=0,
+            )
+        except Exception as exc:
+            log.warning("Passport proof generation failed for %s: %s", device_id[:16], exc)
+            return JSONResponse({"status": "proof_failed", "error": str(exc)}, status_code=500)
+
+        # Submit to chain if configured
+        tx_hash  = None
+        on_chain = False
+        if hasattr(on_record, "chain"):
+            chain = on_record.chain
+            try:
+                null_bytes = [bytes.fromhex(n if len(n) == 64 else "0" * 64) for n in nullifiers]
+                tx_hash = await chain.submit_tournament_passport(
+                    bytes.fromhex(device_id), proof_bytes, null_bytes,
+                    passport_hash_bytes, 0, min_humanity_int, 0,
+                )
+                on_chain = tx_hash is not None
+            except Exception as exc:
+                log.warning("Chain passport submission failed: %s", exc)
+
+        store.store_tournament_passport(
+            device_id, passport_hash_bytes.hex(), 0,
+            min_humanity_int, tx_hash, on_chain=on_chain,
+        )
+
+        # Phase 58: audit log on successful issuance
+        store.log_operator_action("/operator/passport/issue", device_id[:16],
+                                  _api_key_hash(x_api_key), client_ip, 200, "issued")
+
+        return JSONResponse({
+            "status":           "issued",
+            "did":              ioid_record.get("did", ""),
+            "passport_hash":    passport_hash_bytes.hex(),
+            "min_humanity_int": min_humanity_int,
+            "session_count":    5,
+            "mock_proof":       not prover._available,
+            "on_chain":         on_chain,
+            "tx_hash":          tx_hash,
+        })
+
     # --- Dashboard Snapshot API (Phase 43) ---
 
     @app.get("/dashboard/snapshot")
@@ -256,7 +521,7 @@ def create_app(cfg: Config, store: Store, on_record) -> FastAPI:
 
         session_block = {
             "total_sessions": _stats.get("records_total", 69),
-            "total_tests":    877,
+            "total_tests":    910,
             "contracts_live": 13,
             "players":        len(_devices) or 3,
         }
@@ -280,6 +545,30 @@ def create_app(cfg: Config, store: Store, on_record) -> FastAPI:
                         "anomaly":    float(_thresh.get("l4_anomaly",    l4_anomaly)),
                         "continuity": float(_thresh.get("l4_continuity", l4_continuity)),
                     }]
+        except Exception:
+            pass
+
+        # Phase 50: enrich threshold_history from store (overrides JSON file if records exist)
+        try:
+            _store_hist = store.get_threshold_history(limit=24)
+            if _store_hist:
+                _CONT_RATIO = 5.097 / 6.726
+                _formatted = []
+                for row in reversed(_store_hist):  # oldest first for chart left-to-right
+                    if row.get("threshold_type") in ("global_mode6", "agent_triggered"):
+                        _ts = row.get("created_at", 0.0) or 0.0
+                        _label = (
+                            _dt.datetime.utcfromtimestamp(float(_ts)).strftime("%m-%d %H:%M")
+                            if _ts else f"C{len(_formatted) + 1}"
+                        )
+                        _anm = float(row.get("new_value") or l4_anomaly)
+                        _formatted.append({
+                            "cycle":      _label,
+                            "anomaly":    round(_anm, 3),
+                            "continuity": round(_anm * _CONT_RATIO, 3),
+                        })
+                if _formatted:
+                    threshold_history = _formatted
         except Exception:
             pass
 
@@ -353,8 +642,11 @@ def create_app(cfg: Config, store: Store, on_record) -> FastAPI:
         }
 
         # ── hardware ──────────────────────────────────────────────────
+        # Phase 52: initialise controller_connected=False and only set True when the
+        # store confirms a live device. The old cfg.dualshock_enabled initialiser
+        # was stale (static config) — it stayed True even after the controller dropped.
         hardware_block = {
-            "controller_connected": bool(getattr(cfg, "dualshock_enabled", False)),
+            "controller_connected": False,
             "polling_rate_hz":      1000.0,
             "last_seen_ts":         "",
         }
@@ -368,16 +660,176 @@ def create_app(cfg: Config, store: Store, on_record) -> FastAPI:
                         _dt.datetime.utcfromtimestamp(float(_last_ts)).isoformat() + "Z"
                     )
                 hardware_block["controller_connected"] = True
+        except Exception as _hw_exc:
+            log.warning("hardware_block query failed: %s", _hw_exc)
+
+        # ── phase50 ──────────────────────────────────────────────────
+        phase50_block = {
+            "calib_agent_events_pending": 0,
+            "last_threshold_update_ts":   "",
+            "threshold_history_count":    0,
+        }
+        try:
+            _pending_evts = store.read_unconsumed_events("calibration_intelligence_agent")
+            phase50_block["calib_agent_events_pending"] = len(_pending_evts)
+        except Exception:
+            pass
+        try:
+            _th_all = store.get_threshold_history(limit=100)
+            phase50_block["threshold_history_count"] = len(_th_all)
+            if _th_all:
+                _ts0 = _th_all[0].get("created_at", 0.0) or 0.0
+                if _ts0:
+                    phase50_block["last_threshold_update_ts"] = (
+                        _dt.datetime.utcfromtimestamp(float(_ts0)).isoformat() + "Z"
+                    )
         except Exception:
             pass
 
+        # ── game_profile (Phase 51) ──────────────────────────────────────
+        _gp_id   = getattr(cfg, "game_profile_id", "") if cfg else ""
+        _gp_name = ""
+        _gp_l5   = []
+        _gp_map  = {}
+        _gp_l6p  = False
+        if _gp_id:
+            try:
+                from vapi_bridge.game_profile import get_profile_or_none
+                _gp = get_profile_or_none(_gp_id)
+                if _gp:
+                    _gp_name = _gp.display_name
+                    _gp_l5   = list(_gp.l5_button_priority)
+                    _gp_map  = dict(_gp.button_map)
+                    _gp_l6p  = _gp.l6_passive_enabled
+            except Exception:
+                pass
+
+        game_profile_block = {
+            "active":        bool(_gp_id and _gp_name),
+            "profile_id":    _gp_id,
+            "display_name":  _gp_name,
+            "l5_priority":   _gp_l5,
+            "button_map":    _gp_map,
+            "l6p_enabled":   _gp_l6p,
+        }
+
         return {
-            "session":     session_block,
-            "calibration": calibration_block,
-            "pitl_layers": pitl_layers,
-            "phg":         phg_block,
-            "l6":          l6_block,
-            "hardware":    hardware_block,
+            "session":      session_block,
+            "calibration":  calibration_block,
+            "pitl_layers":  pitl_layers,
+            "phg":          phg_block,
+            "l6":           l6_block,
+            "hardware":     hardware_block,
+            "phase50":      phase50_block,
+            "game_profile": game_profile_block,
+        }
+
+    # --- Phase 59: My Controller Twin endpoints ---
+
+    @app.get("/controller/twin/{device_id}")
+    async def controller_twin(device_id: str):
+        """Aggregated My Controller page snapshot (Phase 59)."""
+        return store.get_controller_twin_snapshot(device_id)
+
+    @app.get("/controller/twin/{device_id}/chain")
+    async def controller_twin_chain(device_id: str, limit: int = 50):
+        """PoAC chain lock points for timeline scrubber (Phase 59)."""
+        with store._conn() as conn:
+            rows = conn.execute(
+                "SELECT record_hash, inference, pitl_l4_distance, pitl_humanity_prob, "
+                "pitl_l4_features, created_at FROM records "
+                "WHERE device_id = ? ORDER BY created_at DESC LIMIT ?",
+                (device_id, min(limit, 200)),
+            ).fetchall()
+        return [dict(r) for r in rows]
+
+    @app.get("/controller/twin/{device_id}/replay")
+    async def controller_twin_replay(device_id: str, record_hash: str = ""):
+        """Return frame checkpoint for session replay (Phase 61)."""
+        if not record_hash:
+            return {"error": "record_hash required", "frames": []}
+        result = store.get_frame_checkpoint(device_id, record_hash)
+        if result is None:
+            return {"record_hash": record_hash, "frames": [], "frame_count": 0}
+        return result
+
+    @app.get("/controller/twin/{device_id}/checkpoints")
+    async def controller_twin_checkpoints(device_id: str, limit: int = 100):
+        """Return list of record_hashes that have frame checkpoints (Phase 61)."""
+        hashes = store.list_checkpoints_for_device(device_id, min(limit, 500))
+        return {"device_id": device_id, "checkpoints": hashes, "count": len(hashes)}
+
+    @app.get("/controller/twin/{device_id}/features")
+    async def controller_twin_features(device_id: str, limit: int = 50):
+        """Return per-record L4 feature vectors from DB for scatter plot (Phase 61)."""
+        import json as _json
+        with store._conn() as conn:
+            rows = conn.execute(
+                "SELECT record_hash, pitl_l4_features, pitl_l4_distance, created_at "
+                "FROM records WHERE device_id = ? AND pitl_l4_features IS NOT NULL "
+                "ORDER BY created_at DESC LIMIT ?",
+                (device_id, min(limit, 200)),
+            ).fetchall()
+        result = []
+        for r in rows:
+            try:
+                feats = _json.loads(r["pitl_l4_features"]) if r["pitl_l4_features"] else None
+            except Exception:
+                feats = None
+            result.append({
+                "record_hash":  r["record_hash"],
+                "l4_distance":  r["pitl_l4_distance"],
+                "features":     feats,
+                "created_at":   r["created_at"],
+            })
+        return result
+
+    @app.websocket("/ws/twin/{device_id}")
+    async def ws_twin(ws: WebSocket, device_id: str):
+        """Device-scoped fusion stream: frames + PITL overlays (Phase 59)."""
+        await ws.accept()
+        if device_id not in _ws_twin_clients:
+            _ws_twin_clients[device_id] = set()
+        _ws_twin_clients[device_id].add(ws)
+        try:
+            while True:
+                try:
+                    await asyncio.wait_for(ws.receive_text(), timeout=60.0)
+                except asyncio.TimeoutError:
+                    continue  # keepalive — frontend sends no pings, that's fine
+        except (WebSocketDisconnect, Exception):
+            pass
+        finally:
+            _ws_twin_clients.get(device_id, set()).discard(ws)
+            if not _ws_twin_clients.get(device_id):
+                _ws_twin_clients.pop(device_id, None)
+
+    # --- Phase 62: Player Enrollment Ceremony ---
+
+    @app.get("/enrollment/status/{device_id}")
+    async def enrollment_status(device_id: str):
+        """Return PHG credential enrollment progress for a device (Phase 62)."""
+        row = store.get_enrollment(device_id)
+        required_sessions = getattr(cfg, "enrollment_min_sessions", 10)
+        required_humanity = getattr(cfg, "enrollment_humanity_min", 0.60)
+        if not row:
+            nominal, avg_h = store.count_nominal_sessions(device_id)
+            return {
+                "device_id":        device_id,
+                "status":           "pending",
+                "sessions_nominal": nominal,
+                "sessions_total":   0,
+                "avg_humanity":     round(avg_h, 3),
+                "tx_hash":          "",
+                "eligible_at":      None,
+                "credentialed_at":  None,
+                "required_sessions": required_sessions,
+                "required_humanity": required_humanity,
+            }
+        return {
+            **row,
+            "required_sessions": required_sessions,
+            "required_humanity": required_humanity,
         }
 
     # --- Dashboards ---

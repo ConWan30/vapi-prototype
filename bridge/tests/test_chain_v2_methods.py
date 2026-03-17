@@ -92,11 +92,13 @@ class TestVerifyPoAC(unittest.TestCase):
 
         asyncio.run(client.verify_poac(DEVICE_ID, RAW_BODY, SIGNATURE, schema_version=0))
 
-        # Should have passed the legacy verifyPoAC function builder to _send_tx
-        client._verifier.functions.verifyPoAC.assert_called_once_with(
-            DEVICE_ID, RAW_BODY, SIGNATURE
+        # Fix (Phase 51): verify_poac now passes the UNBOUND function + args to _send_tx
+        # (old pattern pre-bound args then called _send_tx(fn) with no args — caused
+        # "0 argument(s)" revert on testnet). Assert _send_tx got the right function ref + args.
+        client._send_tx.assert_called_once_with(
+            client._verifier.functions.verifyPoAC,
+            DEVICE_ID, RAW_BODY, SIGNATURE,
         )
-        client._verifier.functions.verifyPoACWithSchema.assert_not_called()
 
     def test_verify_poac_calls_verifyPoACWithSchema_when_schema_version_is_2(self):
         client = _make_client()
@@ -104,10 +106,10 @@ class TestVerifyPoAC(unittest.TestCase):
 
         asyncio.run(client.verify_poac(DEVICE_ID, RAW_BODY, SIGNATURE, schema_version=2))
 
-        client._verifier.functions.verifyPoACWithSchema.assert_called_once_with(
-            DEVICE_ID, RAW_BODY, SIGNATURE, 2
+        client._send_tx.assert_called_once_with(
+            client._verifier.functions.verifyPoACWithSchema,
+            DEVICE_ID, RAW_BODY, SIGNATURE, 2,
         )
-        client._verifier.functions.verifyPoAC.assert_not_called()
 
 
 class TestRegisterAttestedV2(unittest.TestCase):

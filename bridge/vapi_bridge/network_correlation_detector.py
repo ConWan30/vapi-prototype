@@ -47,9 +47,8 @@ class NetworkCorrelationDetector:
         Diagonal = 0. Missing/failed compute_distance → epsilon * 10 fill.
         """
         if not HAS_NUMPY:
-            import numpy as _np
             n = len(device_ids)
-            return _np.zeros((n, n))
+            return [[0.0] * n for _ in range(n)]
 
         n = len(device_ids)
         mat = np.full((n, n), self.epsilon * 10, dtype=np.float64)

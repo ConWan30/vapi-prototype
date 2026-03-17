@@ -554,6 +554,92 @@ PITL_SESSION_REGISTRY_ABI = [
     },
 ]
 
+IOID_REGISTRY_ABI = [
+    {
+        "name": "register",
+        "type": "function",
+        "stateMutability": "nonpayable",
+        "inputs": [
+            {"name": "deviceId",      "type": "bytes32"},
+            {"name": "deviceAddress", "type": "address"},
+            {"name": "did",           "type": "string"},
+        ],
+        "outputs": [],
+    },
+    {
+        "name": "incrementSession",
+        "type": "function",
+        "stateMutability": "nonpayable",
+        "inputs": [{"name": "deviceId", "type": "bytes32"}],
+        "outputs": [],
+    },
+    {
+        "name": "getDID",
+        "type": "function",
+        "stateMutability": "view",
+        "inputs": [{"name": "deviceId", "type": "bytes32"}],
+        "outputs": [{"name": "", "type": "string"}],
+    },
+    {
+        "name": "isRegistered",
+        "type": "function",
+        "stateMutability": "view",
+        "inputs": [{"name": "deviceId", "type": "bytes32"}],
+        "outputs": [{"name": "", "type": "bool"}],
+    },
+    {
+        "name": "getDeviceCount",
+        "type": "function",
+        "stateMutability": "view",
+        "inputs": [],
+        "outputs": [{"name": "", "type": "uint256"}],
+    },
+]
+
+TOURNAMENT_PASSPORT_ABI = [
+    {
+        "name": "submitPassport",
+        "type": "function",
+        "stateMutability": "nonpayable",
+        "inputs": [
+            {"name": "deviceId",       "type": "bytes32"},
+            {"name": "proof",          "type": "bytes"},
+            {"name": "nullifiers",     "type": "bytes32[5]"},
+            {"name": "passportHash",   "type": "bytes32"},
+            {"name": "ioidTokenId",    "type": "uint256"},
+            {"name": "minHumanityInt", "type": "uint256"},
+            {"name": "epoch",          "type": "uint256"},
+        ],
+        "outputs": [],
+    },
+    {
+        "name": "getPassport",
+        "type": "function",
+        "stateMutability": "view",
+        "inputs": [{"name": "deviceId", "type": "bytes32"}],
+        "outputs": [
+            {
+                "name": "",
+                "type": "tuple",
+                "components": [
+                    {"name": "passportHash",   "type": "bytes32"},
+                    {"name": "ioidTokenId",    "type": "uint256"},
+                    {"name": "minHumanityInt", "type": "uint256"},
+                    {"name": "issuedAt",       "type": "uint256"},
+                    {"name": "active",         "type": "bool"},
+                ],
+            }
+        ],
+    },
+    {
+        "name": "hasPassport",
+        "type": "function",
+        "stateMutability": "view",
+        "inputs": [{"name": "deviceId", "type": "bytes32"}],
+        "outputs": [{"name": "", "type": "bool"}],
+    },
+]
+
 IDENTITY_REGISTRY_ABI = [
     {
         "name": "attestContinuity",
@@ -850,6 +936,36 @@ class ChainClient:
         else:
             self._federated_threat_registry = None
 
+        # Phase 55: ioID Device Identity Registry (optional)
+        ioid_addr = getattr(cfg, "ioid_registry_address", "")
+        if ioid_addr:
+            self._ioid_registry = self._w3.eth.contract(
+                address=self._w3.to_checksum_address(ioid_addr),
+                abi=IOID_REGISTRY_ABI,
+            )
+        else:
+            self._ioid_registry = None
+
+        # Phase 62: PITLSessionRegistryV2 (Phase 62 C3 circuit — preferred over v1)
+        pitl_v2_addr = getattr(cfg, "pitl_session_registry_v2_address", "")
+        if pitl_v2_addr:
+            self._pitl_registry_v2 = self._w3.eth.contract(
+                address=self._w3.to_checksum_address(pitl_v2_addr),
+                abi=PITL_SESSION_REGISTRY_ABI,
+            )
+        else:
+            self._pitl_registry_v2 = None
+
+        # Phase 56: Tournament Passport (optional)
+        tp_addr = getattr(cfg, "tournament_passport_address", "")
+        if tp_addr:
+            self._tournament_passport = self._w3.eth.contract(
+                address=self._w3.to_checksum_address(tp_addr),
+                abi=TOURNAMENT_PASSPORT_ABI,
+            )
+        else:
+            self._tournament_passport = None
+
     @classmethod
     def generate_keystore(cls, output_path: str, password: str) -> str:
         """Encrypt the BRIDGE_PRIVATE_KEY env var to an Ethereum keystore JSON file.
@@ -931,7 +1047,11 @@ class ChainClient:
             raise RuntimeError(f"Contract revert: {e}") from e
 
         signed = self._account.sign_transaction(tx)
-        tx_hash = await self._w3.eth.send_raw_transaction(signed.raw_transaction)
+        try:
+            tx_hash = await self._w3.eth.send_raw_transaction(signed.raw_transaction)
+        except Exception:
+            await self._reset_nonce()  # Phase 54: reset stale nonce on send failure
+            raise
         return tx_hash.hex()
 
     async def wait_for_receipt(self, tx_hash: str, timeout: int = 60) -> dict:
@@ -1118,7 +1238,12 @@ class ChainClient:
             )
             return True, tx_hash
         except Exception as exc:
-            log.warning("ensure_device_registered_tiered failed (non-fatal): %s", exc)
+            err_str = str(exc).lower()
+            if any(p in err_str for p in ("insufficient funds", "out of gas", "f46a06ea",
+                                           "execution reverted", "transaction reverted")):
+                log.warning("ensure_device_registered_tiered: permanent gas/revert error (non-fatal): %s", exc)
+            else:
+                log.warning("ensure_device_registered_tiered failed (non-fatal, may retry): %s", exc)
             return False, None
 
     async def ensure_device_registered(
@@ -1231,14 +1356,15 @@ class ChainClient:
         Returns tx hash hex string.
         """
         if schema_version > 0:
-            fn = self._verifier.functions.verifyPoACWithSchema(
-                device_id, raw_body, signature, schema_version
+            tx_hash = await self._send_tx(
+                self._verifier.functions.verifyPoACWithSchema,
+                device_id, raw_body, signature, schema_version,
             )
         else:
-            fn = self._verifier.functions.verifyPoAC(
-                device_id, raw_body, signature
+            tx_hash = await self._send_tx(
+                self._verifier.functions.verifyPoAC,
+                device_id, raw_body, signature,
             )
-        tx_hash = await self._send_tx(fn)
         log.info(
             "verify_poac: device=%s schema=%d tx=%s",
             device_id.hex()[:16], schema_version, tx_hash[:16],
@@ -1329,7 +1455,7 @@ class ChainClient:
                 if current_block <= last_block:
                     continue
                 logs = await event_filter().get_logs(
-                    fromBlock=last_block + 1, toBlock=current_block
+                    from_block=last_block + 1, to_block=current_block
                 )
                 for entry in logs:
                     addr = entry["args"]["manufacturer"].lower()
@@ -1477,12 +1603,13 @@ class ChainClient:
     ) -> str:
         """Submit a PITL ZK session proof to PITLSessionRegistry.
 
-        No-op (returns empty string) when PITL_SESSION_REGISTRY_ADDRESS is not configured.
+        Submits to PITLSessionRegistryV2 (Phase 62, PITL_SESSION_REGISTRY_V2_ADDRESS) if
+        configured; falls back to v1 (PITL_SESSION_REGISTRY_ADDRESS). No-op if neither is set.
 
         Args:
             device_id:          64-char hex device identifier.
             proof_bytes:        256-byte Groth16 proof wire format.
-            feature_commitment: Poseidon(scaledFeatures[0..6]) as integer.
+            feature_commitment: Poseidon(8)(scaledFeatures[0..6], inferenceCodeFromBody) — Phase 62.
             humanity_prob_int:  l5_humanity × 1000 ∈ [0, 1000].
             inference_code:     8-bit VAPI inference result (e.g. 0x00 CLEAN, 0x30 L4 anomaly).
                                 Circuit C2 enforces this ∉ [40, 42] — a proof with a hard
@@ -1493,12 +1620,15 @@ class ChainClient:
         Returns:
             Transaction hash hex string, or "" if registry not configured.
         """
-        if not self._pitl_registry:
-            log.debug("submit_pitl_proof: PITL_SESSION_REGISTRY_ADDRESS not configured, skipping")
+        # Phase 62: prefer v2 (Phase 62 C3 circuit) if configured; fallback to v1
+        registry = self._pitl_registry_v2 or self._pitl_registry
+        registry_ver = "v2" if self._pitl_registry_v2 else "v1"
+        if not registry:
+            log.debug("submit_pitl_proof: no PITL registry configured, skipping")
             return ""
         device_id_bytes32 = bytes.fromhex(device_id)
         tx_hash = await self._send_tx(
-            self._pitl_registry.functions.submitPITLProof,
+            registry.functions.submitPITLProof,
             device_id_bytes32,
             proof_bytes,
             feature_commitment,
@@ -1508,8 +1638,8 @@ class ChainClient:
             epoch,
         )
         log.info(
-            "PITLSessionProof submitted: device=%s hp=%d inference=0x%02x tx=%s",
-            device_id[:16], humanity_prob_int, inference_code, tx_hash[:16],
+            "PITLSessionProof submitted (%s): device=%s hp=%d inference=0x%02x tx=%s",
+            registry_ver, device_id[:16], humanity_prob_int, inference_code, tx_hash[:16],
         )
         return tx_hash
 
@@ -1644,3 +1774,168 @@ class ChainClient:
         )
         log.info("FederatedCluster anchored: hash=%s tx=%s", cluster_hash, tx_hash[:16])
         return tx_hash
+
+    # --- Phase 55: ioID Device Identity Registry ---
+
+    async def ensure_ioid_registered(self, device_id: str, store) -> str:
+        """Ensure the device is registered in the ioID registry (Phase 55).
+
+        Derives: device_address = last 20 bytes of device_id bytes32.
+        DID = "did:io:" + checksum(device_address).
+        Idempotent: if already registered on-chain, only updates local store.
+
+        Args:
+            device_id: 64-char hex device identifier.
+            store:     Store instance for local persistence.
+
+        Returns:
+            DID string (e.g. "did:io:0x..."), or "" if registry not configured.
+        """
+        if not self._ioid_registry:
+            log.debug("ensure_ioid_registered: IOID_REGISTRY_ADDRESS not configured, skipping")
+            return ""
+
+        # Derive device address = last 20 bytes of 32-byte device_id
+        dev_bytes = bytes.fromhex(device_id.ljust(64, "0"))[:32]
+        device_address = self._w3.to_checksum_address(("0x" + dev_bytes[-20:].hex()))
+        did = f"did:io:{device_address}"
+
+        # Check local store first (avoid unnecessary chain call)
+        existing = store.get_ioid_device(device_id)
+        if existing and existing.get("did"):
+            log.debug("ensure_ioid_registered: device %s already in local store", device_id[:16])
+            return existing["did"]
+
+        # Check on-chain registration
+        try:
+            dev_b32 = dev_bytes
+            is_reg = await self._w3.eth.call({
+                "to": self._ioid_registry.address,
+                "data": self._ioid_registry.encodeABI("isRegistered", [dev_b32]),
+            })
+            already_registered = bool(int(is_reg.hex() or "0", 16))
+        except Exception as exc:
+            log.debug("ensure_ioid_registered: isRegistered check failed: %s", exc)
+            already_registered = False
+
+        tx_hash = ""
+        if not already_registered:
+            try:
+                tx_hash = await self._send_tx(
+                    self._ioid_registry.functions.register,
+                    dev_b32,
+                    device_address,
+                    did,
+                )
+                log.info(
+                    "ioID registered: device=%s did=%s tx=%s",
+                    device_id[:16], did, tx_hash[:16],
+                )
+            except Exception as exc:
+                log.warning("ensure_ioid_registered: register tx failed: %s", exc)
+        else:
+            log.debug("ensure_ioid_registered: device %s already on-chain", device_id[:16])
+
+        # Persist locally regardless of on-chain outcome (store the DID for future use)
+        try:
+            store.store_ioid_device(device_id, device_address, did, tx_hash)
+        except Exception as exc:
+            log.debug("ensure_ioid_registered: local store failed (non-fatal): %s", exc)
+
+        return did
+
+    async def ioid_increment_session(self, device_id: str) -> str:
+        """Increment the session counter for a registered ioID device (Phase 55).
+
+        No-op if registry not configured or device not registered.
+
+        Args:
+            device_id: 64-char hex device identifier.
+
+        Returns:
+            Transaction hash hex string, or "" if registry not configured.
+        """
+        if not self._ioid_registry:
+            return ""
+        try:
+            dev_b32 = bytes.fromhex(device_id.ljust(64, "0"))[:32]
+            tx_hash = await self._send_tx(
+                self._ioid_registry.functions.incrementSession,
+                dev_b32,
+            )
+            log.debug("ioID session incremented: device=%s tx=%s", device_id[:16], tx_hash[:16])
+            return tx_hash
+        except Exception as exc:
+            log.debug("ioid_increment_session failed (non-fatal): %s", exc)
+            return ""
+
+    # --- Phase 56: Tournament Passport ---
+
+    async def submit_tournament_passport(
+        self,
+        device_id: str,
+        proof: bytes,
+        nullifiers: list,
+        passport_hash: bytes,
+        ioid_token_id: int,
+        min_humanity_int: int,
+        epoch: int,
+    ) -> str:
+        """Submit a ZK tournament passport to PITLTournamentPassport (Phase 56).
+
+        No-op (returns empty string) when TOURNAMENT_PASSPORT_ADDRESS is not configured.
+
+        Args:
+            device_id:        64-char hex device identifier.
+            proof:            ZK proof bytes (256 bytes for real Groth16, empty for mock mode).
+            nullifiers:       List of 5 bytes32 session nullifier hashes.
+            passport_hash:    Poseidon(nullifiers) as bytes32.
+            ioid_token_id:    ioID token ID (0 in mock mode).
+            min_humanity_int: Minimum humanity_prob * 1000 across sessions.
+            epoch:            Current epoch number.
+
+        Returns:
+            Transaction hash hex string, or "" if not configured.
+        """
+        if not self._tournament_passport:
+            log.debug("submit_tournament_passport: TOURNAMENT_PASSPORT_ADDRESS not configured, skipping")
+            return ""
+        dev_b32 = bytes.fromhex(device_id.ljust(64, "0"))[:32]
+        null_b32 = [bytes.fromhex(n.replace("0x", "").ljust(64, "0"))[:32] for n in nullifiers]
+        ph_b32   = passport_hash if isinstance(passport_hash, bytes) else bytes.fromhex(str(passport_hash).replace("0x", "").ljust(64, "0"))[:32]
+        tx_hash = await self._send_tx(
+            self._tournament_passport.functions.submitPassport,
+            dev_b32,
+            proof,
+            null_b32,
+            ph_b32,
+            ioid_token_id,
+            min_humanity_int,
+            epoch,
+        )
+        log.info(
+            "TournamentPassport submitted: device=%s min_hp=%d tx=%s",
+            device_id[:16], min_humanity_int, tx_hash[:16],
+        )
+        return tx_hash
+
+    async def get_tournament_passport(self, device_id: str) -> dict:
+        """Read a device's tournament passport from on-chain (Phase 56).
+
+        Returns dict with passport fields, or empty dict if not configured / not found.
+        """
+        if not self._tournament_passport:
+            return {}
+        try:
+            dev_b32 = bytes.fromhex(device_id.ljust(64, "0"))[:32]
+            result = await self._tournament_passport.functions.getPassport(dev_b32).call()
+            return {
+                "passport_hash":    result[0].hex() if result[0] else "",
+                "ioid_token_id":    result[1],
+                "min_humanity_int": result[2],
+                "issued_at":        result[3],
+                "active":           result[4],
+            }
+        except Exception as exc:
+            log.debug("get_tournament_passport chain call failed (non-fatal): %s", exc)
+            return {}

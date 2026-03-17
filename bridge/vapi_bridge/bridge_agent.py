@@ -58,6 +58,10 @@ _REACT_SYSTEM = (
     "(2) what the operator should do. Be specific."
 )
 
+# Phase 50: Phase 46 anchor thresholds for drift detection
+_PHASE46_ANOMALY_ANCHOR    = 6.726
+_PHASE46_CONTINUITY_ANCHOR = 5.097
+
 _TOOLS = [
     {
         "name": "get_player_profile",
@@ -367,6 +371,272 @@ _TOOLS = [
             "type": "object",
             "properties": {},
             "required": [],
+        },
+    },
+    # Phase 50: 3 new tools
+    {
+        "name": "get_session_narrative",
+        "description": (
+            "Generate a 3-sentence data-derived narrative summary of a device's most recent "
+            "session. No LLM call — purely deterministic data extraction. "
+            "sentence_1: PITL layers fired and humanity_prob. "
+            "sentence_2: Anomaly vs device history with L4 drift velocity context. "
+            "sentence_3: Trend across the last 5 sessions (mean humanity_prob)."
+        ),
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "device_id": {
+                    "type": "string",
+                    "description": "64-character hex device ID",
+                }
+            },
+            "required": ["device_id"],
+        },
+    },
+    {
+        "name": "compare_device_fingerprints",
+        "description": (
+            "Compare two devices' L4 biometric fingerprints via Mahalanobis distance between "
+            "their EMA mean vectors from player_calibration_profiles. Uses diagonal covariance "
+            "(baseline_std). Verdict: DISTINCT (dist > 6.726) / INDETERMINATE (dist > 5.097) / "
+            "SIMILAR (dist <= 5.097). plain_english ALWAYS contains separation ratio 0.362 caveat "
+            "because L4 is an intra-player anomaly detector only, not an identity verifier."
+        ),
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "device_id_a": {
+                    "type": "string",
+                    "description": "First 64-character hex device ID",
+                },
+                "device_id_b": {
+                    "type": "string",
+                    "description": "Second 64-character hex device ID",
+                },
+            },
+            "required": ["device_id_a", "device_id_b"],
+        },
+    },
+    {
+        "name": "get_calibration_agent_status",
+        "description": (
+            "Get peer CalibrationIntelligenceAgent status: recent unconsumed events from the "
+            "peer agent, current PITL L4 thresholds vs Phase 46 anchors (6.726/5.097), "
+            "count of pending recalibration flags queued for the peer, and the last "
+            "threshold_history entry. Use to understand the autonomous detection-calibration "
+            "feedback loop state."
+        ),
+        "input_schema": {
+            "type": "object",
+            "properties": {},
+        },
+    },
+    # Phase 51: game-aware profiling
+    {
+        "name": "get_game_profile",
+        "description": (
+            "Get the active game profile context. Returns profile ID, display name, "
+            "L5 button priority order for this game (e.g. R2=sprint is primary in football "
+            "instead of Cross), L6-Passive config (passive sprint-button onset tracking, "
+            "no controller writes — safe during PS5 play), and per-session L6-Passive "
+            "statistics: total R2 press events scored, resistance events flagged (onset > "
+            "1.5x personal baseline = PS5 adaptive trigger resistance likely), and current "
+            "EMA baseline onset_ms. Use to answer: 'What game profile is active?', "
+            "'Why is R2 the primary L5 signal?', 'Any resistance events this session?'"
+        ),
+        "input_schema": {
+            "type": "object",
+            "properties": {},
+            "required": [],
+        },
+    },
+    # Tool #22 — Phase 55
+    {
+        "name": "get_ioid_status",
+        "description": (
+            "Get the ioID device identity status for a specific device. Returns whether "
+            "the device is registered in the VAPIioIDRegistry, its W3C DID (did:io:0x...), "
+            "derived device address (last 20 bytes of device_id), registration timestamp, "
+            "and on-chain transaction hash. Use to answer: 'What is this device's DID?', "
+            "'Is this device registered in the ioID registry?', 'When was it registered?'"
+        ),
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "device_id": {
+                    "type": "string",
+                    "description": "64-character hex device ID",
+                }
+            },
+            "required": ["device_id"],
+        },
+    },
+    # Tools #24–27 — Phase 58
+    {
+        "name": "analyze_threshold_impact",
+        "description": (
+            "Compute how many sessions would flip NOMINAL→ANOMALY or ANOMALY→NOMINAL "
+            "if the L4 Mahalanobis threshold shifted by a given percentage. "
+            "Uses pitl_l4_distance from the records table. Never modifies thresholds."
+        ),
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "delta_pct": {"type": "number",
+                    "description": "Shift % (negative = tighten, positive = loosen)"},
+                "threshold_type": {"type": "string",
+                    "description": "'anomaly' or 'continuity' (default: anomaly)"},
+            },
+            "required": ["delta_pct"],
+        },
+    },
+    {
+        "name": "predict_evasion_cost",
+        "description": (
+            "Given a known attack class (G, H, I, J, K), return structured analysis: "
+            "PITL layers to evade, L4 detection rate from validation suite, validation N, "
+            "and detection notes. Classes G/H/I are validated (N=5 sessions each)."
+        ),
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "attack_class": {"type": "string",
+                    "description": "G/H/I (validated) or J/K (macro, unvalidated)"},
+            },
+            "required": ["attack_class"],
+        },
+    },
+    {
+        "name": "get_anomaly_trend",
+        "description": (
+            "Rolling L4 anomaly and humanity statistics for a device over a time window. "
+            "Returns session_count, mean/std L4 distance, mean humanity, trend direction "
+            "(IMPROVING/STABLE/DEGRADING), and anomaly spike count above threshold."
+        ),
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "device_id": {"type": "string", "description": "64-character hex device ID"},
+                "days": {"type": "integer", "description": "Lookback window in days (default 7)"},
+            },
+            "required": ["device_id"],
+        },
+    },
+    {
+        "name": "generate_incident_report",
+        "description": (
+            "Full operator-facing audit dump for a device: record history, inference code breakdown, "
+            "L4/humanity score timeline, biometric fingerprint, ioID status, tournament passport "
+            "status, calibration profile, and recent protocol insights."
+        ),
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "device_id": {"type": "string", "description": "64-character hex device ID"},
+            },
+            "required": ["device_id"],
+        },
+    },
+    # Tool #23 — Phase 56
+    {
+        "name": "generate_tournament_passport",
+        "description": (
+            "Generate or check tournament passport eligibility for a device. "
+            "Requires: device must be ioID-registered AND have >= 5 NOMINAL sessions "
+            "with humanity_prob >= 0.60 (minHumanityInt >= 600). Returns passport details "
+            "if issued (passport_hash, min_humanity_int, issued_at), or status: "
+            "'ioid_not_registered', 'pending_sessions' (count/5 complete), "
+            "or 'passport_ready' with the passport record."
+        ),
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "device_id": {
+                    "type": "string",
+                    "description": "64-character hex device ID",
+                },
+                "min_humanity": {
+                    "type": "number",
+                    "description": "Minimum humanity_prob threshold (default 0.60)",
+                },
+            },
+            "required": ["device_id"],
+        },
+    },
+    # Tool #28 — Phase 59
+    {
+        "name": "get_controller_twin_data",
+        "description": (
+            "Return the complete My Controller digital twin data for a device: "
+            "calibration profile, 12-feature biometric fingerprint EMA means, "
+            "ioID DID, tournament passport status, anomaly trend, operator audit log, "
+            "and last 20 PoAC chain lock points. Powers the Phase 59 3D visualization."
+        ),
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "device_id": {"type": "string", "description": "64-character hex device ID"},
+            },
+            "required": ["device_id"],
+        },
+    },
+    # Tool #29 — Phase 61
+    {
+        "name": "get_session_replay",
+        "description": (
+            "Return the frame checkpoint window for a specific PoAC record — up to 60 "
+            "downsampled InputSnapshot frames (20 Hz) captured around the PoAC commit. "
+            "Used for forensic session replay visualization in the My Controller 3D page."
+        ),
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "device_id":   {"type": "string", "description": "64-hex device ID"},
+                "record_hash": {"type": "string", "description": "64-hex PoAC record_hash"},
+            },
+            "required": ["device_id", "record_hash"],
+        },
+    },
+    # Tool #30 — Phase 62
+    {
+        "name": "get_enrollment_status",
+        "description": (
+            "Return PHG credential enrollment progress for a device. Shows how many "
+            "NOMINAL sessions have been accumulated, average humanity probability, "
+            "current enrollment status (pending/eligible/minting/credentialed/failed), "
+            "and how many more sessions are needed to qualify for credential minting."
+        ),
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "device_id": {
+                    "type": "string",
+                    "description": "64-character hex device ID",
+                }
+            },
+            "required": ["device_id"],
+        },
+    },
+    # Tool #31 — Phase 63
+    {
+        "name": "get_reflex_baseline",
+        "description": (
+            "Return L6b neuromuscular reflex baseline statistics for a device. "
+            "Shows probe count, mean reflex latency (ms), std deviation, "
+            "classification distribution (HUMAN/BOT/INCONCLUSIVE/NO_RESPONSE), "
+            "and number of BOT-classified events. Requires L6B_ENABLED=true and "
+            "at least one completed probe cycle to return meaningful data."
+        ),
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "device_id": {
+                    "type": "string",
+                    "description": "64-character hex device ID",
+                }
+            },
+            "required": ["device_id"],
         },
     },
 ]
@@ -720,11 +990,526 @@ class BridgeAgent:
                     "next_cycle_in": "up to 6h (aligned with InsightSynthesizer cycle)",
                 }
 
+            # Phase 50: 3 new tools
+            if name == "get_session_narrative":
+                device_id = inputs.get("device_id", "")
+                if not device_id:
+                    return {"error": "device_id is required"}
+                recent = self._store.get_recent_records(device_id=device_id, limit=5)
+                profile = self._store.get_player_profile(device_id)
+                if not recent:
+                    return {"error": "No records found for device", "device_id": device_id}
+                last = recent[0]
+                inference_name = last.get("action_name", "UNKNOWN")
+                humanity_prob  = last.get("pitl_humanity_prob")
+                l4_dist  = last.get("pitl_l4_distance")
+                l5_cv    = last.get("pitl_l5_cv")
+                l4_drift = last.get("pitl_l4_drift_velocity")
+                # sentence_1
+                layers = []
+                if l4_dist is not None:
+                    layers.append(f"L4={l4_dist:.3f}")
+                if l5_cv is not None:
+                    layers.append(f"L5_cv={l5_cv:.3f}")
+                sent1 = (
+                    f"Session inference: {inference_name}; "
+                    f"PITL signals: {', '.join(layers) or 'none'}; "
+                    f"humanity_prob={humanity_prob}."
+                )
+                # sentence_2
+                total = (profile or {}).get("total_records", 0)
+                drift_ctx = (
+                    f"L4 drift_velocity={l4_drift:.3f}" if l4_drift is not None
+                    else "drift velocity unavailable"
+                )
+                sent2 = f"Device has {total} total records; {drift_ctx}."
+                # sentence_3
+                if len(recent) >= 2:
+                    avg_h = sum(r.get("pitl_humanity_prob") or 0.5 for r in recent) / len(recent)
+                    sent3 = f"Trend across last {len(recent)} sessions: mean humanity_prob={avg_h:.3f}."
+                else:
+                    sent3 = "Insufficient session history for trend analysis."
+                return {
+                    "device_id": device_id,
+                    "sentence_1": sent1,
+                    "sentence_2": sent2,
+                    "sentence_3": sent3,
+                }
+
+            if name == "compare_device_fingerprints":
+                device_a = inputs.get("device_id_a", "")
+                device_b = inputs.get("device_id_b", "")
+                if not device_a or not device_b:
+                    return {"error": "device_id_a and device_id_b are required"}
+                profiles = self._store.get_all_player_calibration_profiles()
+                profile_a = next((p for p in profiles if p.get("device_id") == device_a), None)
+                profile_b = next((p for p in profiles if p.get("device_id") == device_b), None)
+                if profile_a is None or profile_b is None:
+                    missing = []
+                    if profile_a is None:
+                        missing.append(device_a[:16])
+                    if profile_b is None:
+                        missing.append(device_b[:16])
+                    return {
+                        "error": f"Missing calibration profiles for: {', '.join(missing)} "
+                                 f"(need >=30 NOMINAL records each)",
+                        "plain_english": (
+                            "Cannot compare — calibration data unavailable. "
+                            "separation ratio 0.362 (L4 is intra-player anomaly detector only)."
+                        ),
+                    }
+                mean_a = float(profile_a.get("baseline_mean") or 0.0)
+                mean_b = float(profile_b.get("baseline_mean") or 0.0)
+                std_a  = float(profile_a.get("baseline_std") or 1.0) or 1.0
+                dist   = abs(mean_a - mean_b) / std_a
+                if dist > _PHASE46_ANOMALY_ANCHOR:
+                    verdict = "DISTINCT"
+                elif dist > _PHASE46_CONTINUITY_ANCHOR:
+                    verdict = "INDETERMINATE"
+                else:
+                    verdict = "SIMILAR"
+                plain_english = (
+                    f"Devices are {verdict} (Mahalanobis distance={dist:.3f}). "
+                    f"separation ratio 0.362 — L4 is intra-player anomaly detector only; "
+                    f"SIMILAR does not confirm same identity."
+                )
+                return {
+                    "device_id_a": device_a,
+                    "device_id_b": device_b,
+                    "mahalanobis_distance": round(dist, 3),
+                    "verdict": verdict,
+                    "thresholds": {
+                        "distinct_above": _PHASE46_ANOMALY_ANCHOR,
+                        "indeterminate_above": _PHASE46_CONTINUITY_ANCHOR,
+                    },
+                    "plain_english": plain_english,
+                }
+
+            if name == "get_calibration_agent_status":
+                try:
+                    events = self._store.read_unconsumed_events("bridge_agent", limit=5)
+                except Exception:
+                    events = []
+                try:
+                    pending = self._store.read_unconsumed_events(
+                        "calibration_intelligence_agent", limit=100
+                    )
+                    pending_count = len(pending)
+                except Exception:
+                    pending_count = 0
+                try:
+                    th_history = self._store.get_threshold_history(limit=1)
+                    last_history = th_history[0] if th_history else None
+                except Exception:
+                    last_history = None
+                return {
+                    "current_thresholds": {
+                        "l4_anomaly":    getattr(self._cfg, "l4_anomaly_threshold", 6.726),
+                        "l4_continuity": getattr(self._cfg, "l4_continuity_threshold", 5.097),
+                        "phase46_anchors": {
+                            "anomaly":    _PHASE46_ANOMALY_ANCHOR,
+                            "continuity": _PHASE46_CONTINUITY_ANCHOR,
+                        },
+                    },
+                    "recent_events_from_calib_agent": events,
+                    "pending_flags_count": pending_count,
+                    "last_threshold_history": last_history,
+                    "peer_status": (
+                        "CalibrationIntelligenceAgent (event-driven peer, 30-min consumer)"
+                    ),
+                }
+
+            elif name == "get_game_profile":
+                _gp_id = getattr(self._cfg, "game_profile_id", "")
+                if not _gp_id:
+                    result = {
+                        "active": False,
+                        "message": "No game profile configured. Set GAME_PROFILE_ID in bridge/.env.",
+                    }
+                else:
+                    try:
+                        from vapi_bridge.game_profile import get_profile_or_none
+                        _gp = get_profile_or_none(_gp_id)
+                        if _gp is None:
+                            result = {
+                                "active": False,
+                                "profile_id": _gp_id,
+                                "error": f"Profile '{_gp_id}' not found in registry",
+                            }
+                        else:
+                            result = {
+                                "active":            True,
+                                "profile_id":        _gp.profile_id,
+                                "display_name":      _gp.display_name,
+                                "platform":          _gp.platform,
+                                "l5_button_priority": list(_gp.l5_button_priority),
+                                "l6_passive_enabled": _gp.l6_passive_enabled,
+                                "l6_passive_button":  _gp.l6_passive_button,
+                                "l6_passive_flag_ratio": _gp.l6_passive_flag_ratio,
+                                "button_map":        dict(_gp.button_map),
+                            }
+                    except Exception as _exc:
+                        result = {"active": False, "error": str(_exc)}
+                return result
+
+            elif name == "get_ioid_status":
+                device_id = inputs.get("device_id", "")
+                if not device_id:
+                    return {"error": "device_id required"}
+                # Derive device address from last 20 bytes of device_id
+                try:
+                    dev_bytes = bytes.fromhex(device_id.ljust(64, "0"))[:32]
+                    device_address = "0x" + dev_bytes[-20:].hex()
+                    did = f"did:io:{device_address}"
+                except Exception:
+                    device_address = ""
+                    did = ""
+                # Check local store
+                ioid_record = self._store.get_ioid_device(device_id)
+                if ioid_record:
+                    result = {
+                        "registered": True,
+                        "device_id":       device_id[:16],
+                        "did":             ioid_record.get("did", did),
+                        "device_address":  ioid_record.get("device_address", device_address),
+                        "tx_hash":         ioid_record.get("tx_hash", ""),
+                        "registered_at":   ioid_record.get("registered_at", 0),
+                        "source":          "local_store",
+                    }
+                else:
+                    result = {
+                        "registered": False,
+                        "device_id":      device_id[:16],
+                        "derived_did":    did,
+                        "device_address": device_address,
+                        "message": (
+                            "Device not yet registered in ioID registry. "
+                            "Registration occurs automatically on first PITL proof submission."
+                        ),
+                    }
+                return result
+
+            elif name == "generate_tournament_passport":
+                device_id  = inputs.get("device_id", "")
+                min_humanity = float(inputs.get("min_humanity", 0.60))
+                if not device_id:
+                    return {"error": "device_id required"}
+                # Check ioID registration
+                ioid_record = self._store.get_ioid_device(device_id)
+                if not ioid_record:
+                    return {
+                        "status":     "ioid_not_registered",
+                        "device_id":  device_id[:16],
+                        "message": (
+                            "Device is not in the ioID registry. Cannot issue tournament passport. "
+                            "Ensure at least one PITL proof has been submitted."
+                        ),
+                    }
+                # Check for existing passport
+                existing_passport = self._store.get_tournament_passport(device_id)
+                if existing_passport and existing_passport.get("passport_hash"):
+                    return {
+                        "status":          "passport_ready",
+                        "device_id":       device_id[:16],
+                        "did":             ioid_record.get("did", ""),
+                        "passport_hash":   existing_passport.get("passport_hash", ""),
+                        "min_humanity_int": existing_passport.get("min_humanity_int", 0),
+                        "issued_at":       existing_passport.get("issued_at", 0),
+                        "on_chain":        bool(existing_passport.get("on_chain", 0)),
+                    }
+                # Check eligible sessions
+                eligible = self._store.get_passport_eligible_sessions(
+                    device_id, min_humanity, limit=10
+                )
+                n_eligible = len(eligible)
+                if n_eligible < 5:
+                    return {
+                        "status":          "pending_sessions",
+                        "device_id":       device_id[:16],
+                        "did":             ioid_record.get("did", ""),
+                        "eligible_sessions": n_eligible,
+                        "required":        5,
+                        "min_humanity":    min_humanity,
+                        "message": (
+                            f"Only {n_eligible}/5 eligible sessions (humanity >= {min_humanity:.0%}). "
+                            "Continue playing to accumulate NOMINAL sessions."
+                        ),
+                    }
+                # Eligible: return summary
+                min_hp = min(s.get("pitl_humanity_prob", 0.0) or 0.0 for s in eligible[:5])
+                return {
+                    "status":            "eligible",
+                    "device_id":         device_id[:16],
+                    "did":               ioid_record.get("did", ""),
+                    "eligible_sessions": n_eligible,
+                    "min_humanity_prob": round(min_hp, 4),
+                    "min_humanity_int":  int(min_hp * 1000),
+                    "message": (
+                        f"{n_eligible} eligible sessions found. "
+                        "Passport can be issued on next PITL proof submission."
+                    ),
+                }
+
+            # Phase 58: Tools #24–27
+            if name == "analyze_threshold_impact":
+                threshold_type = inputs.get("threshold_type", "anomaly")
+                delta_pct = float(inputs.get("delta_pct", 0.0))
+                current = (self._cfg.l4_anomaly_threshold if threshold_type == "anomaly"
+                           else self._cfg.l4_continuity_threshold)
+                proposed = current * (1 + delta_pct / 100.0)
+                with self._store._conn() as conn:
+                    rows = conn.execute(
+                        "SELECT pitl_l4_distance, inference FROM records WHERE pitl_l4_distance IS NOT NULL"
+                    ).fetchall()
+                if not rows:
+                    return {"threshold_type": threshold_type, "current_threshold": current,
+                            "proposed_threshold": proposed, "total_sessions": 0,
+                            "nominal_to_anomaly": 0, "anomaly_to_nominal": 0, "flip_pct": 0.0}
+                nominal_to_anomaly = sum(1 for r in rows
+                                         if r["pitl_l4_distance"] < current and r["pitl_l4_distance"] >= proposed)
+                anomaly_to_nominal = sum(1 for r in rows
+                                         if r["pitl_l4_distance"] >= current and r["pitl_l4_distance"] < proposed)
+                return {
+                    "threshold_type": threshold_type,
+                    "current_threshold": current,
+                    "proposed_threshold": round(proposed, 4),
+                    "delta_pct": delta_pct,
+                    "total_sessions": len(rows),
+                    "nominal_to_anomaly": nominal_to_anomaly,
+                    "anomaly_to_nominal": anomaly_to_nominal,
+                    "flip_pct": round(100.0 * (nominal_to_anomaly + anomaly_to_nominal) / len(rows), 2),
+                }
+
+            if name == "predict_evasion_cost":
+                _ATTACK_DB = {
+                    "G": {"layers_to_evade": ["L4", "L2B"], "l4_detection": "0% (batch), live via grip_variance",
+                          "validation_n": 5,
+                          "detection_notes": "zeroed accel evades L4 batch; L2B catches IMU-button decoupling"},
+                    "H": {"layers_to_evade": ["L4"], "l4_detection": "100%", "validation_n": 5,
+                          "detection_notes": "threshold-aware replay still anomalous vs personal Mahalanobis mean"},
+                    "I": {"layers_to_evade": ["L4", "L2B", "L5"], "l4_detection": "0% (batch), live L4+L2B",
+                          "validation_n": 5,
+                          "detection_notes": "spectral mimicry passes L4 batch; live L2B triggers on decoupled IMU"},
+                    "J": {"layers_to_evade": ["L4"], "l4_detection": "predicted 100% (jitter_var < 0.00005 s²)",
+                          "validation_n": 0,
+                          "detection_notes": "AntiMicro constant-interval presses; UNVALIDATED — macro sessions not yet captured"},
+                    "K": {"layers_to_evade": ["L4", "L5"], "l4_detection": "unknown", "validation_n": 0,
+                          "detection_notes": "reWASD Gaussian-jittered IBIs; UNVALIDATED"},
+                }
+                cls = inputs.get("attack_class", "").upper()
+                rec = _ATTACK_DB.get(cls)
+                if not rec:
+                    return {"error": f"Unknown attack class '{cls}'. Validated: G, H, I. Hypothesized: J, K."}
+                return {
+                    "attack_class": cls,
+                    **rec,
+                    "separation_gap_note": (
+                        "Inter-person separation ratio=0.362. Biometric transplant attack "
+                        "(P1 uses P2 device) has 0% detection at all layers. Tournament blocker."
+                    ),
+                }
+
+            if name == "get_anomaly_trend":
+                device_id = inputs.get("device_id", "")
+                days = int(inputs.get("days", 7))
+                cutoff = time.time() - days * 86400
+                with self._store._conn() as conn:
+                    rows = conn.execute(
+                        "SELECT pitl_l4_distance, pitl_humanity_prob, inference, created_at "
+                        "FROM records WHERE device_id = ? AND created_at >= ? "
+                        "AND pitl_l4_distance IS NOT NULL ORDER BY created_at ASC",
+                        (device_id, cutoff),
+                    ).fetchall()
+                if not rows:
+                    return {"device_id": device_id[:16], "session_count": 0, "days": days,
+                            "message": "No warmed L4 sessions in window"}
+                dists = [r["pitl_l4_distance"] for r in rows]
+                hums  = [r["pitl_humanity_prob"] for r in rows if r["pitl_humanity_prob"] is not None]
+                thr   = self._cfg.l4_anomaly_threshold
+                mean_d = sum(dists) / len(dists)
+                mid    = max(1, len(dists) // 2)
+                first_h = sum(dists[:mid]) / mid
+                second_h = sum(dists[mid:]) / max(len(dists) - mid, 1)
+                trend = ("DEGRADING" if second_h > first_h * 1.1
+                         else "IMPROVING" if second_h < first_h * 0.9 else "STABLE")
+                return {
+                    "device_id": device_id[:16], "days": days, "session_count": len(rows),
+                    "mean_l4_distance": round(mean_d, 4),
+                    "std_l4_distance": round((sum((d-mean_d)**2 for d in dists)/len(dists))**0.5, 4),
+                    "mean_humanity": round(sum(hums)/len(hums), 4) if hums else None,
+                    "anomaly_threshold": thr,
+                    "spike_count": sum(1 for d in dists if d >= thr),
+                    "spike_pct": round(100.0 * sum(1 for d in dists if d >= thr) / len(rows), 1),
+                    "trend": trend,
+                }
+
+            if name == "generate_incident_report":
+                device_id = inputs.get("device_id", "")
+                dev     = self._store.get_device(device_id) or {}
+                profile = self._store.get_player_profile(device_id) or {}
+                with self._store._conn() as conn:
+                    breakdown = conn.execute(
+                        "SELECT inference, COUNT(*) as cnt FROM records WHERE device_id=? GROUP BY inference",
+                        (device_id,),
+                    ).fetchall()
+                    recent = conn.execute(
+                        "SELECT pitl_l4_distance, pitl_humanity_prob, inference, created_at "
+                        "FROM records WHERE device_id=? ORDER BY created_at DESC LIMIT 10",
+                        (device_id,),
+                    ).fetchall()
+                ioid     = self._store.get_ioid_device(device_id) or {}
+                passport = self._store.get_tournament_passport(device_id) or {}
+                calib    = self._store.get_player_calibration_profile(device_id) or {}
+                insights = self._store.get_recent_insights(limit=5) if hasattr(self._store, "get_recent_insights") else []
+                return {
+                    "device_id": device_id[:16],
+                    "first_seen": dev.get("first_seen"),
+                    "last_seen": dev.get("last_seen"),
+                    "records_total": dev.get("records_total", 0),
+                    "records_verified": dev.get("records_verified", 0),
+                    "inference_breakdown": {str(r["inference"]): r["cnt"] for r in breakdown},
+                    "humanity_prob": profile.get("humanity_prob"),
+                    "phg_score": profile.get("phg_score"),
+                    "recent_sessions": [dict(r) for r in recent],
+                    "ioid": {
+                        "registered": bool(ioid),
+                        "did": ioid.get("did"),
+                        "tx_hash": ioid.get("tx_hash"),
+                    },
+                    "tournament_passport": {
+                        "issued": bool(passport),
+                        "passport_hash": passport.get("passport_hash"),
+                        "on_chain": bool(passport.get("on_chain")),
+                        "issued_at": passport.get("issued_at"),
+                    },
+                    "calibration": {
+                        "has_profile": bool(calib),
+                        "anomaly_threshold": calib.get("anomaly_threshold"),
+                        "continuity_threshold": calib.get("continuity_threshold"),
+                        "record_count": calib.get("session_count"),
+                    },
+                    "recent_insights": insights,
+                }
+
+            if name == "get_controller_twin_data":
+                device_id = inputs.get("device_id", "")
+                if not device_id:
+                    return {"error": "device_id required"}
+                return self._store.get_controller_twin_snapshot(device_id)
+
+            if name == "get_session_replay":
+                device_id   = inputs.get("device_id", "")
+                record_hash = inputs.get("record_hash", "")
+                if not device_id or not record_hash:
+                    return {"error": "device_id and record_hash required"}
+                result = self._store.get_frame_checkpoint(device_id, record_hash)
+                return result if result is not None else {"frames": [], "frame_count": 0}
+
+            if name == "get_enrollment_status":
+                device_id = inputs.get("device_id", "")
+                if not device_id:
+                    return {"error": "device_id required"}
+                row = self._store.get_enrollment(device_id)
+                min_sessions = getattr(self._cfg, "enrollment_min_sessions", 10)
+                if not row:
+                    nominal, avg_h = self._store.count_nominal_sessions(device_id)
+                    return {
+                        "device_id":       device_id,
+                        "status":          "pending",
+                        "sessions_nominal": nominal,
+                        "avg_humanity":    round(avg_h, 3),
+                        "sessions_needed": max(0, min_sessions - nominal),
+                    }
+                needed = max(0, min_sessions - row["sessions_nominal"])
+                return {**row, "sessions_needed": needed}
+
+            if name == "get_reflex_baseline":
+                device_id = inputs.get("device_id", "")
+                if not device_id:
+                    return {"error": "device_id required"}
+                result = self._store.get_l6b_baseline(device_id)
+                if result and result.get("probe_count", 0) == 0:
+                    result["l6b_enabled"] = getattr(self._cfg, "l6b_enabled", False)
+                    result["status"] = "no_probes_recorded"
+                return result
+
             return {"error": f"Unknown tool: {name}"}
 
         except Exception as exc:
             log.warning("BridgeAgent tool %s failed: %s", name, exc)
             return {"error": str(exc), "tool": name}
+
+    # ------------------------------------------------------------------
+    # Phase 50: Proactive drift detection (called by InsightSynthesizer Mode 6 callback)
+    # ------------------------------------------------------------------
+
+    def check_threshold_drift(self, new_anomaly: float, new_continuity: float) -> None:
+        """Called synchronously by InsightSynthesizer Mode 6 post-hook (Phase 50).
+
+        Compares new thresholds against Phase 46 anchors (6.726/5.097).
+        Always writes a threshold_history entry.
+        Writes threshold_drift_alert insight + agent_events when drift > 10%.
+        Writes threshold_stable insight when drift <= 10%.
+        """
+        drift_a = abs(new_anomaly - _PHASE46_ANOMALY_ANCHOR) / _PHASE46_ANOMALY_ANCHOR * 100
+        drift_c = abs(new_continuity - _PHASE46_CONTINUITY_ANCHOR) / _PHASE46_CONTINUITY_ANCHOR * 100
+
+        try:
+            self._store.write_threshold_history(
+                threshold_type="global_mode6",
+                old_value=_PHASE46_ANOMALY_ANCHOR,
+                new_value=new_anomaly,
+                drift_pct=round(drift_a, 2),
+                sessions_used=0,
+                phase="mode6_living_calibration",
+            )
+        except Exception as exc:
+            log.debug("check_threshold_drift: write_threshold_history failed: %s", exc)
+
+        if drift_a > 10.0 or drift_c > 10.0:
+            content = (
+                f"Phase 50 threshold drift alert: "
+                f"anomaly {_PHASE46_ANOMALY_ANCHOR:.3f}→{new_anomaly:.3f} ({drift_a:.1f}% drift), "
+                f"continuity {_PHASE46_CONTINUITY_ANCHOR:.3f}→{new_continuity:.3f} "
+                f"({drift_c:.1f}% drift). Exceeds 10% from Phase 46 anchors."
+            )
+            try:
+                self._store.store_protocol_insight(
+                    insight_type="threshold_drift_alert",
+                    content=content,
+                    device_id="__global__",
+                    severity="medium",
+                )
+            except Exception as exc:
+                log.debug("check_threshold_drift: store_protocol_insight failed: %s", exc)
+            try:
+                self._store.write_agent_event(
+                    event_type="threshold_updated",
+                    payload=json.dumps({
+                        "new_anomaly":         new_anomaly,
+                        "new_continuity":      new_continuity,
+                        "drift_anomaly_pct":   round(drift_a, 2),
+                        "drift_continuity_pct": round(drift_c, 2),
+                    }),
+                    source="bridge_agent",
+                    target="calibration_intelligence_agent",
+                )
+            except Exception as exc:
+                log.debug("check_threshold_drift: write_agent_event failed: %s", exc)
+        else:
+            content = (
+                f"Phase 50 threshold stable: anomaly={new_anomaly:.3f} ({drift_a:.1f}% from anchor), "
+                f"continuity={new_continuity:.3f} ({drift_c:.1f}% from anchor). Within 10% bounds."
+            )
+            try:
+                self._store.store_protocol_insight(
+                    insight_type="threshold_stable",
+                    content=content,
+                    device_id="__global__",
+                    severity="low",
+                )
+            except Exception as exc:
+                log.debug("check_threshold_drift: store_protocol_insight(stable) failed: %s", exc)
 
     # ------------------------------------------------------------------
     # Agentic reasoning loop
@@ -837,6 +1622,27 @@ class BridgeAgent:
                 )
             except Exception as _persist_exc:
                 log.warning("react() insight persist failed: %s", _persist_exc)
+            # Phase 50: systematic drift → recalibration flag
+            if "BIOMETRIC_ANOMALY" in inference_name and self._behavioral_arch:
+                try:
+                    report = self._behavioral_arch.analyze_device(device_id)
+                    drift_v = getattr(report, "drift_velocity", 0.0)
+                    if drift_v > 0.6:
+                        self._store.write_agent_event(
+                            event_type="recalibration_needed",
+                            device_id=device_id,
+                            payload=json.dumps({
+                                "drift_velocity": drift_v,
+                                "trigger": "biometric_anomaly_systematic",
+                                "session_count_since_last_calibration":
+                                    self._store.count_records_since_last_calibration(device_id),
+                                "recommendation": "focused_personal_recalibration",
+                            }),
+                            source="bridge_agent",
+                            target="calibration_intelligence_agent",
+                        )
+                except Exception as _exc:
+                    log.debug("Phase 50 recalibration flag failed: %s", _exc)
             return {
                 "alert": result["response"],
                 "severity": severity,

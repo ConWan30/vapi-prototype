@@ -232,9 +232,11 @@ class PITLProver:
         epoch: int,
     ) -> Tuple[bytes, int, int, int]:
         """Mock proof (no real circuit). Encodes commitments into 256-byte wire format."""
-        # Feature commitment: SHA-256 of packed scaled feature ints
+        # Feature commitment: SHA-256 of packed scaled feature ints + inference code
+        # Phase 62: include inference_result to mirror C1 Poseidon(8) circuit binding.
+        # Different inference codes produce different commitments — forensically detectable.
         fc_bytes = hashlib.sha256(
-            struct.pack(">7I", *scaled)
+            struct.pack(">7I", *scaled) + struct.pack(">I", inference_result)
         ).digest()
         feature_commitment_int = int.from_bytes(fc_bytes, "big")
 
@@ -291,13 +293,14 @@ class PITLProver:
 
             # Write private inputs
             private_in = {
-                "scaledFeatures":   [str(v) for v in scaled],
-                "deviceId":         device_id,
-                "l5HumanityInt":    humanity_prob_int,
-                "e4DriftInt":       e4_drift_int,
-                "inferenceResult":  inference_result,
-                "humanityProbInt":  humanity_prob_int,
-                "epoch":            epoch,
+                "scaledFeatures":          [str(v) for v in scaled],
+                "deviceId":                device_id,
+                "l5HumanityInt":           humanity_prob_int,
+                "e4DriftInt":              e4_drift_int,
+                "inferenceResult":         inference_result,
+                "inferenceCodeFromBody":   inference_result,   # Phase 62: binds pub[2] to C1 commitment
+                "humanityProbInt":         humanity_prob_int,
+                "epoch":                   epoch,
             }
             priv_path = tmpdir / "private_inputs_pitl.json"
             priv_path.write_text(json.dumps(private_in))

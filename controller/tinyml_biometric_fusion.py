@@ -167,6 +167,16 @@ class BiometricFeatureFrame:
     Set to 0.0 if fewer than 3 active touch frames.
     """
 
+    press_timing_jitter_variance: float = 0.0
+    """
+    Variance of normalised inter-button-interval (IBI) across the best available
+    button deque (Cross > L2 > R2 > Triangle priority, matching TemporalRhythmOracle).
+    IBIs are normalised by their mean so the metric is scale-invariant.
+    Human physiological jitter: 0.001–0.05 (Gaussian IBI noise from motor cortex).
+    Bot macro patterns: < 0.00005 (deterministic intervals).
+    Requires >= 4 intervals; returns 0.0 when insufficient data (Phase 57).
+    """
+
     def to_vector(self) -> np.ndarray:
         return np.array([
             self.trigger_resistance_change_rate,
@@ -179,7 +189,8 @@ class BiometricFeatureFrame:
             self.tremor_peak_hz,
             self.tremor_band_power,
             self.accel_magnitude_spectral_entropy,  # index 9 (was touchpad_active_fraction)
-            self.touch_position_variance,
+            self.touch_position_variance,            # index 10
+            self.press_timing_jitter_variance,       # index 11 (Phase 57)
         ], dtype=np.float32)
 
 # ---------------------------------------------------------------------------
@@ -210,11 +221,11 @@ class _InputSnapshotLike:
 # Biometric feature extractor
 # ---------------------------------------------------------------------------
 
-_BIO_FEATURE_DIM = 11
+_BIO_FEATURE_DIM = 12  # Phase 57: +press_timing_jitter_variance at index 11
 
 class BiometricFeatureExtractor:
     """
-    Extracts 11 biometric features from a sequence of InputSnapshot objects.
+    Extracts 12 biometric features from a sequence of InputSnapshot objects.
 
     Stateful: maintains a separate 1025-position ring buffer for right-stick X
     positions so that the tremor FFT (features 8-9) can accumulate across
@@ -225,9 +236,20 @@ class BiometricFeatureExtractor:
     In calibration/offline mode (window_frames=CALIBRATION_WINDOW_FRAMES=1025),
     a single call adds exactly 1025 positions to the ring, producing 1024 velocity
     samples and activating the FFT immediately.
+
+    Phase 57: index 11 is press_timing_jitter_variance — IBI normalised variance.
     """
 
     _FFT_RING_MAXLEN: int = 1025  # positions; yields up to 1024 velocity samples (0.977 Hz/bin)
+
+    # Phase 57: button bit masks for jitter IBI tracking (raw HID bytes)
+    _CROSS_BIT:    int = 0x20  # buttons_0 bit 5
+    _L2_DIG_BIT:   int = 0x04  # buttons_1 bit 2
+    _R2_DIG_BIT:   int = 0x08  # buttons_1 bit 3
+    _TRIANGLE_BIT: int = 0x80  # buttons_0 bit 7
+    # Analog threshold for R2/L2 when digital bit not available
+    _TRIG_PRESS_THRESH:   int = 64
+    _TRIG_RELEASE_THRESH: int = 30
 
     def __init__(self) -> None:
         # Separate ring buffer for right_stick_x positions used by tremor FFT.
@@ -236,6 +258,56 @@ class BiometricFeatureExtractor:
         # Ring buffer for accel magnitude used by spectral entropy (feature index 9).
         # 1024 samples → 513 frequency bins at 0.977 Hz/bin at 1000 Hz.
         self._accel_mag_ring: deque[float] = deque(maxlen=1024)
+
+        # Phase 57: IBI tracking deques for press_timing_jitter_variance.
+        # Track last-press timestamps for each button (ms) for jitter computation.
+        # Deques store raw inter-button intervals in ms (same units as TemporalRhythmOracle).
+        self._jitter_cross_ibis:    deque[float] = deque(maxlen=50)
+        self._jitter_l2_ibis:       deque[float] = deque(maxlen=50)
+        self._jitter_r2_ibis:       deque[float] = deque(maxlen=50)
+        self._jitter_triangle_ibis: deque[float] = deque(maxlen=50)
+        # Rising-edge trackers for each button
+        self._jitter_cross_above:    bool = False
+        self._jitter_l2_above:       bool = False
+        self._jitter_r2_above:       bool = False
+        self._jitter_triangle_above: bool = False
+        # Last press timestamps (ms)
+        self._jitter_cross_last_ts:    float = 0.0
+        self._jitter_l2_last_ts:       float = 0.0
+        self._jitter_r2_last_ts:       float = 0.0
+        self._jitter_triangle_last_ts: float = 0.0
+
+    @staticmethod
+    def _press_timing_jitter_variance(
+        ibi_sequence: list | None,
+        min_samples: int = 4,
+    ) -> float:
+        """Compute normalised IBI variance as a press-timing jitter signal (Phase 57).
+
+        IBIs (inter-button intervals in ms) are normalised by their mean so the
+        metric is scale-invariant across fast and slow players.
+
+        Formula: Var(ibi / mean(ibi))
+
+        Human physiological jitter range: ~0.001–0.05 (Gaussian motor noise).
+        Bot deterministic macro: < 0.00005 (essentially zero variance).
+        High random noise (whitened signal): > 0.05.
+
+        Args:
+            ibi_sequence: List of inter-button intervals in ms (may be None).
+            min_samples:  Minimum number of intervals required; returns 0.0 otherwise.
+
+        Returns:
+            Normalised variance float, or 0.0 when insufficient data.
+        """
+        if not ibi_sequence or len(ibi_sequence) < min_samples:
+            return 0.0
+        arr = np.array(ibi_sequence, dtype=np.float64)
+        mean_ibi = float(np.mean(arr))
+        if mean_ibi < 1e-9:
+            return 0.0
+        normalised = arr / mean_ibi
+        return float(np.var(normalised))
 
     def extract(
         self,
@@ -389,6 +461,81 @@ class BiometricFeatureExtractor:
         ]
         touch_position_variance = float(np.var(touch_xs)) if len(touch_xs) >= 3 else 0.0
 
+        # Phase 57: press_timing_jitter_variance (index 11)
+        # Update IBI deques from this window's snapshots.
+        for s in snaps:
+            _b0 = int(getattr(s, "buttons_0", 0))
+            _b1 = int(getattr(s, "buttons_1", 0))
+            _ts = float(getattr(s, "timestamp_ms", 0))
+
+            # Cross button (buttons_0 bit 5)
+            _cross = bool(_b0 & self._CROSS_BIT)
+            if not self._jitter_cross_above and _cross:
+                self._jitter_cross_above = True
+                if self._jitter_cross_last_ts > 0:
+                    _dt = _ts - self._jitter_cross_last_ts
+                    if _dt > 0:
+                        self._jitter_cross_ibis.append(_dt)
+                self._jitter_cross_last_ts = _ts
+            elif self._jitter_cross_above and not _cross:
+                self._jitter_cross_above = False
+
+            # L2 digital (buttons_1 bit 2)
+            _l2 = bool(_b1 & self._L2_DIG_BIT) if _b1 != 0 else (
+                int(getattr(s, "l2_trigger", 0)) >= self._TRIG_PRESS_THRESH
+            )
+            if not self._jitter_l2_above and _l2:
+                self._jitter_l2_above = True
+                if self._jitter_l2_last_ts > 0:
+                    _dt = _ts - self._jitter_l2_last_ts
+                    if _dt > 0:
+                        self._jitter_l2_ibis.append(_dt)
+                self._jitter_l2_last_ts = _ts
+            elif self._jitter_l2_above and not _l2:
+                self._jitter_l2_above = False
+
+            # R2 digital (buttons_1 bit 3)
+            _r2 = bool(_b1 & self._R2_DIG_BIT) if _b1 != 0 else (
+                int(getattr(s, "r2_trigger", 0)) >= self._TRIG_PRESS_THRESH
+            )
+            if not self._jitter_r2_above and _r2:
+                self._jitter_r2_above = True
+                if self._jitter_r2_last_ts > 0:
+                    _dt = _ts - self._jitter_r2_last_ts
+                    if _dt > 0:
+                        self._jitter_r2_ibis.append(_dt)
+                self._jitter_r2_last_ts = _ts
+            elif self._jitter_r2_above and not _r2:
+                self._jitter_r2_above = False
+
+            # Triangle (buttons_0 bit 7)
+            _tri = bool(_b0 & self._TRIANGLE_BIT)
+            if not self._jitter_triangle_above and _tri:
+                self._jitter_triangle_above = True
+                if self._jitter_triangle_last_ts > 0:
+                    _dt = _ts - self._jitter_triangle_last_ts
+                    if _dt > 0:
+                        self._jitter_triangle_ibis.append(_dt)
+                self._jitter_triangle_last_ts = _ts
+            elif self._jitter_triangle_above and not _tri:
+                self._jitter_triangle_above = False
+
+        # Select best IBI sequence by priority: Cross > L2 > R2 > Triangle
+        _jitter_best = None
+        for _deq in [
+            self._jitter_cross_ibis,
+            self._jitter_l2_ibis,
+            self._jitter_r2_ibis,
+            self._jitter_triangle_ibis,
+        ]:
+            if len(_deq) >= 4:
+                _jitter_best = list(_deq)
+                break
+
+        press_timing_jitter_variance = self._press_timing_jitter_variance(
+            _jitter_best, min_samples=4
+        )
+
         return BiometricFeatureFrame(
             trigger_resistance_change_rate=resistance_change_rate,
             trigger_onset_velocity_l2=onset_vel_l2,
@@ -401,7 +548,28 @@ class BiometricFeatureExtractor:
             tremor_band_power=tremor_band_power,
             accel_magnitude_spectral_entropy=accel_magnitude_spectral_entropy,  # index 9
             touch_position_variance=touch_position_variance,                      # index 10
+            press_timing_jitter_variance=press_timing_jitter_variance,            # index 11
         )
+
+    def get_ibi_snapshot(self, last_n: int = 20) -> dict:
+        """Return last N raw IBI values (ms) for each button (Phase 59).
+
+        Powers the Biometric Heartbeat visualization.
+        """
+        # Pick best non-empty deque for scalar jitter variance
+        _best = None
+        for _dq in [self._jitter_r2_ibis, self._jitter_cross_ibis,
+                    self._jitter_l2_ibis, self._jitter_triangle_ibis]:
+            if len(_dq) >= 4:
+                _best = list(_dq)
+                break
+        return {
+            "cross":    list(self._jitter_cross_ibis)[-last_n:],
+            "l2":       list(self._jitter_l2_ibis)[-last_n:],
+            "r2":       list(self._jitter_r2_ibis)[-last_n:],
+            "triangle": list(self._jitter_triangle_ibis)[-last_n:],
+            "jitter_variance": self._press_timing_jitter_variance(_best, min_samples=4),
+        }
 
 
 def _compute_trigger_onset_velocity(trigger_vals: list[int]) -> float:
