@@ -2,7 +2,7 @@ openapi: "3.0.3"
 
 info:
   title: VAPI — Self-Verifying Integration SDK REST API
-  version: "1.0.0-phase37"
+  version: "2.0.0-phase64"
   description: |
     The VAPI REST API exposes Proof of Authentic Controller (PoAC) submission,
     on-chain verification, device PHCI certification, SDK self-attestation,
@@ -49,6 +49,8 @@ info:
     | 0x2A | AIMBOT_BEHAVIORAL | L3 | **Cheat** |
     | 0x2B | TEMPORAL_ANOMALY | L5 | Advisory |
     | 0x30 | BIOMETRIC_ANOMALY | L4 | Advisory |
+    | 0x31 | IMU_PRESS_DECOUPLED | L2B | Advisory |
+    | 0x32 | STICK_IMU_DECOUPLED | L2C | Advisory |
 
 servers:
   - url: https://api.vapi.gg/v1
@@ -75,6 +77,9 @@ tags:
     description: PHG player profiles, biometric proofs, and session history
   - name: Credential
     description: PHGCredential soulbound on-chain identity (Phase 28)
+  - name: Enrollment
+    description: "PHGCredential enrollment ceremony — Phase 62. Studios gate
+      tournament entry on status='credentialed'."
   - name: OperatorGate
     description: Tournament Operator Gate API — HMAC-signed eligibility for game servers (Phase 29)
   - name: BridgeAgent
@@ -792,6 +797,24 @@ paths:
               schema:
                 type: string
 
+  /enrollment/status/{device_id}:
+    get:
+      tags: [Enrollment]
+      summary: Get PHGCredential enrollment status
+      description: |
+        Enrollment progress toward PHGCredential soulbound token.
+        Status lifecycle: pending → eligible → minting → credentialed (or failed).
+        Only NOMINAL sessions (0x20 or NULL) count. Hard cheats block permanently.
+      parameters:
+        - $ref: "#/components/parameters/DeviceId"
+      responses:
+        "200":
+          description: Always 200 (pending if device unknown)
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/EnrollmentStatus"
+
   # ---------------------------------------------------------------------------
   # Operator Gate (Phase 29 — HMAC-signed eligibility for tournament operators)
   # ---------------------------------------------------------------------------
@@ -1193,7 +1216,7 @@ paths:
               example:
                 suspended_count: 1
                 suspended_devices:
-                  - device_id: "aabbccdd" * 32
+                  - device_id: "aabbccddaabbccddaabbccddaabbccddaabbccddaabbccddaabbccddaabbccdd"
                     consecutive_critical: 3
                     suspended: 1
                     suspended_since: 1700000000.0
@@ -2368,6 +2391,24 @@ components:
           description: Unix epoch seconds of event creation
 
     # ---- Common ----
+
+    EnrollmentStatus:
+      type: object
+      required: [device_id, status, sessions_nominal, sessions_total,
+                 avg_humanity, required_sessions, required_humanity]
+      properties:
+        device_id:    { type: string }
+        status:
+          type: string
+          enum: [pending, eligible, minting, credentialed, failed, unavailable]
+        sessions_nominal:  { type: integer, minimum: 0 }
+        sessions_total:    { type: integer, minimum: 0 }
+        avg_humanity:      { type: number, minimum: 0.0, maximum: 1.0 }
+        tx_hash:           { type: string }
+        eligible_at:       { type: number, nullable: true }
+        credentialed_at:   { type: number, nullable: true }
+        required_sessions: { type: integer, default: 10 }
+        required_humanity: { type: number, default: 0.60 }
 
     Error:
       type: object

@@ -1,12 +1,14 @@
 """
-Phase 20 — VAPI SDK tests (Self-Verifying Integration SDK).
+Phase 64 — VAPI SDK tests (Phase 63 parity update).
 
-20 tests across 5 groups:
-    Group 1: TestVAPIRecord       (6) — parse, inference_name, is_clean, hashes, chain links
-    Group 2: TestVAPIDevice       (4) — get_profile, unknown raises, certification, is_phci_certified
-    Group 3: TestVAPIVerifier     (4) — verify_record valid/invalid, verify_chain ordered/broken
-    Group 4: TestVAPISession      (4) — ingest callbacks, chain_integrity, summary, cheat callback
-    Group 5: TestSDKSelfVerify    (2) — returns SDKAttestation, L5 temporal layer active
+40 tests across 7 groups:
+    Group 1: TestVAPIRecord       (14) — parse, inference_name, is_clean, hashes, chain links, 0x31/0x32
+    Group 2: TestVAPIDevice       (5)  — get_profile, unknown raises, certification, is_phci_certified
+    Group 3: TestVAPIVerifier     (4)  — verify_record valid/invalid, verify_chain ordered/broken
+    Group 4: TestVAPISession      (5)  — ingest callbacks, chain_integrity, summary, cheat callback
+    Group 5: TestSDKSelfVerify    (5)  — SDKAttestation, L5 active, hash determinism, 5 layers, L2B
+    Group 6: TestVAPIEnrollment   (4)  — offline fallback, is_eligible, sessions_remaining
+    Group 7: TestVAPIZKProof      (3)  — validate valid, missing key, public_inputs order
 """
 
 import asyncio
@@ -22,16 +24,9 @@ if _sdk_dir not in sys.path:
     sys.path.insert(0, _sdk_dir)
 
 from vapi_sdk import (
-    CHEAT_CODES,
-    INFERENCE_NAMES,
-    POAC_BODY_SIZE,
-    POAC_RECORD_SIZE,
-    SDK_VERSION,
-    SDKAttestation,
-    VAPIDevice,
-    VAPIRecord,
-    VAPISession,
-    VAPIVerifier,
+    CHEAT_CODES, INFERENCE_NAMES, POAC_BODY_SIZE, POAC_RECORD_SIZE,
+    SDK_VERSION, SDKAttestation, VAPIDevice, VAPIEnrollment,
+    VAPIRecord, VAPISession, VAPIVerifier, VAPIZKProof,
 )
 
 
@@ -126,6 +121,22 @@ class TestVAPIRecord(unittest.TestCase):
         rec1 = VAPIRecord(_make_raw_record(ctr=1))
         rec2 = VAPIRecord(_make_raw_record(prev_hash=b"\xFF" * 32, ctr=2))
         self.assertFalse(rec2.verify_chain_link(rec1))
+
+    def test_inference_name_0x31_imu_press_decoupled(self):
+        rec = VAPIRecord(_make_raw_record(inference=0x31))
+        self.assertEqual(rec.inference_name, "IMU_PRESS_DECOUPLED")
+
+    def test_inference_name_0x32_stick_imu_decoupled(self):
+        rec = VAPIRecord(_make_raw_record(inference=0x32))
+        self.assertEqual(rec.inference_name, "STICK_IMU_DECOUPLED")
+
+    def test_is_advisory_true_for_0x31(self):
+        rec = VAPIRecord(_make_raw_record(inference=0x31))
+        self.assertTrue(rec.is_advisory)
+
+    def test_is_advisory_true_for_0x32(self):
+        rec = VAPIRecord(_make_raw_record(inference=0x32))
+        self.assertTrue(rec.is_advisory)
 
 
 # ---------------------------------------------------------------------------
@@ -291,12 +302,84 @@ class TestSDKSelfVerify(unittest.TestCase):
             att2.attestation_hash,
         )
 
-    def test_all_four_layers_present(self):
-        """self_verify() reports on exactly the 4 PITL layer keys."""
+    def test_all_five_layers_present(self):
+        """self_verify() reports on exactly the 5 PITL layer keys."""
         expected_keys = {
-            "L2_hid_xinput", "L3_behavioral", "L4_biometric", "L5_temporal"
+            "L2_hid_xinput", "L3_behavioral", "L4_biometric",
+            "L5_temporal", "L2B_imu_press",
         }
         self.assertEqual(set(self.attestation.layers_active.keys()), expected_keys)
+
+    def test_l2b_layer_in_self_verify(self):
+        """L2B key present; score in [0.0, 1.0] regardless of import success."""
+        self.assertIn("L2B_imu_press", self.attestation.layers_active)
+        score = self.attestation.pitl_scores.get("L2B_imu_press", -1.0)
+        self.assertGreaterEqual(score, 0.0)
+        self.assertLessEqual(score, 1.0)
+
+
+# ---------------------------------------------------------------------------
+# Group 6: VAPIEnrollment
+# ---------------------------------------------------------------------------
+
+class TestVAPIEnrollment(unittest.TestCase):
+
+    def test_get_status_no_bridge_returns_unavailable(self):
+        enroll = VAPIEnrollment()   # bridge_url="" default
+        status = enroll.get_status("a" * 64)
+        self.assertEqual(status["status"], "unavailable")
+        self.assertEqual(status["sessions_nominal"], 0)
+        self.assertEqual(status["required_sessions"], 10)
+
+    def test_is_tournament_eligible_credentialed_true(self):
+        self.assertTrue(VAPIEnrollment.is_tournament_eligible({"status": "credentialed"}))
+
+    def test_is_tournament_eligible_pending_false(self):
+        self.assertFalse(VAPIEnrollment.is_tournament_eligible({"status": "pending"}))
+        self.assertFalse(VAPIEnrollment.is_tournament_eligible({"status": "eligible"}))
+        self.assertFalse(VAPIEnrollment.is_tournament_eligible({"status": "unavailable"}))
+
+    def test_sessions_remaining_calculates_correctly(self):
+        status = {"status": "pending", "sessions_nominal": 3, "required_sessions": 10}
+        self.assertEqual(VAPIEnrollment.sessions_remaining(status), 7)
+        self.assertEqual(VAPIEnrollment.sessions_remaining({"status": "credentialed"}), 0)
+        self.assertEqual(VAPIEnrollment.sessions_remaining({"status": "eligible"}), 0)
+
+
+# ---------------------------------------------------------------------------
+# Group 7: VAPIZKProof
+# ---------------------------------------------------------------------------
+
+class TestVAPIZKProof(unittest.TestCase):
+
+    def _valid(self):
+        return {
+            "proof_bytes": b"\x00" * 256, "feature_commitment": 99999,
+            "humanity_prob_int": 750, "inference_code": 0x20,
+            "nullifier_hash": 12345, "epoch": 100,
+        }
+
+    def test_validate_proof_dict_valid(self):
+        ok, err = VAPIZKProof(self._valid()).validate()
+        self.assertTrue(ok)
+        self.assertIsNone(err)
+
+    def test_validate_proof_dict_missing_key_fails(self):
+        d = self._valid()
+        del d["nullifier_hash"]
+        ok, err = VAPIZKProof(d).validate()
+        self.assertFalse(ok)
+        self.assertIn("nullifier_hash", err)
+
+    def test_public_inputs_returns_five_signals_in_order(self):
+        d = self._valid()
+        inputs = VAPIZKProof(d).public_inputs()
+        self.assertEqual(len(inputs), VAPIZKProof.N_PUBLIC)
+        self.assertEqual(inputs[0], d["feature_commitment"])
+        self.assertEqual(inputs[1], d["humanity_prob_int"])
+        self.assertEqual(inputs[2], d["inference_code"])
+        self.assertEqual(inputs[3], d["nullifier_hash"])
+        self.assertEqual(inputs[4], d["epoch"])
 
 
 if __name__ == "__main__":

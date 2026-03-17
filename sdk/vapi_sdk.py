@@ -9,8 +9,9 @@ Battle Beaver, HORI), and platform developers.
     VAPISession.self_verify() uses VAPI's own Physical Input Trust Layer (PITL)
     to attest that this SDK integration is correctly wired. It generates a signed
     SDKAttestation — an on-chain-submittable proof that each PITL layer (L2 HID
-    injection, L3 behavioral ML, L4 biometric Mahalanobis, L5 temporal oracle) is
-    active and functioning. No other gaming or DePIN SDK does this.
+    injection, L2B IMU-button causal, L3 behavioral ML, L4 biometric Mahalanobis,
+    L5 temporal oracle) is active and functioning. No other gaming or DePIN SDK
+    does this.
 
     Traditional anti-cheat: "Trust us, our engine works."
     VAPI SDK:               "Here is a cryptographic proof that our engine works,
@@ -22,6 +23,8 @@ Classes:
     VAPIDevice      — Device detection, profile lookup, PHCI certification
     VAPIVerifier    — On-chain + client-side PoAC record/chain verification
     VAPISession     — Live session manager; the primary game studio interface
+    VAPIEnrollment  — PHGCredential enrollment status (Phase 62 bridge polling)
+    VAPIZKProof     — PITL ZK proof structure validator (Phase 62 C3 circuit)
 
 Minimum integration (30 lines):
     import asyncio
@@ -45,9 +48,11 @@ Minimum integration (30 lines):
 from __future__ import annotations
 
 import hashlib
+import json
 import struct
 import sys
 import time
+import urllib.request
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Callable, Optional
@@ -69,7 +74,7 @@ for _d in [str(_CONTROLLER_DIR), str(_BRIDGE_DIR)]:
 # Protocol constants (PoAC spec — immutable)
 # ---------------------------------------------------------------------------
 
-SDK_VERSION       = "1.0.0-phase20"
+SDK_VERSION       = "2.0.0-phase64"
 POAC_RECORD_SIZE  = 228
 POAC_BODY_SIZE    = 164
 POAC_SIG_SIZE     = 64
@@ -91,6 +96,9 @@ INFERENCE_NAMES: dict[int, str] = {
     # Phase 13/16B: soft anomalies (advisory, outside hard cheat range)
     0x2B: "TEMPORAL_ANOMALY",
     0x30: "BIOMETRIC_ANOMALY",
+    # Phase 17: L2B/L2C advisory codes
+    0x31: "IMU_PRESS_DECOUPLED",
+    0x32: "STICK_IMU_DECOUPLED",
 }
 
 CHEAT_CODES: frozenset[int] = frozenset({
@@ -178,8 +186,8 @@ class VAPIRecord:
 
     @property
     def is_advisory(self) -> bool:
-        """True for soft anomaly codes (TEMPORAL_ANOMALY, BIOMETRIC_ANOMALY)."""
-        return self._inference_result in (0x2B, 0x30)
+        """True for soft anomaly codes (TEMPORAL_ANOMALY, BIOMETRIC_ANOMALY, IMU_PRESS_DECOUPLED, STICK_IMU_DECOUPLED)."""
+        return self._inference_result in (0x2B, 0x30, 0x31, 0x32)
 
     # --- Hashing ---
 
@@ -465,6 +473,132 @@ class VAPIVerifier:
 
 
 # ---------------------------------------------------------------------------
+# VAPIEnrollment — PHGCredential enrollment status interface
+# ---------------------------------------------------------------------------
+
+class VAPIEnrollment:
+    """
+    PHGCredential enrollment status interface.
+
+    Polls GET /enrollment/status/{device_id} on the bridge.
+    Enrollment rules: only NOMINAL sessions (0x20 or NULL inference_code)
+    count toward the 10-session minimum. Hard cheats {0x28, 0x29, 0x2A}
+    block enrollment. Advisory codes {0x2B, 0x30, 0x31, 0x32} do NOT block.
+    Works offline: returns status='unavailable' when bridge unreachable.
+    """
+
+    _REQUIRED_SESSIONS = 10
+    _REQUIRED_HUMANITY  = 0.60
+
+    def __init__(self, bridge_url: str = "") -> None:
+        self._bridge_url = bridge_url.rstrip("/")
+
+    def get_status(self, device_id: str, timeout: float = 5.0) -> dict:
+        """
+        Fetch enrollment status from the bridge.
+        Falls back to _offline_response() when bridge_url="" or unreachable.
+        Response keys: device_id, status, sessions_nominal, sessions_total,
+        avg_humanity, tx_hash, eligible_at, credentialed_at,
+        required_sessions, required_humanity.
+        """
+        if not self._bridge_url:
+            return self._offline_response(device_id)
+        url = f"{self._bridge_url}/enrollment/status/{device_id}"
+        try:
+            req = urllib.request.Request(url, method="GET")
+            with urllib.request.urlopen(req, timeout=timeout) as resp:
+                return json.loads(resp.read())
+        except Exception:
+            return self._offline_response(device_id)
+
+    @staticmethod
+    def _offline_response(device_id: str) -> dict:
+        return {
+            "device_id": device_id, "status": "unavailable",
+            "sessions_nominal": 0, "sessions_total": 0, "avg_humanity": 0.0,
+            "tx_hash": "", "eligible_at": None, "credentialed_at": None,
+            "required_sessions": VAPIEnrollment._REQUIRED_SESSIONS,
+            "required_humanity": VAPIEnrollment._REQUIRED_HUMANITY,
+        }
+
+    @staticmethod
+    def is_tournament_eligible(status: dict) -> bool:
+        """True only when status == 'credentialed' (on-chain mint confirmed)."""
+        return status.get("status") == "credentialed"
+
+    @staticmethod
+    def sessions_remaining(status: dict) -> int:
+        """max(0, required_sessions - sessions_nominal). 0 if credentialed/eligible."""
+        if status.get("status") in ("credentialed", "eligible"):
+            return 0
+        required = int(status.get("required_sessions", VAPIEnrollment._REQUIRED_SESSIONS))
+        current  = int(status.get("sessions_nominal", 0))
+        return max(0, required - current)
+
+
+# ---------------------------------------------------------------------------
+# VAPIZKProof — PITL ZK proof structure validator
+# ---------------------------------------------------------------------------
+
+class VAPIZKProof:
+    """
+    Structural validator for PITL ZK proof dicts (Phase 62 Groth16 C3 circuit).
+
+    Does NOT perform cryptographic verification — that is on-chain via
+    PitlSessionProofVerifierV2. Use this to validate a proof dict before
+    submitting to the bridge.
+
+    Phase 62 C3 invariant: featureCommitment = Poseidon(8)(scaledFeatures[0..6],
+    inferenceCodeFromBody); inferenceResult === inferenceCodeFromBody (on-chain).
+    nPublic = 5.
+    """
+
+    PROOF_SIZE  = 256   # Groth16 BN254 uncompressed (bytes)
+    N_PUBLIC    = 5     # Circuit public input count
+
+    _REQUIRED_KEYS = frozenset({
+        "proof_bytes", "feature_commitment", "humanity_prob_int",
+        "inference_code", "nullifier_hash", "epoch",
+    })
+
+    def __init__(self, proof_dict: dict) -> None:
+        self._d = proof_dict
+
+    def validate(self) -> tuple:
+        """
+        Validate structure and value ranges.
+        Returns (True, None) or (False, error_message).
+        Checks: all keys present, proof_bytes is 256B, humanity_prob_int in [0, 1000].
+        """
+        missing = self._REQUIRED_KEYS - set(self._d.keys())
+        if missing:
+            return False, f"Missing required keys: {sorted(missing)}"
+        pb = self._d.get("proof_bytes")
+        if not isinstance(pb, (bytes, bytearray)):
+            return False, "proof_bytes must be bytes"
+        if len(pb) != self.PROOF_SIZE:
+            return False, f"proof_bytes must be {self.PROOF_SIZE} bytes, got {len(pb)}"
+        hp = self._d.get("humanity_prob_int")
+        if not isinstance(hp, int) or not (0 <= hp <= 1000):
+            return False, f"humanity_prob_int must be int in [0, 1000], got {hp!r}"
+        return True, None
+
+    def public_inputs(self) -> list:
+        """
+        Return the 5 public signals in circuit declaration order:
+        [featureCommitment, humanityProbInt, inferenceResult, nullifierHash, epoch]
+        Matches PITLSessionRegistryV2.sol calldata and PitlSessionProof.circom nPublic=5.
+        """
+        return [
+            self._d["feature_commitment"],
+            self._d["humanity_prob_int"],
+            self._d["inference_code"],
+            self._d["nullifier_hash"],
+            self._d["epoch"],
+        ]
+
+
+# ---------------------------------------------------------------------------
 # VAPISession — primary game studio integration interface
 # ---------------------------------------------------------------------------
 
@@ -595,11 +729,12 @@ class VAPISession:
         """
         Attest SDK correctness using VAPI's own Physical Input Trust Layer.
 
-        Performs four independent layer checks:
-            L2 — HID-XInput oracle import check
-            L3 — Behavioral cheat classifier import check
-            L4 — Biometric Mahalanobis classifier import check
-            L5 — Temporal rhythm oracle: injects 25 synthetic bot frames
+        Performs five independent layer checks:
+            L2  — HID-XInput oracle import check
+            L3  — Behavioral cheat classifier import check
+            L4  — Biometric Mahalanobis classifier import check
+            L2B — IMU-button press causal oracle import check
+            L5  — Temporal rhythm oracle: injects 25 synthetic bot frames
                  (100ms constant intervals, low CV + low entropy + no quantization)
                  and verifies TEMPORAL_ANOMALY is detected. Score 1.0 if detection
                  fires, 0.5 if layer imports but does not fire, 0.0 if unavailable.
@@ -641,6 +776,15 @@ class VAPISession:
         except Exception:
             layers["L4_biometric"] = False
             scores["L4_biometric"] = 0.0
+
+        # ---- L2B: IMU-Button Press Causal Oracle ----
+        try:
+            from l2b_imu_press_correlation import ImuPressCorrelationOracle  # type: ignore
+            layers["L2B_imu_press"] = True
+            scores["L2B_imu_press"] = 1.0
+        except Exception:
+            layers["L2B_imu_press"] = False
+            scores["L2B_imu_press"] = 0.0
 
         # ---- L5: Temporal Rhythm Oracle — functional check ----
         try:

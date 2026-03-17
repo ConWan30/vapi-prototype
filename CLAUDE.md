@@ -11,13 +11,13 @@ per cognition cycle, anchored on IoTeX L1. The certified device is a DualShock E
 
 `C:\Users\Contr\vapi-pebble-prototype`
 
-~220 files, ~1,480 automated tests total (~1,452 CI excluding 28 hardware, 14 E2E).
-Bridge: 1056 passing. Contract: 354. SDK: 28. Hardware: 28. E2E: 14.
+~220 files, ~1,492 automated tests total (~1,464 CI excluding 28 hardware, 14 E2E).
+Bridge: 1056 passing. Contract: 354. SDK: 40. Hardware: 28. E2E: 14.
 20 contracts deployed on IoTeX testnet (all LIVE, 2026-03-16). See `contracts/deployed-addresses.json`.
 Active wallet (bridge + deployer): `0x0Cf36dB57fc4680bcdfC65D1Aff96993C57a4692` (~6.1 IOTX remaining)
 Previous bridge wallet (no longer accessible): `0xfCF4681e57C8de9650c3Eb4dA8e26dC9441A5EF1` (deployed original 14 contracts — addresses unchanged, still valid on-chain)
 Chain ID: 4690 (IoTeX Testnet)
-Current phase: Phase 63
+Current phase: Phase 64
 
 ## Architecture at a Glance
 
