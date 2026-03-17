@@ -26,6 +26,10 @@ Classes:
     VAPIEnrollment  — PHGCredential enrollment status (Phase 62 bridge polling)
     VAPIZKProof     — PITL ZK proof structure validator (Phase 62 C3 circuit)
 
+    Phase 65 (vapi_agent module):
+    AgentRuling     — Cryptographically committed autonomous PITL ruling
+    VAPIAgent       — Studio-side autonomous session adjudicator (AIL)
+
 Minimum integration (30 lines):
     import asyncio
     from vapi_sdk import VAPISession

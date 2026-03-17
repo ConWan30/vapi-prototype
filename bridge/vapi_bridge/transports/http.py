@@ -832,6 +832,64 @@ def create_app(cfg: Config, store: Store, on_record) -> FastAPI:
             "required_humanity": required_humanity,
         }
 
+    # --- Phase 65: Autonomous Intelligence Layer ---
+
+    @app.get("/agent/rulings/{device_id}")
+    async def get_agent_rulings(device_id: str, limit: int = 20):
+        """Return autonomous agent rulings for a device, most recent first (Phase 65)."""
+        rulings = store.get_agent_rulings(device_id, limit=min(limit, 100))
+        return {"device_id": device_id, "rulings": rulings, "count": len(rulings)}
+
+    @app.post("/agent/adjudicate")
+    async def request_adjudication(request: Request):
+        """Queue an on-demand adjudication request for SessionAdjudicator (Phase 65)."""
+        body = await request.json()
+        device_id = body.get("device_id", "")
+        if not device_id:
+            raise HTTPException(400, "device_id required")
+        attestation_hash = body.get("attestation_hash", "")
+        eid = store.write_agent_event(
+            event_type="ruling_request",
+            payload=json.dumps({"device_id": device_id,
+                                "attestation_hash": attestation_hash}),
+            source="http_api",
+            target="session_adjudicator",
+            device_id=device_id,
+        )
+        return {"status": "queued", "event_id": eid, "device_id": device_id}
+
+    @app.post("/agent/interpret")
+    async def agent_interpret(request: Request):
+        """Agentic overlay: enrich VAPI data dict with LLM interpretation (Phase 65).
+
+        Accepts {data: dict, context: str (optional)}.
+        Returns data + agent_interpretation field.
+        Returns {agent_interpretation: {status: 'unavailable'}} if ANTHROPIC_API_KEY missing.
+        """
+        body = await request.json()
+        data = body.get("data", {})
+        context = body.get("context", "")
+        try:
+            import anthropic
+            client = anthropic.AsyncAnthropic()
+            prompt = f"Context: {context}\n\nData: {json.dumps(data, default=str)}"
+            response = await client.messages.create(
+                model="claude-opus-4-6",
+                max_tokens=512,
+                system=(
+                    "You are a VAPI protocol expert. Interpret the provided VAPI data "
+                    "and return a JSON object with: summary (str), risk_level (low/medium/high), "
+                    "recommended_action (str), confidence (0.0-1.0). "
+                    "Respond with only valid JSON."
+                ),
+                messages=[{"role": "user", "content": prompt}],
+            )
+            interpretation = json.loads(response.content[0].text.strip())
+        except Exception as exc:
+            log.warning("/agent/interpret: LLM unavailable: %s", exc)
+            interpretation = {"status": "unavailable"}
+        return {**data, "agent_interpretation": interpretation}
+
     # --- Dashboards ---
 
     @app.get("/", response_class=HTMLResponse)

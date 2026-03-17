@@ -11,13 +11,13 @@ per cognition cycle, anchored on IoTeX L1. The certified device is a DualShock E
 
 `C:\Users\Contr\vapi-pebble-prototype`
 
-~220 files, ~1,492 automated tests total (~1,464 CI excluding 28 hardware, 14 E2E).
-Bridge: 1056 passing. Contract: 354. SDK: 40. Hardware: 28. E2E: 14.
+~220 files, ~1,527 automated tests total (~1,499 CI excluding 28 hardware, 14 E2E).
+Bridge: 1076 passing. Contract: 354. SDK: 55. Hardware: 28. E2E: 14.
 20 contracts deployed on IoTeX testnet (all LIVE, 2026-03-16). See `contracts/deployed-addresses.json`.
 Active wallet (bridge + deployer): `0x0Cf36dB57fc4680bcdfC65D1Aff96993C57a4692` (~6.1 IOTX remaining)
 Previous bridge wallet (no longer accessible): `0xfCF4681e57C8de9650c3Eb4dA8e26dC9441A5EF1` (deployed original 14 contracts — addresses unchanged, still valid on-chain)
 Chain ID: 4690 (IoTeX Testnet)
-Current phase: Phase 64
+Current phase: Phase 65
 
 ## Architecture at a Glance
 
@@ -120,9 +120,13 @@ With L6 active:
 | 61 | Session Replay + Feature History Scatter — frame_checkpoints table (deque maxlen=60, 20 Hz); store_frame_checkpoint/get_frame_checkpoint/list_checkpoints_for_device; _replay_ring deque + checkpoint storage in _dispatch; /replay + /checkpoints + /features endpoints; BridgeAgent tool #29 get_session_replay; useReplayMode + useFeatureHistory hooks; BiometricScatter history dots (cyan, DB feature vectors); chain tile ▶ indicator + replay status bar; Track C deployments blocked (wallet 0.43 IOTX); +12 tests; bridge 1000 |
 | 62 | Player Enrollment + ZK Inference Code Binding — EnrollmentManager (auto PHGCredential mint after enrollment_min_sessions=10 NOMINAL sessions); device_enrollments table + 4 store methods; config enrollment_min/humanity_min; GET /enrollment/status/{device_id}; BridgeAgent tool #30 get_enrollment_status; PitlSessionProof.circom C3 constraint (inferenceResult === inferenceCodeFromBody); C1 Poseidon 7→8 inputs (adds inferenceCodeFromBody); mock proof commitment includes inference_result; PITLSessionRegistryV2.sol + deploy script; Phase 62 ceremony re-run; artifacts updated; +26 tests; bridge 1026 |
 | 63 | L6b Neuromuscular Reflex Layer — first reactive involuntary probe; L6B_PROBE profile (id=8, amplitude 60/255, sub-perceptual); L6bReflexAnalyzer (accel-mag delta, BOT<15ms/HUMAN 80-280ms); l6b_probe_log SQLite table + insert_l6b_probe/get_l6b_baseline; 5 new config fields (l6b_enabled/probe_interval/accel_threshold/human_min_ms/human_max_ms); 4-way humanity formula (baseline/L6/L6b/both); pitl_meta l6b_* fields; BridgeAgent tool #31 get_reflex_baseline; profile 8 excluded from L6 active rotation; L6B_ENABLED=false default; +26 tests; bridge 1056 |
+| 64 | SDK Phase 63 Parity — SDK v2.0.0-phase64; 0x31 IMU_PRESS_DECOUPLED + 0x32 STICK_IMU_DECOUPLED in INFERENCE_NAMES; is_advisory updated; VAPIEnrollment (GET /enrollment/status poll); VAPIZKProof (Groth16 C3 validator, PROOF_SIZE=256, N_PUBLIC=5); L2B added as 5th self_verify() layer; openapi.yaml Enrollment tag + EnrollmentStatus schema + YAML alias fix; SDK 28→40; +12 SDK tests |
+| 65 | Autonomous Intelligence Layer (AIL) — agent_rulings table (commitment_hash, attestation_hash, verdict/confidence/reasoning, dry_run); insert_agent_ruling/get_agent_rulings/get_agent_ruling_by_id store methods; SessionAdjudicator background agent (5-min poll, claude-opus-4-6, rule fallback); GET /agent/rulings + POST /agent/adjudicate + POST /agent/interpret endpoints; BridgeAgent tools #32 get_autonomous_rulings + #33 request_adjudication; vapi_agent.py (VAPIAgent + AgentRuling dataclass, PoAC-gated commitment formula); BLOCK/CERTIFY require all_layers_active=True; dry_run=True default; Agent tag + 6 OpenAPI schemas; +20 bridge tests + +15 SDK tests; bridge 1076; SDK 55 |
 
 ## Completed Items — Do Not Re-Open
 
+- Phase 65 Autonomous Intelligence Layer — agent_rulings table + 3 store methods; SessionAdjudicator (5-min poll, claude-opus-4-6, _rule_fallback); GET /agent/rulings/{device_id} + POST /agent/adjudicate + POST /agent/interpret; BridgeAgent tools #32 + #33; sdk/vapi_agent.py (VAPIAgent + AgentRuling, commitment_hash formula); BLOCK/CERTIFY attestation gate; dry_run=True default; Agent OpenAPI tag + 6 schemas; 20 bridge + 15 SDK tests; bridge 1076; SDK 55
+- Phase 64 SDK Parity — SDK v2.0.0-phase64; 0x31/0x32 advisory codes; VAPIEnrollment + VAPIZKProof; L2B 5th self_verify layer; openapi.yaml Enrollment tag + YAML alias fix; SDK 40 tests
 - Phase 63 L6b Neuromuscular Reflex — L6B_PROBE profile (id=8, sub-perceptual); L6bReflexAnalyzer; l6b_probe_log table; 5 config fields; 4-way humanity formula; pitl_meta l6b_* fields; BridgeAgent tool #31 get_reflex_baseline; 26 tests; bridge 1056
 - Phase 62 Player Enrollment + ZK C3 — EnrollmentManager; device_enrollments table; GET /enrollment/status; BridgeAgent tool #30; PitlSessionProof.circom C3 + Poseidon(8) C1; mock proof inference binding; PITLSessionRegistryV2.sol; ceremony re-run; nPublic=5 preserved; +26 tests; bridge 1026
 - Phase 61 Session Replay + Feature History Scatter — frame_checkpoints (SQLite, FK to records, maxlen=60 ring, INSERT OR IGNORE idempotent); _replay_ring deque 20 Hz; /replay + /checkpoints + /features; BridgeAgent tool #29; useReplayMode + useFeatureHistory; BiometricScatter cyan DB dots; chain tile ▶ indicator; replay status bar; 12 tests; bridge 1000
@@ -214,7 +218,7 @@ Micro-tremor variance: 278,239 LSB².
 - L6_CHALLENGES_ENABLED=false is the correct default
 - Per-player L4 thresholds can only tighten, never loosen (enforced by min())
 - Stable EMA track updates on NOMINAL sessions only
-- Whitepaper test counts: 1056 bridge, ~1,480 total, ~1,452 CI
+- Whitepaper test counts: 1076 bridge, ~1,527 total, ~1,499 CI
 - Operator endpoints (/operator/passport, /operator/passport/issue) require valid x-api-key header matching cfg.operator_api_key; return 503 if key unconfigured, 401 if wrong key
 - L2C phantom weight must be acknowledged in any humanity formula discussion
 - accel_magnitude_spectral_entropy is bot-vs-human only — never claim it improves separation ratio

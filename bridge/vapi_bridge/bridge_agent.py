@@ -639,6 +639,56 @@ _TOOLS = [
             "required": ["device_id"],
         },
     },
+    # Tool #32 — Phase 65
+    {
+        "name": "get_autonomous_rulings",
+        "description": (
+            "Return autonomous SessionAdjudicator rulings for a device. "
+            "Shows verdict (FLAG/HOLD/BLOCK/CERTIFY/CLEAR), confidence (0.0-1.0), "
+            "reasoning, evidence record hashes, attestation_hash (trust anchor), "
+            "commitment_hash, dry_run flag, and timestamp. "
+            "Use this to check whether the autonomous agent has flagged a device."
+        ),
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "device_id": {
+                    "type": "string",
+                    "description": "64-char hex device ID",
+                },
+                "limit": {
+                    "type": "integer",
+                    "description": "Max rulings to return (default 10)",
+                },
+            },
+            "required": ["device_id"],
+        },
+    },
+    # Tool #33 — Phase 65
+    {
+        "name": "request_adjudication",
+        "description": (
+            "Queue an autonomous adjudication request for a device. "
+            "SessionAdjudicator picks it up within 5 minutes and stores a ruling "
+            "in agent_rulings. Include attestation_hash if the SDK was self-verified — "
+            "this enables BLOCK/CERTIFY verdicts. Returns event_id for tracking."
+        ),
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "device_id": {"type": "string"},
+                "attestation_hash": {
+                    "type": "string",
+                    "description": "SDKAttestation.attestation_hash hex",
+                },
+                "reason": {
+                    "type": "string",
+                    "description": "Human context for the request",
+                },
+            },
+            "required": ["device_id"],
+        },
+    },
 ]
 
 
@@ -1432,6 +1482,33 @@ class BridgeAgent:
                     result["l6b_enabled"] = getattr(self._cfg, "l6b_enabled", False)
                     result["status"] = "no_probes_recorded"
                 return result
+
+            if name == "get_autonomous_rulings":
+                device_id = inputs.get("device_id", "")
+                if not device_id:
+                    return {"error": "device_id required"}
+                limit = int(inputs.get("limit", 10))
+                return {
+                    "device_id": device_id,
+                    "rulings": self._store.get_agent_rulings(device_id, limit=min(limit, 50)),
+                }
+
+            if name == "request_adjudication":
+                device_id = inputs.get("device_id", "")
+                if not device_id:
+                    return {"error": "device_id required"}
+                eid = self._store.write_agent_event(
+                    event_type="ruling_request",
+                    payload=json.dumps({
+                        "device_id":        device_id,
+                        "attestation_hash": inputs.get("attestation_hash", ""),
+                        "reason":           inputs.get("reason", "bridge_agent_request"),
+                    }),
+                    source="bridge_agent",
+                    target="session_adjudicator",
+                    device_id=device_id,
+                )
+                return {"status": "queued", "event_id": eid}
 
             return {"error": f"Unknown tool: {name}"}
 

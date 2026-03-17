@@ -503,6 +503,32 @@ class Store:
                 CREATE INDEX IF NOT EXISTS idx_l6b_device
                 ON l6b_probe_log(device_id)
             """)
+            # Phase 65: Autonomous agent rulings table
+            conn.execute("""
+                CREATE TABLE IF NOT EXISTS agent_rulings (
+                    id                INTEGER PRIMARY KEY AUTOINCREMENT,
+                    device_id         TEXT    NOT NULL,
+                    verdict           TEXT    NOT NULL,
+                    confidence        REAL    NOT NULL DEFAULT 0.0,
+                    reasoning         TEXT    NOT NULL DEFAULT '',
+                    evidence_json     TEXT    NOT NULL DEFAULT '{}',
+                    attestation_hash  TEXT    DEFAULT '',
+                    commitment_hash   TEXT    NOT NULL,
+                    dry_run           INTEGER NOT NULL DEFAULT 1,
+                    source_agent      TEXT    NOT NULL DEFAULT 'session_adjudicator',
+                    created_at        REAL    NOT NULL,
+                    expires_at        REAL,
+                    FOREIGN KEY (device_id) REFERENCES devices(device_id)
+                )
+            """)
+            conn.execute("""
+                CREATE INDEX IF NOT EXISTS idx_agent_rulings_device
+                ON agent_rulings(device_id, created_at DESC)
+            """)
+            conn.execute("""
+                CREATE INDEX IF NOT EXISTS idx_agent_rulings_verdict
+                ON agent_rulings(verdict, dry_run, created_at DESC)
+            """)
             # Bootstrap schema version history (idempotent INSERT OR IGNORE)
             for _ph, _nm in [
                 (21, "pitl_sidecar"), (22, "phg_checkpoints"),
@@ -523,6 +549,7 @@ class Store:
                 (61, "session_replay"),
                 (62, "enrollment_ceremony"),
                 (63, "l6b_reflex_layer"),
+                (65, "autonomous_intelligence_layer"),
             ]:
                 conn.execute(
                     "INSERT OR IGNORE INTO schema_versions (phase, migration_name, applied_at)"
@@ -2252,3 +2279,63 @@ class Store:
                 (device_id, min_humanity, limit),
             ).fetchall()
         return [dict(r) for r in rows]
+
+    # --- Phase 65: Autonomous agent rulings ---
+
+    def insert_agent_ruling(
+        self,
+        device_id: str,
+        verdict: str,
+        confidence: float,
+        reasoning: str,
+        evidence_json: str,
+        commitment_hash: str,
+        attestation_hash: str = "",
+        dry_run: bool = True,
+        source_agent: str = "session_adjudicator",
+        expires_at: float | None = None,
+    ) -> int:
+        """Insert autonomous agent ruling. Returns ruling id."""
+        now = time.time()
+        with self._conn() as conn:
+            cur = conn.execute(
+                "INSERT INTO agent_rulings "
+                "(device_id, verdict, confidence, reasoning, evidence_json, "
+                "attestation_hash, commitment_hash, dry_run, source_agent, "
+                "created_at, expires_at) "
+                "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                (device_id, verdict, confidence, reasoning, evidence_json,
+                 attestation_hash, commitment_hash, int(dry_run), source_agent,
+                 now, expires_at),
+            )
+            return cur.lastrowid
+
+    def get_agent_rulings(
+        self,
+        device_id: str,
+        limit: int = 20,
+        verdict_filter: str | None = None,
+    ) -> list[dict]:
+        """Return rulings for device, most recent first. Optional verdict filter."""
+        with self._conn() as conn:
+            if verdict_filter:
+                rows = conn.execute(
+                    "SELECT * FROM agent_rulings WHERE device_id=? AND verdict=? "
+                    "ORDER BY created_at DESC LIMIT ?",
+                    (device_id, verdict_filter, limit),
+                ).fetchall()
+            else:
+                rows = conn.execute(
+                    "SELECT * FROM agent_rulings WHERE device_id=? "
+                    "ORDER BY created_at DESC LIMIT ?",
+                    (device_id, limit),
+                ).fetchall()
+        return [dict(r) for r in rows]
+
+    def get_agent_ruling_by_id(self, ruling_id: int) -> dict | None:
+        """Return single ruling by id, or None."""
+        with self._conn() as conn:
+            row = conn.execute(
+                "SELECT * FROM agent_rulings WHERE id=?", (ruling_id,)
+            ).fetchone()
+        return dict(row) if row else None
