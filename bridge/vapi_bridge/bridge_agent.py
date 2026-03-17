@@ -821,10 +821,22 @@ class BridgeAgent:
             else "low"
         )
         session_id = f"__react_{device_id[:8]}"
+        # Sanitize user-controlled fields before interpolating into LLM prompt
+        safe_name = "".join(
+            c for c in str(inference_name) if c.isprintable() and c not in "\n\r"
+        )[:64]
+        try:
+            l4_dist = f"{float(event.get('pitl_l4_distance', 0)):.4f}"
+        except (TypeError, ValueError):
+            l4_dist = "N/A"
+        try:
+            humanity = f"{float(event.get('pitl_humanity_prob', 0)):.4f}"
+        except (TypeError, ValueError):
+            humanity = "N/A"
         msg = (
-            f"Detected {inference_name} for device {device_id[:16]}. "
-            f"L4_dist={event.get('pitl_l4_distance')}, "
-            f"humanity_prob={event.get('pitl_humanity_prob')}. Explain and recommend."
+            f"Detected {safe_name!r} for device {device_id[:16]}. "
+            f"L4_dist={l4_dist}, "
+            f"humanity_prob={humanity}. Explain and recommend."
         )
         try:
             result = self.ask(session_id, msg)

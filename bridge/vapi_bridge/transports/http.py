@@ -128,7 +128,7 @@ def create_app(cfg: Config, store: Store, on_record) -> FastAPI:
         CORSMiddleware,
         allow_origins=_cors_origins,
         allow_methods=["GET", "POST", "PATCH"],
-        allow_headers=["*"],
+        allow_headers=["Content-Type", "Authorization"],
     )
 
     # --- WebSocket ---
@@ -410,7 +410,9 @@ def create_app(cfg: Config, store: Store, on_record) -> FastAPI:
         return OPERATOR_HTML
 
     @app.get("/player/{device_id}", response_class=HTMLResponse)
-    async def player_dashboard(device_id: str):
+    async def player_dashboard(
+        device_id: str = Path(..., pattern="^[0-9a-fA-F]{64}$"),
+    ):
         return PLAYER_DASHBOARD_HTML.replace("__DEVICE_ID__", device_id)
 
     return app

@@ -544,7 +544,7 @@ class Store:
         params.append(sub_id)
         with self._conn() as conn:
             conn.execute(
-                f"UPDATE submissions SET {', '.join(parts)} WHERE id = ?",
+                "UPDATE submissions SET " + ", ".join(parts) + " WHERE id = ?",
                 params,
             )
 

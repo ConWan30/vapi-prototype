@@ -13,11 +13,13 @@ Design constraints:
   - No-op when alert_webhook_url is empty string
 """
 import asyncio
+import ipaddress
 import json
 import logging
 import time
 import urllib.request
 from urllib.error import URLError
+from urllib.parse import urlparse
 
 log = logging.getLogger(__name__)
 
@@ -103,8 +105,37 @@ class AlertRouter:
         """Return True if severity rank >= threshold rank."""
         return _SEVERITY_ORDER.get(severity, 0) >= _SEVERITY_ORDER.get(threshold, 2)
 
+    @staticmethod
+    def _validate_webhook_url(url: str) -> bool:
+        """Return True iff url is a safe external http/https endpoint."""
+        try:
+            parsed = urlparse(url)
+            if parsed.scheme not in ("http", "https"):
+                return False
+            hostname = parsed.hostname or ""
+            if not hostname:
+                return False
+            # Reject loopback, link-local, and private ranges
+            try:
+                addr = ipaddress.ip_address(hostname)
+                if addr.is_loopback or addr.is_private or addr.is_link_local:
+                    return False
+            except ValueError:
+                # Not a bare IP — still reject explicit localhost names
+                if hostname.lower() in ("localhost", "localhost.localdomain"):
+                    return False
+            return True
+        except Exception:
+            return False
+
     async def _dispatch(self, webhook_url: str, insight: dict) -> None:
         """Format and POST insight to the configured webhook (non-fatal)."""
+        if not self._validate_webhook_url(webhook_url):
+            log.warning(
+                "AlertRouter: refusing to dispatch to unsafe webhook URL %r",
+                webhook_url,
+            )
+            return
         fmt = getattr(self._cfg, "alert_webhook_format", "generic")
         try:
             payload = self._format_payload(insight, fmt)

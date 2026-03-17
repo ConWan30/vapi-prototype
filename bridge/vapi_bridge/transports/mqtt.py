@@ -64,7 +64,9 @@ class MqttTransport:
     async def _handle_message(self, message):
         """Process a single MQTT message."""
         payload = message.payload
-        topic = str(message.topic)
+        # Sanitize topic: keep only printable ASCII, strip control chars, cap length
+        raw_topic = str(message.topic)
+        topic = "".join(c for c in raw_topic if c.isprintable() and ord(c) < 128)[:256]
 
         if len(payload) == POAC_RECORD_SIZE:
             source = f"mqtt:{topic}"
